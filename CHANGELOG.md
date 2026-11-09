@@ -1,0 +1,87 @@
+# Changelog
+
+## Unreleased
+
+- Added the Free Pascal SCU command line and JSON command definitions.
+- Added a JSON deck library with zstd compression, base64 encoding, and SHA-1 verification.
+- Added SQLite libraries with one JSON payload per deck revision, transactional saves and audit records, and JSON import and export.
+- Default to `library.sqlite`, with a fallback to an existing `library.json`.
+- Added integration tests for SQLite import and export and for rolling back both library changes and audit records when writing a save outcome fails.
+- Added SQLite checkpoints for `expand_modified_decks` by version and output directory. Expand changed decks and their transitive COPY dependents, and advance the checkpoint with the successful build audit record.
+- Advance the SQLite checkpoint after a successful expansion when no build command is configured, and show the checkpoint revision separately from the last actual build.
+- Default `expand_modified_decks` to the current library version and the directory containing the library without prompting.
+- Added `display_expansion_checkpoints` (`disec`) to list the last successfully built library revision for each SQLite checkpoint.
+- Added `reset_expansion_checkpoint` (`resec`) to force a full rebuild for a SQLite version and output directory.
+- Show pending full rebuilds alongside the last successfully built revision in `display_expansion_checkpoints`.
+- Show the last successful build time in UTC in `display_expansion_checkpoints`, using the existing audit history.
+- Show the library version before the per-deck revision in deck write confirmations and omit SHA-1 from the confirmation.
+- Report the current library version when `edit_deck` cannot find a deck.
+- Report the selected version in missing-deck errors from `extract_deck` and `expand_deck` unless a library revision was specified.
+- Added library-wide revisions, version locking, and named version snapshots.
+- Added a library header with version history, comment prefixes, and external editor configuration.
+- Added deck editing, exact extraction, and expansion of nested COPY directives and the stored modification date, time, and version macros.
+- Added `create_deck` with optional `from_file` for creating empty decks or importing their initial source.
+- Stored comment prefixes per deck revision so a library can expand decks with different directive syntax.
+- Added bulk extraction and expansion of decks changed in a version.
+- Added deck revision history and unified diffs by revision or version.
+- Added the `last_modified_deck` library attribute and made it the default for `display_deck` and `diff_deck`.
+- Default `extract_deck` and `edit_deck` to `scu$last_modified_deck`.
+- Default the output filename of `extract_deck` to `scu$last_modified_deck` without prompting.
+- Default the deck name and output filename of `expand_deck` to `scu$last_modified_deck` without prompting.
+- Generate unified deck diffs in Free Pascal without GNU `diff` or temporary files.
+- Added JSON-defined command and argument abbreviations with canonical audit entries.
+- Organized command definitions with typed, command-specific arguments and options, including descriptive names such as `source_file` and `output_file`.
+- Added library-first invocation, `ln=` selection, and interactive sessions.
+- Added `save_library` and Boolean `quit save_library=` to save or discard interactive changes.
+- Added `display_library` to show the selected library's current snapshot when opening an interactive terminal session.
+- Show the current and previous locked library versions in `display_library` and the startup banner.
+- Show the full library configuration in `display_library`, including the editor and build command.
+- Added a brief command list, detailed per-command help, and required argument prompts with Ctrl+C cancellation.
+- Use NOS/VE-style parameter signatures in detailed help and interactive prompts.
+- List the full command name and aliases together at the top of detailed help.
+- Sorted the command list and `commands.json` alphabetically by full command name.
+- Aligned command descriptions using the longest full name in the command list.
+- Show comma-separated aliases in the command list and align descriptions after the longest entry.
+- Wrap command descriptions to the terminal width and align their continuation lines.
+- Wrap detailed help and parameter descriptions to the terminal width while preserving indentation.
+- Wrap interactive parameter prompts to the terminal width while preserving description indentation.
+- Sorted each command's options in `commands.json` alphabetically by full option name.
+- Sorted command, argument, and option aliases alphabetically in `commands.json`.
+- Added a test for alphabetical catalog order that allows positional arguments to follow parsing order.
+- Added `make format-commands` to sort commands, options, and aliases while preserving positional argument order.
+- Added required and optional argument rules and defaults in command definitions.
+- Added short argument and option descriptions to detailed command help.
+- Show argument descriptions, expected types, and aliases at interactive prompts.
+- Added Enter-to-accept defaults and in-session command history editing.
+- Saved terminal command history across sessions in the user's state directory.
+- Standardized full command names and added abbreviations while keeping existing spellings as aliases.
+- Added interactive Tab completion for command names, arguments, options, and aliases.
+- Display Tab completion matches in aligned columns that fit the terminal width.
+- Page long Tab completion lists without losing the draft command or cursor position.
+- Replaced GNU Readline with a Free Pascal terminal editor that supports editing, persistent history, Tab completion, and Ctrl+C cancellation.
+- Added Ctrl+R to search saved command history backward and recall a match for editing.
+- Added value completion from the current library and filesystem, including at argument prompts.
+- Filtered deck completion by the selected snapshot and revision completion by the selected deck.
+- Filtered version completion to versions that contain or inherit the selected deck.
+- Hid supplied arguments and options from Tab suggestions, including their aliases.
+- Hid mutually exclusive options and their aliases from Tab suggestions.
+- Listed mutually exclusive option groups in detailed command help.
+- Added named-version, library-revision, and default snapshot examples to detailed command help.
+- Reported the version and library revision used for deck listing, extraction, and expansion.
+- Recorded resolved snapshots in audit outcomes for deck listing, extraction, and expansion.
+- Reported and audited both resolved endpoints for deck comparisons.
+- Added version, revision, and mixed-selector examples to `diff_deck` help.
+- Added `scu$current` as a selector for either `diff_deck` endpoint.
+- Made `diff_deck` use `scu$current` automatically when `to_snapshot` is omitted, including in interactive mode.
+- Added `scu$previous` to compare against the most recent locked version before the current version.
+- Made `diff_deck` use `scu$previous` automatically when `from_snapshot` is omitted.
+- Made the omitted `diff_deck` baseline fall back to the deck's prior revision when there is no earlier locked version.
+- Added per-deck revision numbering, deck versions, and configurable version and revision increments. Diff defaults now follow the selected deck's history across library versions.
+- Show deck versions in `display_deck_list`.
+- Show resolved deck versions in `diff_deck` reports and patch labels.
+- Renamed the diff selectors to `scu$current_deck_version` and `scu$previous_deck_version` and limited comparisons to deck versions.
+- Added `build_command` and the `build` option on single and bulk expansion.
+- Reported a missing library before trying to open its audit log.
+- Unified required, optional, and default argument rules under `value` in command definitions.
+- Added SHA-256 audit chaining with saved-head verification.
+- Added integration tests for version snapshots, editor behavior, corruption detection, and concurrent stores.

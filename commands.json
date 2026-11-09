@@ -1,0 +1,658 @@
+{
+  "format": 3,
+  "library_option": {
+    "name": "library",
+    "type": "string",
+    "aliases": ["library_name", "ln"],
+    "default": "library.sqlite",
+    "legacy_default": "library.json",
+    "description": "Path to the source library to open."
+  },
+  "commands": [
+    {
+      "name": "configure_library",
+      "aliases": ["configure", "conl", "modify_library"],
+      "summary": "Set library defaults, numbering increments, editor, or build command.",
+      "arguments": [],
+      "options": [
+        {
+          "name": "build_command",
+          "type": "string",
+          "aliases": ["bc"],
+          "value": "scu$optional",
+          "description": "Shell command to run after expansion. The output file or directory is available as $1."
+        },
+        {
+          "name": "comment-prefix",
+          "type": "string",
+          "aliases": ["comment_prefix", "cp"],
+          "value": "scu$optional",
+          "description": "Default comment prefix for new decks in the current version."
+        },
+        {
+          "name": "editor",
+          "type": "string",
+          "aliases": ["ed"],
+          "value": "scu$optional",
+          "description": "Editor executable and arguments as a JSON array."
+        },
+        {
+          "name": "revision_increment",
+          "type": "string",
+          "aliases": ["ri"],
+          "value": "scu$optional",
+          "description": "Step for new revisions of a deck, in thousandths. The default is 0.001."
+        },
+        {
+          "name": "version_increment",
+          "type": "string",
+          "aliases": ["vi"],
+          "value": "scu$optional",
+          "description": "Step for automatically starting a library version, in hundredths. The default is 0.01."
+        }
+      ],
+      "help": "Specify at least one option. Set the default prefix before the current version receives its first revision. Supply editor arguments as a JSON array and quote the build command as one string."
+    },
+    {
+      "name": "create_deck",
+      "aliases": ["cred"],
+      "summary": "Create an empty deck or initialize it from a file.",
+      "arguments": [
+        {
+          "name": "deck_name",
+          "type": "string",
+          "aliases": ["deck", "dn"],
+          "value": "scu$required",
+          "description": "Name of the new deck."
+        },
+        {
+          "name": "from_file",
+          "type": "string",
+          "aliases": ["ff"],
+          "value": "scu$optional",
+          "description": "Path to the initial source. Omit to create an empty deck.",
+          "completion": "file"
+        }
+      ],
+      "options": [
+        {
+          "name": "comment-prefix",
+          "type": "string",
+          "aliases": ["comment_prefix", "cp"],
+          "value": "scu$optional",
+          "description": "Comment prefix for this deck. Omit to use the current version's default."
+        }
+      ],
+      "help": "Create the first revision of a new deck in the open version. Set its comment prefix with --comment-prefix. An existing deck name, including one inherited from a previous version, is an error.",
+      "examples": [
+        {
+          "command": "scu create_deck main.pas",
+          "description": "Create an empty deck."
+        },
+        {
+          "command": "scu create_deck main.pas from_file='working copy.pas'",
+          "description": "Use the file's bytes as the initial source."
+        }
+      ]
+    },
+    {
+      "name": "diff_deck",
+      "aliases": ["difd"],
+      "summary": "Compare stored deck source at two revisions or versions.",
+      "arguments": [
+        {
+          "name": "deck_name",
+          "type": "string",
+          "aliases": ["deck", "dn"],
+          "value": "scu$last_modified_deck",
+          "prompt_for_default": false,
+          "description": "Name of the deck to compare in both snapshots.",
+          "completion": "deck"
+        },
+        {
+          "name": "from_snapshot",
+          "type": "string",
+          "aliases": ["from", "fs"],
+          "value": "scu$previous_deck_version",
+          "prompt_for_default": false,
+          "description": "Deck version, scu$current_deck_version, or scu$previous_deck_version. Omit to use the deck version immediately before the right endpoint.",
+          "completion": "deck_version"
+        },
+        {
+          "name": "to_snapshot",
+          "type": "string",
+          "aliases": ["to", "ts"],
+          "value": "scu$current_deck_version",
+          "prompt_for_default": false,
+          "description": "Deck version, scu$current_deck_version, or scu$previous_deck_version. Omit to use the deck's latest version.",
+          "completion": "deck_version"
+        }
+      ],
+      "options": [],
+      "help": "Compare the original deck bytes at two deck versions such as 1.04-0.007. scu$current_deck_version and scu$previous_deck_version select the latest and preceding versions of the named deck.",
+      "examples": [
+        {
+          "command": "scu diff_deck",
+          "description": "Compare the last modified deck with its prior revision."
+        },
+        {
+          "command": "scu diff_deck main.pas 1.04-0.006 1.04-0.007",
+          "description": "Compare two exact deck versions within one library version."
+        },
+        {
+          "command": "scu diff_deck main.pas 1.04-0.006 'scu$current_deck_version'",
+          "description": "Compare an exact deck version with the latest version of the deck."
+        },
+        {
+          "command": "scu diff_deck main.pas",
+          "description": "Compare the latest revision of main.pas with its preceding revision."
+        }
+      ]
+    },
+    {
+      "name": "display_command",
+      "aliases": ["disc"],
+      "summary": "Show a command's help and its arguments and options.",
+      "arguments": [
+        {
+          "name": "command_name",
+          "type": "string",
+          "aliases": ["cn"],
+          "value": "scu$required",
+          "description": "Full command name or alias to look up.",
+          "completion": "command"
+        }
+      ],
+      "options": [],
+      "help": "Use a full command name or alias. Example: display_command command_name=extd."
+    },
+    {
+      "name": "display_command_list",
+      "aliases": ["--help", "-h", "discl", "help"],
+      "summary": "List commands alphabetically with aliases and short descriptions.",
+      "arguments": [],
+      "options": [],
+      "help": "Run display_command command_name=NAME for details about a command."
+    },
+    {
+      "name": "display_deck",
+      "aliases": ["dd", "deck_history", "disd"],
+      "summary": "List a deck's versions and UTC modification times, newest first.",
+      "arguments": [
+        {
+          "name": "deck_name",
+          "type": "string",
+          "aliases": ["deck", "dn"],
+          "value": "scu$last_modified_deck",
+          "prompt_for_default": false,
+          "description": "Name of the deck whose revision history to show.",
+          "completion": "deck"
+        }
+      ],
+      "options": [],
+      "help": "Show each stored revision with its library revision number, library version, UTC modification time, and deck version.",
+      "examples": [
+        {
+          "command": "scu display_deck",
+          "description": "Show the revision history of the last modified deck."
+        }
+      ]
+    },
+    {
+      "name": "display_deck_list",
+      "aliases": ["ddl", "disdl", "list_decks"],
+      "summary": "List decks and their deck versions in the selected snapshot.",
+      "arguments": [],
+      "options": [
+        {
+          "name": "revision",
+          "type": "integer",
+          "aliases": ["r"],
+          "value": "scu$optional",
+          "description": "Library-wide snapshot after the specified saved change. Revision 0 is empty.",
+          "completion": "revision"
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "aliases": ["v"],
+          "value": "scu$optional",
+          "description": "Latest snapshot of a named version, including inherited decks.",
+          "completion": "version"
+        }
+      ],
+      "exclusive_options": [["version", "revision"]],
+      "help": "Show each deck name and its deck version in the selected snapshot. Inherited decks retain their stored deck version. Specify either revision or version.",
+      "examples": [
+        {
+          "command": "scu display_deck_list version=1.1",
+          "description": "See which decks are available in named version 1.1."
+        },
+        {
+          "command": "scu display_deck_list revision=7",
+          "description": "Inspect the deck list immediately after the seventh saved deck change."
+        },
+        {
+          "command": "scu display_deck_list",
+          "description": "List decks in the latest saved snapshot of the current version."
+        }
+      ]
+    },
+    {
+      "name": "display_expansion_checkpoints",
+      "aliases": ["disec"],
+      "summary": "List SQLite expansion checkpoints and their last successful builds.",
+      "arguments": [],
+      "options": [],
+      "help": "Show each SQLite expansion checkpoint's version, absolute output directory, revision, rebuild status, and the last successful build's revision and UTC time."
+    },
+    {
+      "name": "display_library",
+      "aliases": ["disl"],
+      "summary": "Show the library path, versions, and full configuration.",
+      "arguments": [],
+      "options": [],
+      "help": "Show the library path, current version, and most recent locked predecessor, followed by the full configuration header, including the editor and build command. SCU also runs this command when opening an existing library at a terminal."
+    },
+    {
+      "name": "edit_deck",
+      "aliases": ["edid"],
+      "summary": "Edit an existing deck with the configured external editor.",
+      "arguments": [
+        {
+          "name": "deck_name",
+          "type": "string",
+          "aliases": ["deck", "dn"],
+          "value": "scu$last_modified_deck",
+          "prompt_for_default": false,
+          "description": "Name of the existing deck to edit.",
+          "completion": "deck"
+        }
+      ],
+      "options": [],
+      "help": "Open the stored deck in the configured editor. Save a new revision when the bytes change."
+    },
+    {
+      "name": "expand_deck",
+      "aliases": ["expd"],
+      "summary": "Expand COPY directives and date/time macros into a file.",
+      "arguments": [
+        {
+          "name": "deck_name",
+          "type": "string",
+          "aliases": ["deck", "dn"],
+          "value": "scu$last_modified_deck",
+          "prompt_for_default": false,
+          "description": "Name of the deck to expand.",
+          "completion": "deck"
+        },
+        {
+          "name": "output_file",
+          "type": "string",
+          "aliases": ["o", "output"],
+          "value": "scu$last_modified_deck",
+          "prompt_for_default": false,
+          "description": "Path to write the expanded source.",
+          "completion": "file"
+        }
+      ],
+      "options": [
+        {
+          "name": "build",
+          "type": "boolean",
+          "aliases": ["b"],
+          "value": true,
+          "prompt_for_default": false,
+          "description": "Run the configured build command after writing the expanded file."
+        },
+        {
+          "name": "comment-prefix",
+          "type": "string",
+          "aliases": ["comment_prefix", "cp"],
+          "value": "scu$optional",
+          "description": "Temporarily override the comment prefix for all decks visited in this expansion."
+        },
+        {
+          "name": "revision",
+          "type": "integer",
+          "aliases": ["r"],
+          "value": "scu$optional",
+          "description": "Library-wide snapshot after the specified saved change. Revision 0 is empty.",
+          "completion": "revision"
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "aliases": ["v"],
+          "value": "scu$optional",
+          "description": "Latest snapshot of a named version, including inherited decks.",
+          "completion": "version"
+        }
+      ],
+      "exclusive_options": [["version", "revision"]],
+      "help": "Resolve COPY directives and substitute macros using one library snapshot. The configured build command runs after expansion unless build=no.",
+      "examples": [
+        {
+          "command": "scu expand_deck main.pas release-1.1.pas version=1.1",
+          "description": "Generate compiler input for named version 1.1, resolving COPY from that version."
+        },
+        {
+          "command": "scu expand_deck main.pas before-fix.pas revision=7",
+          "description": "Recreate compiler input from the library snapshot immediately after revision 7."
+        },
+        {
+          "command": "scu expand_deck",
+          "description": "Expand the last modified deck to a file with the same name in the current directory."
+        }
+      ]
+    },
+    {
+      "name": "expand_modified_decks",
+      "aliases": ["expmd"],
+      "summary": "Expand decks changed in a version, with incremental builds for SQLite.",
+      "arguments": [
+        {
+          "name": "version",
+          "type": "string",
+          "aliases": ["v"],
+          "value": "scu$current_library_version",
+          "prompt_for_default": false,
+          "description": "Version whose changed decks to expand.",
+          "completion": "version"
+        },
+        {
+          "name": "output_directory",
+          "type": "string",
+          "aliases": ["directory", "od"],
+          "value": "scu$library_directory",
+          "prompt_for_default": false,
+          "description": "Existing directory for the expanded source files.",
+          "completion": "directory"
+        }
+      ],
+      "options": [
+        {
+          "name": "build",
+          "type": "boolean",
+          "aliases": ["b"],
+          "value": true,
+          "prompt_for_default": false,
+          "description": "Run the configured build command once after writing the batch."
+        },
+        {
+          "name": "comment-prefix",
+          "type": "string",
+          "aliases": ["comment_prefix", "cp"],
+          "value": "scu$optional",
+          "description": "Temporarily override the comment prefix for all decks visited in this expansion."
+        }
+      ],
+      "help": "Expand decks changed in the selected version into an existing directory. By default, use the current library version and the directory containing the library. SQLite expands changes since the checkpoint, including direct and indirect COPY dependents. A successful build advances the checkpoint. With no configured build command, a successful expansion advances it. Save pending SQLite edits before running the batch."
+    },
+    {
+      "name": "export_library",
+      "aliases": ["expl"],
+      "summary": "Export a saved SQLite library and its audit log as JSON.",
+      "arguments": [
+        {
+          "name": "output_file",
+          "type": "string",
+          "aliases": ["o", "output"],
+          "value": "scu$required",
+          "description": "Path for the new JSON library. SCU also writes a sibling .audit file.",
+          "completion": "file"
+        }
+      ],
+      "options": [],
+      "help": "Export the saved SQLite library and its audit chain to a new JSON library and audit file."
+    },
+    {
+      "name": "extract_deck",
+      "aliases": ["extd"],
+      "summary": "Write the original source bytes to a file.",
+      "arguments": [
+        {
+          "name": "deck_name",
+          "type": "string",
+          "aliases": ["deck", "dn"],
+          "value": "scu$last_modified_deck",
+          "prompt_for_default": false,
+          "description": "Name of the deck to extract.",
+          "completion": "deck"
+        },
+        {
+          "name": "output_file",
+          "type": "string",
+          "aliases": ["o", "output"],
+          "value": "scu$last_modified_deck",
+          "prompt_for_default": false,
+          "description": "Path to write the original source bytes.",
+          "completion": "file"
+        }
+      ],
+      "options": [
+        {
+          "name": "revision",
+          "type": "integer",
+          "aliases": ["r"],
+          "value": "scu$optional",
+          "description": "Library-wide snapshot after the specified saved change. Revision 0 is empty.",
+          "completion": "revision"
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "aliases": ["v"],
+          "value": "scu$optional",
+          "description": "Latest snapshot of a named version, including inherited decks.",
+          "completion": "version"
+        }
+      ],
+      "exclusive_options": [["version", "revision"]],
+      "help": "Write the original source, including COPY directives and macro text, to the output file.",
+      "examples": [
+        {
+          "command": "scu extract_deck main.pas release-1.1.pas version=1.1",
+          "description": "Retrieve the source from named version 1.1, such as a locked release."
+        },
+        {
+          "command": "scu extract_deck main.pas before-fix.pas revision=7",
+          "description": "Recover the source as it stood after revision 7, before a fix saved in revision 8."
+        },
+        {
+          "command": "scu extract_deck",
+          "description": "Write the last modified deck's original bytes to a file with the same name in the current directory."
+        }
+      ]
+    },
+    {
+      "name": "extract_modified_decks",
+      "aliases": ["extmd"],
+      "summary": "Extract every deck changed in a version.",
+      "arguments": [
+        {
+          "name": "version",
+          "type": "string",
+          "aliases": ["v"],
+          "value": "scu$required",
+          "description": "Version whose changed decks to extract.",
+          "completion": "version"
+        },
+        {
+          "name": "output_directory",
+          "type": "string",
+          "aliases": ["directory", "od"],
+          "value": "scu$required",
+          "description": "Existing directory for the extracted source files.",
+          "completion": "directory"
+        }
+      ],
+      "options": [],
+      "help": "Write the original source of each deck changed in the selected version to an existing directory."
+    },
+    {
+      "name": "import_library",
+      "aliases": ["impl"],
+      "summary": "Import a JSON library into a new SQLite library.",
+      "arguments": [
+        {
+          "name": "source_file",
+          "type": "string",
+          "aliases": ["s", "source"],
+          "value": "scu$required",
+          "description": "Existing JSON library to import. SCU verifies and imports its .audit file if present.",
+          "completion": "file"
+        }
+      ],
+      "options": [],
+      "help": "Select a new SQLite library as the destination and supply the existing JSON library as source_file."
+    },
+    {
+      "name": "initialize_library",
+      "aliases": ["inil", "init"],
+      "summary": "Create an empty source library.",
+      "arguments": [],
+      "options": [],
+      "help": "Initialize the selected library with an open version 1.0."
+    },
+    {
+      "name": "list_versions",
+      "aliases": ["lisv"],
+      "summary": "List versions and their snapshot boundaries.",
+      "arguments": [],
+      "options": [],
+      "help": "Print the version, lock state, base revision, and end revision."
+    },
+    {
+      "name": "lock_version",
+      "aliases": ["locv"],
+      "summary": "Lock the current version against further changes.",
+      "arguments": [],
+      "options": [],
+      "help": "Lock the current version and prevent further deck changes until a new version is started."
+    },
+    {
+      "name": "quit_session",
+      "aliases": ["q", "quis", "quit"],
+      "summary": "Leave the interactive session.",
+      "arguments": [
+        {
+          "name": "save_library",
+          "type": "boolean",
+          "aliases": ["sl"],
+          "value": true,
+          "prompt_for_default": false,
+          "description": "Save pending changes before quitting. Accepts yes/y or no/n."
+        }
+      ],
+      "options": [],
+      "help": "Exit the interactive session. Pending library changes are saved by default. Use quit save_library=no to discard them."
+    },
+    {
+      "name": "reset_expansion_checkpoint",
+      "aliases": ["resec"],
+      "summary": "Require a full rebuild for one SQLite version and output directory.",
+      "arguments": [
+        {
+          "name": "version",
+          "type": "string",
+          "aliases": ["v"],
+          "value": "scu$required",
+          "description": "Library version of the checkpoint to reset.",
+          "completion": "version"
+        },
+        {
+          "name": "output_directory",
+          "type": "string",
+          "aliases": ["directory", "od"],
+          "value": "scu$required",
+          "description": "Existing output directory of the checkpoint to reset.",
+          "completion": "directory"
+        }
+      ],
+      "options": [],
+      "help": "Mark an existing SQLite checkpoint for a full rebuild. The next expand_modified_decks run for this version and directory expands every deck in the selected snapshot. A successful build clears the reset. With no configured build command, a successful expansion clears it."
+    },
+    {
+      "name": "save_library",
+      "aliases": ["savl"],
+      "summary": "Save pending library changes.",
+      "arguments": [],
+      "options": [],
+      "help": "Save the current library without leaving the session."
+    },
+    {
+      "name": "show_library",
+      "aliases": ["shol"],
+      "summary": "Show the library header as JSON.",
+      "arguments": [],
+      "options": [],
+      "help": "Display the library header, including version history, the editor, and the build command, in JSON."
+    },
+    {
+      "name": "start_version",
+      "aliases": ["stav"],
+      "summary": "Start a higher version after locking the current version.",
+      "arguments": [
+        {
+          "name": "version",
+          "type": "string",
+          "aliases": ["v"],
+          "value": "scu$optional",
+          "description": "New library version. Omit to advance by version_increment."
+        }
+      ],
+      "options": [],
+      "help": "Lock the current version first. Supply a higher version or let SCU apply version_increment."
+    },
+    {
+      "name": "store_deck",
+      "aliases": ["stod"],
+      "summary": "Store source as a new revision of a deck.",
+      "arguments": [
+        {
+          "name": "deck_name",
+          "type": "string",
+          "aliases": ["deck", "dn"],
+          "value": "scu$required",
+          "description": "Name of the deck to create or revise.",
+          "completion": "deck"
+        },
+        {
+          "name": "source_file",
+          "type": "string",
+          "aliases": ["s", "source"],
+          "value": "scu$required",
+          "description": "Path to the source file to store.",
+          "completion": "file"
+        }
+      ],
+      "options": [
+        {
+          "name": "comment-prefix",
+          "type": "string",
+          "aliases": ["comment_prefix", "cp"],
+          "value": "scu$optional",
+          "description": "Comment prefix for the new revision. Omit to keep the deck's prefix or use the version default for a new deck."
+        }
+      ],
+      "help": "Read the source file and append a deck revision to the open version. Set or change the deck's comment prefix with --comment-prefix."
+    },
+    {
+      "name": "verify_audit",
+      "aliases": ["vera"],
+      "summary": "Verify the audit chain and optionally check for a saved head.",
+      "arguments": [],
+      "options": [
+        {
+          "name": "head",
+          "type": "string",
+          "aliases": ["ah"],
+          "value": "scu$optional",
+          "description": "Previously saved SHA-256 digest to look for in the audit chain."
+        }
+      ],
+      "help": "Verify the audit chain. Supply a previously saved SHA-256 head to check that it is still present."
+    }
+  ]
+}
