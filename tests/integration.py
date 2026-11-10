@@ -2558,6 +2558,41 @@ class ScuIntegration(unittest.TestCase):
             os.write(terminal, b"q\t\n")
             self.assertEqual(process.wait(timeout=5), 0)
 
+    def test_tab_completes_a_long_option_after_an_unfilled_required_option(self):
+        self.store("main.pas", b"source")
+        executable = self.root / "scu"
+        shutil.copy2(SCU, executable)
+        definitions = json.loads(SCU.with_name("commands.json").read_bytes())
+        expand = next(command for command in definitions["commands"] if command["name"] == "expand_deck")
+        version = next(option for option in expand["options"] if option["name"] == "version")
+        version["value"] = "scu$required"
+        (self.root / "commands.json").write_text(json.dumps(definitions))
+
+        with self.terminal_session(TERM="xterm", executable=executable) as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"expd main.pas expanded --version --buil\tno\n")
+            read_until(b"version= ")
+            os.write(terminal, b"1.0\n")
+            read_until(b"scu> ")
+            self.assertEqual((self.root / "expanded").read_bytes(), b"source")
+            os.write(terminal, b"quit\n")
+            self.assertEqual(process.wait(timeout=5), 0)
+        events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
+        attempt = next(event for event in events if event.get("command") == "expand_deck")
+        self.assertEqual(attempt["options"], {"build": "no", "version": "1.0"})
+
+    def test_tab_skips_a_positional_argument_with_an_empty_quoted_value_after_the_cursor(self):
+        self.store("main", b"source")
+        prefix, tail = b"extd main ", b' ""'
+        with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, prefix + tail + b"\x02" * len(tail) + b"\t\t")
+            matches = read_until(b"scu> " + prefix + tail)
+            self.assertIn(b"revision", matches)
+            self.assertNotIn(b"output_file", matches)
+            os.write(terminal, b"\x05\x15quit\n")
+            self.assertEqual(process.wait(timeout=5), 0)
+
     def test_terminal_tab_completion_lists_aligned_columns(self):
         self.store("main", b"source")
         names = ("pick-a", "pick-bb", "pick-cc", "pick-zzz", "pick-界", "pick-語")

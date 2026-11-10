@@ -18,7 +18,7 @@ function ReadTerminalLine(const Prompt: string; History: TStrings; Completion: T
 implementation
 
 uses
-  SysUtils, BaseUnix, Linux, InitC, Termio, Math, ScuTerminal, ScuIO;
+  SysUtils, BaseUnix, Linux, InitC, Termio, Math, ScuTerminal, ScuIO, ScuTokenizer;
 
 const
   CSI = #27'[';
@@ -159,30 +159,6 @@ begin
       Result[Index] := '?';
       Delete(Result, Index + 1, 1);
     end;
-end;
-
-function CompletionStart(const Text: string; Ending: SizeInt): SizeInt;
-var
-  Index: SizeInt;
-  Quote, Current: Char;
-begin
-  Result := 0;
-  Index := 1;
-  Quote := #0;
-  while Index <= Ending do
-  begin
-    Current := Text[Index];
-    if (Quote = #0) and (Current in [' ', #9]) then
-      Result := Index
-    else if (Quote = #0) and (Current in ['"', #39]) then
-      Quote := Current
-    else if Current = Quote then
-      Quote := #0
-    else if (Current = '\') and ((Quote = #0) or ((Quote = '"') and
-      (Index < Ending) and (Text[Index + 1] in ['\', '"']))) then
-      Inc(Index);
-    Inc(Index);
-  end;
 end;
 
 function EditorColumns: SizeInt;
