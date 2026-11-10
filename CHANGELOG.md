@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Cancel library lock waits on Ctrl+C before the command runs, and report nested COPY cancellation once.
 - Add `recover_library` to restore full or pending-only recovery files into a new SQLite library.
 - Scan past ordinary source bytes and compare macro tokens in place during expansion.
 - Persist the audit head and count in SQLite to keep routine audit appends fast as history grows.

@@ -2048,6 +2048,61 @@ class ScuIntegration(unittest.TestCase):
             self.assertEqual(process.wait(timeout=5), 0)
         self.assertIn("records=4", self.run_scu("verify_audit"))
 
+    def test_ctrl_c_cancels_library_lock_wait_before_locking_version(self):
+        lock_path = self.library.with_suffix(".sqlite.lock")
+        with self.terminal_session(TERM="dumb", controlling=True) as (process, terminal, read_until):
+            read_until(b"scu> ")
+            before = self.audit_lines()
+            with lock_path.open("rb") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                os.write(terminal, b"lock_version\n")
+                descriptors = Path(f"/proc/{process.pid}/fd")
+                deadline = time.monotonic() + 5
+                while not any(fd.resolve() == lock_path for fd in descriptors.iterdir()):
+                    self.assertLess(time.monotonic(), deadline, "SCU did not open the held lock")
+                    time.sleep(0.01)
+                os.write(terminal, b"\x03")
+                response = read_until(b"scu> ")
+                self.assertEqual(response.count(b"Command cancelled."), 1, response)
+                self.assertNotIn(b"Locked version", response)
+                self.assertEqual(self.audit_lines(), before)
+            os.write(terminal, b"list_versions\n")
+            self.assertIn(b"1.0\topen", read_until(b"scu> "))
+            os.write(terminal, b"quit\n")
+            self.assertEqual(process.wait(timeout=5), 0)
+
+    def test_ctrl_c_during_nested_copy_is_reported_once(self):
+        self.store("leaf", b"ordinary source line\n" * 2_000_000)
+        self.store("middle", b"//SCU_COPY leaf\n")
+        self.store("main", b"//SCU_COPY middle\n")
+        destination = self.root / "expanded"
+        destination.write_bytes(b"existing output")
+        with self.terminal_session(TERM="dumb", controlling=True) as (process, terminal, read_until):
+            read_until(b"scu> ")
+            scheduler_stats = Path(f"/proc/{process.pid}/schedstat")
+            cpu_before = int(scheduler_stats.read_text().split()[0])
+            os.write(terminal, b"expand_deck main expanded build=no\n")
+            # The wrappers contain only COPY. Let the process enter the large leaf
+            # before signalling it, even if the runner is busy scheduling other tasks.
+            deadline = time.monotonic() + 5
+            while int(scheduler_stats.read_text().split()[0]) - cpu_before < 40_000_000:
+                self.assertLess(time.monotonic(), deadline, "SCU did not reach the nested expansion")
+                time.sleep(0.005)
+            os.write(terminal, b"\x03")
+            response = read_until(b"scu> ")
+            self.assertEqual(response.count(b"Command cancelled."), 1, response)
+            self.assertIn(b"Command cancelled.", response.replace(b"^C", b"").splitlines())
+            os.write(terminal, b"list_versions\n")
+            self.assertIn(b"1.0\topen", read_until(b"scu> "))
+            os.write(terminal, b"quit\n")
+            self.assertEqual(process.wait(timeout=5), 0)
+        self.assertEqual(destination.read_bytes(), b"existing output")
+        events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
+        begin = next(i for i, event in enumerate(events) if event.get("command") == "expand_deck")
+        self.assertFalse(events[begin + 1]["success"])
+        self.assertEqual(events[begin + 1]["detail"], "Command cancelled.")
+        self.assertIn("interrupted=0", self.run_scu("verify_audit_trail"))
+
     def test_review_interrupt_during_build_preserves_pending_changes(self):
         self.store("main", b"source")
         self.run_scu("conl", "bc=echo build-started; sleep 30")

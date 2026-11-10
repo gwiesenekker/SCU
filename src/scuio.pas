@@ -10,12 +10,14 @@ uses
 type
   EScuError = class(Exception);
   TStopLockWait = function: Boolean;
+  TCheckLockInterrupt = procedure;
 
   TLibraryLock = class
   private
     FHandle: THandle;
   public
-    constructor Create(const Path: string; StopWaiting: TStopLockWait = nil);
+    constructor Create(const Path: string; StopWaiting: TStopLockWait = nil;
+      CheckInterrupt: TCheckLockInterrupt = nil);
     constructor CreateForDirectory(const Path: string);
     destructor Destroy; override;
   end;
@@ -85,7 +87,8 @@ begin
   Result := StrPas(@Resolved[0]);
 end;
 
-constructor TLibraryLock.Create(const Path: string; StopWaiting: TStopLockWait);
+constructor TLibraryLock.Create(const Path: string; StopWaiting: TStopLockWait;
+  CheckInterrupt: TCheckLockInterrupt);
 var
   Flags, Error: cint;
   Info: Stat;
@@ -97,19 +100,24 @@ begin
   if (fpFStat(FHandle, Info) <> 0) or not FPS_ISREG(Info.st_mode) then
     raise EScuError.Create('Expected a regular library lock file.');
   Flags := LOCK_EX;
-  if Assigned(StopWaiting) then
+  if Assigned(StopWaiting) or Assigned(CheckInterrupt) then
     Flags := Flags or LOCK_NB;
-  while fpFlock(FHandle, Flags) <> 0 do
-  begin
+  repeat
+    if Assigned(CheckInterrupt) then
+      CheckInterrupt();
+    if fpFlock(FHandle, Flags) = 0 then
+      Break;
     Error := fpGetErrNo;
     if Error = ESysEINTR then
       Continue;
-    if not Assigned(StopWaiting) or (Error <> ESysEWOULDBLOCK) then
+    if (Flags = LOCK_EX) or (Error <> ESysEWOULDBLOCK) then
       RaiseLastOSError(Error);
-    if StopWaiting() then
+    if Assigned(StopWaiting) and StopWaiting() then
       raise EScuError.CreateFmt('Library lock %s is busy during shutdown.', [Path]);
     Sleep(20);
-  end;
+  until False;
+  if Assigned(CheckInterrupt) then
+    CheckInterrupt();
 end;
 
 constructor TLibraryLock.CreateForDirectory(const Path: string);

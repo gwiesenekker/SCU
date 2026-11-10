@@ -483,6 +483,7 @@ begin
   end;
 
   try
+    // Record the build outcome even when the build was interrupted.
     Lock := TLibraryLock.Create(FLibraryPath + '.lock', @SessionEnding);
     try
       Database := nil;
@@ -598,7 +599,7 @@ begin
   LibraryFile := nil;
   Committed := False;
   try
-    Lock := TLibraryLock.Create(FLibraryPath + '.lock', @SessionEnding);
+    Lock := TLibraryLock.Create(FLibraryPath + '.lock', @SessionEnding, @CheckSessionInterrupt);
     Checkpoint := Command.Option('head');
     if (Command.HasOption('head')) and not IsHexDigest(Checkpoint, 64) then
       raise EScuError.Create('Expected a lowercase SHA-256 audit head.');

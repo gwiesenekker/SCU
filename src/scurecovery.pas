@@ -133,7 +133,7 @@ var
   Snapshots: TAuditSnapshots;
   Stream: TFileStream;
 begin
-  Lock := TLibraryLock.Create(Destination + '.lock', @SessionEnding);
+  Lock := TLibraryLock.Create(Destination + '.lock', @SessionEnding, @CheckSessionInterrupt);
   try
     if RegularFileExists(Destination) then
       raise EScuError.Create('Choose a new library path for recovery. The destination already exists.');

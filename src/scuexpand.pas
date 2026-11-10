@@ -215,6 +215,8 @@ begin
               not (PChar(FOutput.Memory)[FOutput.Size - 1] in [#10, #13]) then
               Append(Ending);
           except
+            on E: ECommandCancelled do
+              raise;
             on E: EScuError do
               raise EScuError.CreateFmt('%s:%d: %s', [Name, LineNo, E.Message]);
           end;
