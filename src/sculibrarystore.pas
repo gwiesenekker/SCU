@@ -67,9 +67,7 @@ begin
     try
       if not Assigned(Database) then
       begin
-        Reader := TSQLiteLibrary.Create(Path, False, True);
-        Reader.BeginTransaction(True);
-        Reader.EnsureSchema(False);
+        Reader := TSQLiteLibrary.OpenRead(Path);
         Database := Reader;
       end;
       FSavedState := Database.StateKey;
@@ -346,9 +344,7 @@ begin
   Reader := nil;
   try
     try
-      Reader := TSQLiteLibrary.Create(FPath, False, True);
-      Reader.BeginTransaction(True);
-      Reader.EnsureSchema(False);
+      Reader := TSQLiteLibrary.OpenRead(FPath);
       State := Reader.StateKey;
       if Copy(State, 1, Pos(':', State)) = Copy(FSavedState, 1, Pos(':', FSavedState)) then
         Exit(ExportJSON(Reader));

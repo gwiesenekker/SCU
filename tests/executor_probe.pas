@@ -34,10 +34,8 @@ var
   Store: TLibraryStore;
   Entry: TLibraryRevision;
 begin
-  Database := TSQLiteLibrary.Create(Path, False, True);
+  Database := TSQLiteLibrary.OpenRead(Path);
   try
-    Database.BeginTransaction(True);
-    Database.EnsureSchema(False);
     Store := TLibraryStore.Create(Path, '', Database);
     try
       Entry := Store[0];

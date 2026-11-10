@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Use named SQLite open factories to start transactions and check schemas consistently.
 - Identify the affected setting, file, or operation in JSON, filesystem, and conversion errors while preserving Ctrl+C cancellation.
 - Use typed library headers, versions, and revision entries with stable ownership and audit-compatible serialization.
 - Load and validate the command catalog at startup and share typed definitions across parsing, completion, and help.

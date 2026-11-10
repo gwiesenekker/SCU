@@ -63,10 +63,8 @@ var
       // Record the build outcome even when the build was interrupted.
       Lock := TLibraryLock.Create(FLibraryPath + '.lock', @SessionEnding);
       try
-        Database := TSQLiteLibrary.Create(FLibraryPath, False, False);
+        Database := TSQLiteLibrary.OpenWrite(FLibraryPath);
         try
-          Database.BeginTransaction(False);
-          Database.EnsureSchema(False);
           Audit := TAuditLog.Create(Database, Expansion);
           try
             if (Failure = '') and (Build.Checkpoint.Version <> '') then
@@ -149,10 +147,8 @@ begin
       TempDir := MakeTempDirectory('scu-restore');
       TempFile := IncludeTrailingPathDelimiter(TempDir) + 'library.sqlite';
       try
-        Context.Database := TSQLiteLibrary.Create(TempFile, True, False);
+        Context.Database := TSQLiteLibrary.OpenForInitialization(TempFile);
         try
-          Context.Database.BeginTransaction(False);
-          Context.Database.EnsureSchema(True);
           Context.LibraryFile := TDeckLibrary.CreateRecovered(Document);
           try
             Audit := TAuditLog.Create(Context.Database);
@@ -226,7 +222,7 @@ var
   Lock: TLibraryLock;
   Audit: TAuditLog;
   Command: TScuCommand;
-  LibraryExists, Initializing, ReadOnly, Committed, PendingSave: Boolean;
+  LibraryExists, Initializing, Committed, PendingSave: Boolean;
   Checkpoint, Detail, Expansion: string;
 
   procedure RaiseMissingLibrary;
@@ -242,7 +238,6 @@ begin
   FLibraryPath := CanonicalFile(FLibraryPath);
   Context.LibraryPath := FLibraryPath;
   Initializing := Handler.Mode = cmInitialize;
-  ReadOnly := Handler.Mode in [cmHistory, cmVerifyAudit];
   Audit := nil;
   Committed := False;
   Lock := TLibraryLock.Create(FLibraryPath + '.lock', @SessionEnding, @CheckSessionInterrupt);
@@ -252,9 +247,12 @@ begin
       raise EScuError.Create('Expected a lowercase SHA-256 audit head.');
     if not RegularFileExists(FLibraryPath) and not Initializing then
       RaiseMissingLibrary;
-    Context.Database := TSQLiteLibrary.Create(FLibraryPath, Initializing, ReadOnly);
-    Context.Database.BeginTransaction(ReadOnly);
-    Context.Database.EnsureSchema(Initializing);
+    if Initializing then
+      Context.Database := TSQLiteLibrary.OpenForInitialization(FLibraryPath)
+    else if Handler.Mode in [cmHistory, cmVerifyAudit] then
+      Context.Database := TSQLiteLibrary.OpenRead(FLibraryPath)
+    else
+      Context.Database := TSQLiteLibrary.OpenWrite(FLibraryPath);
     LibraryExists := Context.Database.StateKey <> '';
     if Handler.Mode = cmHistory then
     begin
@@ -284,7 +282,7 @@ begin
       // Output files cannot roll back with SQLite. Commit checkpoint
       // invalidation before the handler writes any files.
       Context.Database.Commit;
-      Context.Database.BeginTransaction(False);
+      Context.Database.BeginTransaction;
       FreeAndNil(Audit);
       Audit := TAuditLog.Create(Context.Database, Checkpoint);
     end;

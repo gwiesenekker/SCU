@@ -17,24 +17,31 @@ type
   end;
 
   TSQLiteLibrary = class
+  private type
+    TOpenMode = (omRead, omWrite, omInitialize);
   private
     FHandle: psqlite3;
     FPath: string;
     FReadOnly: Boolean;
     FSchemaVersion: Integer;
+    class function OpenTransaction(const Path: string; Mode: TOpenMode): TSQLiteLibrary; static;
+    procedure OpenConnection(const Path: string; Mode: TOpenMode);
     procedure Check(Status: cint; const Operation: string);
+    procedure EnsureSchema(AllowCreate: Boolean);
     function Scalar(const SQL: RawByteString): RawByteString;
     function GetCurrentVersion: string;
     procedure CreateExpansionCheckpoints;
     procedure CreateAuditState;
     procedure CreateCopyMetadata;
   public
-    constructor Create(const Path: string; AllowCreate, ReadOnly: Boolean);
+    // Each factory returns a connection with an active transaction.
+    class function OpenRead(const Path: string): TSQLiteLibrary; static;
+    class function OpenWrite(const Path: string): TSQLiteLibrary; static;
+    class function OpenForInitialization(const Path: string): TSQLiteLibrary; static;
     destructor Destroy; override;
     procedure Execute(const SQL: RawByteString);
-    procedure BeginTransaction(ReadOnly: Boolean);
+    procedure BeginTransaction;
     procedure Commit;
-    procedure EnsureSchema(AllowCreate: Boolean);
     function StateKey: string;
     function RevisionCount: Integer;
     function ReadMetadata: TJSONObject;
@@ -169,18 +176,45 @@ begin
   Result := sqlite3_column_type(FHandle, Index) = SQLITE_NULL;
 end;
 
-constructor TSQLiteLibrary.Create(const Path: string; AllowCreate, ReadOnly: Boolean);
+class function TSQLiteLibrary.OpenRead(const Path: string): TSQLiteLibrary;
+begin
+  Result := OpenTransaction(Path, omRead);
+end;
+
+class function TSQLiteLibrary.OpenWrite(const Path: string): TSQLiteLibrary;
+begin
+  Result := OpenTransaction(Path, omWrite);
+end;
+
+class function TSQLiteLibrary.OpenForInitialization(const Path: string): TSQLiteLibrary;
+begin
+  Result := OpenTransaction(Path, omInitialize);
+end;
+
+class function TSQLiteLibrary.OpenTransaction(const Path: string; Mode: TOpenMode): TSQLiteLibrary;
+begin
+  Result := TSQLiteLibrary.Create;
+  try
+    Result.OpenConnection(Path, Mode);
+    Result.BeginTransaction;
+    Result.EnsureSchema(Mode = omInitialize);
+  except
+    Result.Free;
+    raise;
+  end;
+end;
+
+procedure TSQLiteLibrary.OpenConnection(const Path: string; Mode: TOpenMode);
 var
   Flags, Handle, OpenStatus: cint;
 begin
-  inherited Create;
   FPath := Path;
-  FReadOnly := ReadOnly;
-  if ReadOnly then
+  FReadOnly := Mode = omRead;
+  if FReadOnly then
     Flags := SQLITE_OPEN_READONLY
   else
     Flags := SQLITE_OPEN_READWRITE;
-  if AllowCreate then
+  if Mode = omInitialize then
   begin
     if not RegularFileExists(Path) then
     begin
@@ -195,7 +229,7 @@ begin
   OpenStatus := sqlite3_open_v2(PAnsiChar(Path), @FHandle, Flags, nil);
   Check(OpenStatus, 'opening the database');
   Check(sqlite3_busy_timeout(FHandle, 5000), 'setting the busy timeout');
-  if not ReadOnly then
+  if not FReadOnly then
     Execute('PRAGMA synchronous = FULL');
 end;
 
@@ -211,9 +245,9 @@ begin
   Check(sqlite3_exec(FHandle, PAnsiChar(SQL), nil, nil, nil), 'executing SQL');
 end;
 
-procedure TSQLiteLibrary.BeginTransaction(ReadOnly: Boolean);
+procedure TSQLiteLibrary.BeginTransaction;
 begin
-  if ReadOnly then
+  if FReadOnly then
     Execute('BEGIN')
   else
     Execute('BEGIN IMMEDIATE');

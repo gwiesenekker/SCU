@@ -58,9 +58,7 @@ begin
     begin
       if not RegularFileExists(BasePath) then
         raise EScuError.CreateFmt('Base library "%s" does not exist.', [BasePath]);
-      Base := TSQLiteLibrary.Create(BasePath, False, True);
-      Base.BeginTransaction(True);
-      Base.EnsureSchema(False);
+      Base := TSQLiteLibrary.OpenRead(BasePath);
       State := Base.StateKey;
       if (State = '') or (Assigned(Recovery.Find('base_library_state')) and
         (Field(Recovery, 'base_library_state', jtString).AsString <> State)) then
