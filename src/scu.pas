@@ -3,7 +3,7 @@ program Scu;
 {$mode objfpc}{$H+}
 
 uses
-  SysUtils, BaseUnix, ScuCLI, ScuIO;
+  SysUtils, BaseUnix, ScuCLI, ScuOutput;
 
 var
   CLI: TScuCLI;

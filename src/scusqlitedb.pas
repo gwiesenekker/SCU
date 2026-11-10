@@ -53,7 +53,7 @@ type
 implementation
 
 uses
-  SysUtils, BaseUnix, Linux, ScuIO;
+  SysUtils, BaseUnix, Linux, ScuErrors, ScuFiles;
 
 procedure TSQLiteConnection.OpenConnection(const Path: string; OpenReadOnly, AllowCreate: Boolean);
 var

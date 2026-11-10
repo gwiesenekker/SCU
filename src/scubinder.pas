@@ -53,7 +53,7 @@ type
 implementation
 
 uses
-  Classes, ScuIO;
+  Classes, ScuErrors;
 
 constructor TCommandBinder.Create(Spec: TCommandDefinition; Mode: TBindingMode);
 begin

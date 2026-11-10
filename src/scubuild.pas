@@ -12,7 +12,7 @@ function RunBuildProcess(const Build: TBuildRequest; Interactive: Boolean; Outpu
 implementation
 
 uses
-  SysUtils, BaseUnix, Process, ScuIO, ScuOutputLock, ScuSignals;
+  SysUtils, BaseUnix, Process, ScuErrors, ScuOutputLock, ScuSignals;
 
 type
   TBuildProcess = class(TProcess)

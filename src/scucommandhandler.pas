@@ -52,7 +52,7 @@ procedure ReportSnapshot(const Context: TCommandContext);
 implementation
 
 uses
-  SysUtils, ScuIO, ScuVersions;
+  SysUtils, ScuErrors, ScuVersions;
 
 function PrefixOption(Command: TScuCommand): string;
 begin

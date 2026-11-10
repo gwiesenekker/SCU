@@ -45,7 +45,7 @@ procedure ValidateCommentPrefix(const Prefix: string);
 implementation
 
 uses
-  SysUtils, ScuIO, ScuJSON, ScuVersionNumbers;
+  SysUtils, ScuErrors, ScuJSON, ScuVersionNumbers;
 
 procedure ValidateCommentPrefix(const Prefix: string);
 var

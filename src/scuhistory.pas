@@ -17,7 +17,7 @@ procedure SaveHistoryCommand(const Path, Line: string);
 implementation
 
 uses
-  SysUtils, BaseUnix, ScuIO, ScuJSON;
+  SysUtils, BaseUnix, ScuErrors, ScuFiles, ScuLocks, ScuJSON;
 
 const
   MaxSavedCommandSize = 64 * 1024;

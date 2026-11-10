@@ -5,10 +5,9 @@ unit ScuLineEditor;
 interface
 
 uses
-  Classes, ScuSignals;
+  Classes;
 
 type
-  ECommandCancelled = ScuSignals.ECommandCancelled;
   TCommandCompletion = procedure(const Before, Prefix, After: string; Candidates: TStrings;
     out AppendCharacter: Char) of object;
 
@@ -18,7 +17,7 @@ function ReadTerminalLine(const Prompt: string; History: TStrings; Completion: T
 implementation
 
 uses
-  SysUtils, BaseUnix, Linux, InitC, Termio, Math, ScuTerminal, ScuIO, ScuTokenizer;
+  SysUtils, BaseUnix, Linux, InitC, Termio, Math, ScuTerminal, ScuErrors, ScuOutput, ScuSignals, ScuTokenizer;
 
 const
   CSI = #27'[';

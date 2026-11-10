@@ -5,13 +5,12 @@ unit ScuSignals;
 interface
 
 uses
-  BaseUnix, Process, ScuIO;
+  BaseUnix, Process;
 
 const
   SessionSignals: array[0..3] of cint = (SIGINT, SIGHUP, SIGTERM, SIGQUIT);
 
 type
-  ECommandCancelled = class(EScuError);
   TSessionSignalHandlers = array[Low(SessionSignals)..High(SessionSignals)] of SigActionRec;
 
 var
@@ -29,7 +28,7 @@ function WaitForChild(Child: TProcess; OwnProcessGroup: Boolean = False;
 implementation
 
 uses
-  SysUtils, Unix, Termio, InitC;
+  SysUtils, Unix, Termio, InitC, ScuErrors;
 
 var
   ChildOwnsInterrupt: Boolean;

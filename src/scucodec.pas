@@ -16,7 +16,7 @@ function DecodeDeck(const Encoded, Digest: string; Size: Int64): RawByteString;
 implementation
 
 uses
-  SysUtils, CTypes, Base64, SHA1, Dynlibs, ScuIO;
+  SysUtils, CTypes, Base64, SHA1, Dynlibs, ScuErrors;
 
 function ZSTD_compressBound(SourceSize: csize_t): csize_t; cdecl; external 'zstd';
 function ZSTD_compress(Dest: Pointer; Capacity: csize_t; Source: Pointer;

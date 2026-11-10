@@ -54,7 +54,7 @@ function FormatAuditCommand(const Payload: RawByteString): string;
 implementation
 
 uses
-  SysUtils, BaseUnix, ScuCodec, ScuIO, ScuJSON;
+  SysUtils, BaseUnix, ScuCodec, ScuClock, ScuErrors, ScuJSON;
 
 const
   HashLength = 64;

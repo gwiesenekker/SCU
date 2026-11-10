@@ -33,7 +33,7 @@ type
 implementation
 
 uses
-  SysUtils, ScuIO, ScuJSON;
+  SysUtils, ScuErrors, ScuJSON;
 
 constructor TSQLiteRevisionStore.Create(Database: TSQLiteConnection; SchemaVersion: Integer);
 begin

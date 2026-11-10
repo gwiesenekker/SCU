@@ -12,7 +12,7 @@ function ReadRecovery(Command: TScuCommand): TJSONObject;
 implementation
 
 uses
-  SysUtils, ScuIO, ScuJSON, ScuSignals, ScuSQLite;
+  SysUtils, ScuErrors, ScuFiles, ScuJSON, ScuSignals, ScuSQLite;
 
 procedure CheckBaseHistory(BaseHeader, RecoveryHeader: TJSONObject);
 var

@@ -79,7 +79,7 @@ function DeckName(const Name: string): string;
 implementation
 
 uses
-  SysUtils, DateUtils, ScuCodec, ScuCopyMetadata, ScuIO, ScuJSON, ScuVersionNumbers;
+  SysUtils, DateUtils, ScuCodec, ScuCopyMetadata, ScuClock, ScuErrors, ScuJSON, ScuVersionNumbers;
 
 const
   DefaultVersionIncrement = '0.01';

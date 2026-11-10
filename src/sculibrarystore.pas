@@ -47,7 +47,7 @@ type
 implementation
 
 uses
-  SysUtils, FGL, ScuCodec, ScuCopyMetadata, ScuIO, ScuJSON, ScuSignals, ScuVersionNumbers;
+  SysUtils, FGL, ScuCodec, ScuCopyMetadata, ScuErrors, ScuJSON, ScuSignals, ScuVersionNumbers;
 
 type
   TDeckRevisionMap = specialize TFPGMap<string, Integer>;

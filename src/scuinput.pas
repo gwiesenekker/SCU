@@ -8,7 +8,6 @@ uses
   Classes, ScuLineEditor;
 
 type
-  ECommandCancelled = ScuLineEditor.ECommandCancelled;
   TCommandCompletion = ScuLineEditor.TCommandCompletion;
 
 function ReadCommandLine(const Prompt: string; out Line: string;

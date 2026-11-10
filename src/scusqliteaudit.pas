@@ -35,7 +35,7 @@ type
 implementation
 
 uses
-  ScuIO;
+  ScuErrors;
 
 constructor TSQLiteAuditStore.Create(Database: TSQLiteConnection; SchemaVersion: Integer);
 begin

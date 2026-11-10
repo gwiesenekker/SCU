@@ -32,7 +32,7 @@ implementation
 
 uses
   Classes, SysUtils, BaseUnix, FPJSON, ScuAudit, ScuBuild, ScuCodec, ScuCommandRegistry,
-  ScuIO, ScuOutputLock, ScuRecovery, ScuSignals, ScuSQLite;
+  ScuErrors, ScuFiles, ScuLocks, ScuOutputLock, ScuRecovery, ScuSignals, ScuSQLite;
 
 constructor TScuExecutor.Create(const LibraryPath: string; Interactive: Boolean; Output: TScuOutput);
 begin

@@ -37,7 +37,7 @@ type
 implementation
 
 uses
-  SysUtils, BaseUnix, ScuBinder, ScuHelp, ScuInput, ScuIO,
+  SysUtils, BaseUnix, ScuBinder, ScuHelp, ScuInput, ScuErrors,
   ScuSignals, ScuTerminal, ScuTokenizer, Termio;
 
 function CommandFile: string;

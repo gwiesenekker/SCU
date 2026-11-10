@@ -15,7 +15,7 @@ procedure RenderCommandHelp(Spec: TCommandDefinition; const CatalogDirectory: st
 implementation
 
 uses
-  Classes, SysUtils, ScuIO, ScuTerminal;
+  Classes, SysUtils, ScuFiles, ScuTerminal;
 
 function AliasText(Entry: TNamedDefinition): string;
 var

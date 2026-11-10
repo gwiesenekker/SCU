@@ -21,7 +21,7 @@ function ResetExpansionCheckpoint(var Context: TCommandContext): string;
 implementation
 
 uses
-  Classes, SysUtils, FPJSON, ScuCommands, ScuExpand, ScuIO, ScuLibrary, ScuSignals, ScuSQLiteCheckpoint;
+  Classes, SysUtils, FPJSON, ScuCommands, ScuExpand, ScuErrors, ScuFiles, ScuLibrary, ScuSignals, ScuSQLiteCheckpoint;
 
 const
   CurrentLibraryVersionSelector = 'scu$current_library_version';

@@ -24,7 +24,7 @@ function EscapeSuffix(const Suffix: string; Quote: Char): string;
 implementation
 
 uses
-  ScuIO;
+  ScuErrors;
 
 function EscapesInDoubleQuote(Character: Char): Boolean;
 begin

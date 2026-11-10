@@ -22,7 +22,7 @@ function ShowHistory(var Context: TCommandContext): string;
 implementation
 
 uses
-  Classes, SysUtils, FPJSON, ScuAudit, ScuCommands, ScuIO, ScuJSON, ScuLibrary, ScuOutput;
+  Classes, SysUtils, FPJSON, ScuAudit, ScuCommands, ScuErrors, ScuJSON, ScuLibrary, ScuOutput;
 
 function InitializeLibrary(var Context: TCommandContext): string;
 begin

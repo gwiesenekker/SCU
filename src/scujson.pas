@@ -15,7 +15,7 @@ function IntegerField(Obj: TJSONObject; const Name: string; const Source: string
 implementation
 
 uses
-  Classes, SysUtils, JSONParser, JSONScanner, ScuIO;
+  Classes, SysUtils, JSONParser, JSONScanner, ScuErrors;
 
 function InSource(const Message, Source: string): string;
 begin

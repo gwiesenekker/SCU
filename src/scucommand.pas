@@ -52,7 +52,7 @@ function IsSessionExit(const Name: string): Boolean;
 implementation
 
 uses
-  SysUtils, ScuIO;
+  SysUtils, ScuErrors;
 
 function IsSessionExit(const Name: string): Boolean;
 begin

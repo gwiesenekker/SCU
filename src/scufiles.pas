@@ -1,4 +1,4 @@
-unit ScuIO;
+unit ScuFiles;
 
 {$mode objfpc}{$H+}
 
@@ -6,20 +6,6 @@ interface
 
 uses
   Classes, SysUtils;
-
-type
-  EScuError = class(Exception);
-  TStopLockWait = function: Boolean;
-  TCheckLockInterrupt = procedure;
-
-  TLibraryLock = class
-  private
-    FHandle: THandle;
-  public
-    constructor Create(const Path: string; StopWaiting: TStopLockWait = nil;
-      CheckInterrupt: TCheckLockInterrupt = nil);
-    destructor Destroy; override;
-  end;
 
 function CanonicalFile(const Path: string): string;
 function CanonicalDirectory(const Path: string): string;
@@ -32,35 +18,11 @@ procedure AtomicWrite(const Path: string; Data: TStream; ReplaceExisting: Boolea
 function MakeTempDirectory(const Prefix: string): string;
 procedure SyncFile(Handle: THandle; const Path: string);
 procedure SyncParent(const Path: string);
-procedure RaiseSystemError(const Action: string; ErrorCode: Integer);
-function UtcNow: TDateTime;
-function UtcTimestamp(Value: TDateTime): string;
-procedure WriteDiagnostic(const Message: string);
 
 implementation
 
 uses
-  BaseUnix, Unix, DateUtils, InitC, Linux;
-
-type
-  EScuSystemError = class(EScuError);
-
-procedure RaiseSystemError(const Action: string; ErrorCode: Integer);
-begin
-  raise EScuSystemError.CreateFmt('%s: %s', [Action, SysErrorMessage(ErrorCode)]);
-end;
-
-procedure WriteDiagnostic(const Message: string);
-begin
-  {$push}{$I-}
-  WriteLn(StdErr, Message);
-  if IOResult = 0 then
-  begin
-    Flush(StdErr);
-    IOResult;
-  end;
-  {$pop}
-end;
+  BaseUnix, Unix, InitC, Linux, ScuErrors;
 
 function realpath(Path, Resolved: PChar): PChar; cdecl; external 'c';
 function mkstemp(Template: PChar): LongInt; cdecl; external 'c';
@@ -93,48 +55,6 @@ begin
   if realpath(PChar(Path), @Resolved[0]) = nil then
     raise EScuError.CreateFmt('Could not resolve directory %s: %s', [Path, SysErrorMessage(cerrno)]);
   Result := StrPas(@Resolved[0]);
-end;
-
-constructor TLibraryLock.Create(const Path: string; StopWaiting: TStopLockWait;
-  CheckInterrupt: TCheckLockInterrupt);
-var
-  Flags, Error: cint;
-  Info: Stat;
-begin
-  inherited Create;
-  FHandle := fpOpen(Path, O_RDWR or O_CREAT or O_NOFOLLOW or O_CLOEXEC, &600);
-  if FHandle < 0 then
-    RaiseSystemError('Could not open lock file "' + Path + '"', fpGetErrNo);
-  if fpFStat(FHandle, Info) <> 0 then
-    RaiseSystemError('Could not inspect lock file "' + Path + '"', fpGetErrNo);
-  if not FPS_ISREG(Info.st_mode) then
-    raise EScuError.CreateFmt('Expected a regular lock file at "%s".', [Path]);
-  Flags := LOCK_EX;
-  if Assigned(StopWaiting) or Assigned(CheckInterrupt) then
-    Flags := Flags or LOCK_NB;
-  repeat
-    if Assigned(CheckInterrupt) then
-      CheckInterrupt();
-    if fpFlock(FHandle, Flags) = 0 then
-      Break;
-    Error := fpGetErrNo;
-    if Error = ESysEINTR then
-      Continue;
-    if (Flags = LOCK_EX) or (Error <> ESysEWOULDBLOCK) then
-      RaiseSystemError('Could not acquire lock "' + Path + '"', Error);
-    if Assigned(StopWaiting) and StopWaiting() then
-      raise EScuError.CreateFmt('Library lock %s is busy during shutdown.', [Path]);
-    Sleep(20);
-  until False;
-  if Assigned(CheckInterrupt) then
-    CheckInterrupt();
-end;
-
-destructor TLibraryLock.Destroy;
-begin
-  if FHandle >= 0 then
-    fpClose(FHandle);
-  inherited Destroy;
 end;
 
 function RegularFileExists(const Path: string): Boolean;
@@ -288,20 +208,6 @@ begin
   finally
     Stream.Free;
   end;
-end;
-
-function UtcNow: TDateTime;
-var
-  Time: TTimeVal;
-begin
-  if fpGetTimeOfDay(@Time, nil) <> 0 then
-    RaiseSystemError('Could not read the system clock', fpGetErrNo);
-  Result := UnixToDateTime(Time.tv_sec) + Time.tv_usec / 86400000000.0;
-end;
-
-function UtcTimestamp(Value: TDateTime): string;
-begin
-  Result := FormatDateTime('yyyy"-"mm"-"dd"T"hh":"nn":"ss"."zzz"Z"', Value);
 end;
 
 end.

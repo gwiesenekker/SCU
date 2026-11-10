@@ -17,7 +17,7 @@ function DiffDeck(var Context: TCommandContext): string;
 implementation
 
 uses
-  Classes, SysUtils, ScuCodec, ScuDiff, ScuEdit, ScuIO, ScuLibrary, ScuVersions;
+  Classes, SysUtils, ScuCodec, ScuDiff, ScuEdit, ScuFiles, ScuLibrary, ScuVersions;
 
 function DeckWriteReport(LibraryFile: TDeckLibrary; const Deck: string; StoredRevision: Integer): string;
 begin

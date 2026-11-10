@@ -12,7 +12,7 @@ function EnsureLibrarySchema(Database: TSQLiteConnection; AllowCreate: Boolean):
 implementation
 
 uses
-  SysUtils, ScuIO;
+  SysUtils, ScuErrors;
 
 const
   ApplicationID = '1396921650';

@@ -25,7 +25,7 @@ type
 implementation
 
 uses
-  BaseUnix, Unix, Linux, SysUtils, ScuIO, ScuSignals;
+  BaseUnix, Unix, Linux, SysUtils, ScuErrors, ScuSignals;
 
 function TryLock(Handle: THandle; const Directory: string): Boolean;
 var

@@ -127,7 +127,7 @@ function TryParseYesNo(const Value: string; out Parsed: Boolean): Boolean;
 implementation
 
 uses
-  SysUtils, Math, FPJSON, ScuIO, ScuJSON, ScuLegacyCatalog;
+  SysUtils, Math, FPJSON, ScuErrors, ScuFiles, ScuJSON, ScuLegacyCatalog;
 
 const
   ParameterKinds: array[TParameterKind] of string = ('string', 'integer', 'float', 'boolean');

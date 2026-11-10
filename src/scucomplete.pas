@@ -22,7 +22,7 @@ procedure CompleteValue(Commands: TCommandDefinitions; Parameter: TParameterDefi
 implementation
 
 uses
-  SysUtils, ScuIO, ScuTokenizer;
+  SysUtils, ScuErrors, ScuFiles, ScuTokenizer;
 
 procedure RecordCompletionValue(var Context: TCompletionContext; const Name, Value: string);
 begin

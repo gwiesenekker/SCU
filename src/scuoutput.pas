@@ -20,7 +20,21 @@ type
     procedure Flush; override;
   end;
 
+procedure WriteDiagnostic(const Message: string);
+
 implementation
+
+procedure WriteDiagnostic(const Message: string);
+begin
+  {$push}{$I-}
+  WriteLn(StdErr, Message);
+  if IOResult = 0 then
+  begin
+    Flush(StdErr);
+    IOResult;
+  end;
+  {$pop}
+end;
 
 procedure TScuOutput.WriteLine(const Text: string);
 begin

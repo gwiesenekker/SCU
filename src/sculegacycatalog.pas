@@ -12,7 +12,7 @@ procedure PrepareCommandDefinitions(Definitions: TJSONObject);
 implementation
 
 uses
-  SysUtils, ScuIO, ScuJSON;
+  SysUtils, ScuErrors, ScuJSON;
 
 function DefinitionAt(Entries: TJSONArray; Index: Integer): TJSONObject;
 begin

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Separate shared errors, file operations, and locks into dedicated units.
 - Separate SQLite connection and schema management, revision and audit storage, and checkpoint display formatting.
 - Use named SQLite open factories to start transactions and check schemas consistently.
 - Identify the affected setting, file, or operation in JSON, filesystem, and conversion errors while preserving Ctrl+C cancellation.

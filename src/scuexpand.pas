@@ -35,7 +35,7 @@ type
 implementation
 
 uses
-  SysUtils, FPJSON, ScuIO, ScuJSON, ScuVersions, ScuSignals, ScuDirectives, ScuCopyMetadata;
+  SysUtils, FPJSON, ScuClock, ScuErrors, ScuJSON, ScuVersions, ScuSignals, ScuDirectives, ScuCopyMetadata;
 
 type
   TMacro = (NoMacro, ModifiedDate, ModifiedTime, LibraryVersion, DeckVersion,

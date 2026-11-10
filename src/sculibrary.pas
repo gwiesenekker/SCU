@@ -93,7 +93,7 @@ function DeckName(const Name: string): string;
 implementation
 
 uses
-  SysUtils, ScuCodec, ScuIO, ScuLibraryModel, ScuSignals, ScuVersionNumbers;
+  SysUtils, ScuCodec, ScuErrors, ScuLibraryModel, ScuSignals, ScuVersionNumbers;
 
 function DeckName(const Name: string): string;
 begin
