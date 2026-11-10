@@ -17,17 +17,12 @@ function ReadTerminalLine(const Prompt: string; History: TStrings; Completion: T
 implementation
 
 uses
-  SysUtils, BaseUnix, Linux, InitC, Termio, Math, ScuTerminal, ScuErrors, ScuOutput, ScuSignals, ScuTokenizer;
+  SysUtils, BaseUnix, Math, ScuErrors, ScuOutput, ScuTerminal, ScuTerminalSession, ScuTokenizer;
 
 const
   CSI = #27'[';
   EscapeDelay = 250;
   EscapeSequenceDelay = 1000;
-  TerminalSuspended = -2;
-  TerminalResumed = -3;
-  TerminalResized = -4;
-
-function signalfd(Handle: cint; Mask: PSigSet; Flags: cint): cint; cdecl; external 'c';
 
 type
   TCompletionState = (csIdle, csPending, csListed);
@@ -37,13 +32,12 @@ type
     FPrompt, FLine, FDraft, FShown: string;
     FHistory: TStrings;
     FCompletion: TCommandCompletion;
-    FSignalHandle: cint;
+    FSession: TRawTerminalSession;
     FCursor, FDraftCursor, FViewStart, FShownCursor, FShownWidth: SizeInt;
     FHistoryIndex: Integer;
     FPending: Char;
     FHasPending, FShowingCompletion: Boolean;
     FCompletionState: TCompletionState;
-    FOriginal, FEditing: TermIOS;
     function ReadByte(out Key: Char; Timeout: Integer = -1): Boolean;
     function ReadCharacter(Lead: Char): string;
     procedure ChangePrompt(const Prompt: string);
@@ -57,7 +51,7 @@ type
     procedure Complete;
   public
     constructor Create(const Prompt: string; History: TStrings; Completion: TCommandCompletion;
-      SignalHandle: cint; const Original, Editing: TermIOS);
+      Session: TRawTerminalSession);
     function ReadLine(out Line: string): Boolean;
   end;
 
@@ -65,48 +59,6 @@ procedure WritePrompt(const Prompt: string);
 begin
   Write(StdErr, Prompt);
   Flush(StdErr);
-end;
-
-function ReadTerminalBytes(SignalHandle: cint; var Buffer; Size: SizeUInt; Timeout: Integer): ssize_t;
-var
-  Handles: array[0..1] of TPollFD;
-  SignalData: array[0..127] of Byte;
-  Ready: cint;
-begin
-  Handles[0].fd := StdInputHandle;
-  Handles[0].events := POLLIN;
-  Handles[1].fd := SignalHandle;
-  Handles[1].events := POLLIN;
-  repeat
-    repeat
-      Ready := fpPoll(@Handles[0], Length(Handles), Timeout);
-    until (Ready >= 0) or (fpGetErrNo <> ESysEINTR);
-    if Ready < 0 then
-      RaiseSystemError('Could not poll terminal input', fpGetErrNo);
-    if Ready = 0 then
-      Exit(0);
-    if (Handles[1].revents and POLLIN) <> 0 then
-    begin
-      if fpRead(SignalHandle, SignalData, SizeOf(SignalData)) < 0 then
-        RaiseSystemError('Could not read terminal signals', fpGetErrNo);
-      case PCardinal(@SignalData[0])^ of
-        SIGINT: raise ECommandCancelled.Create('Command cancelled.');
-        SIGTSTP: Exit(TerminalSuspended);
-        SIGCONT: Exit(TerminalResumed);
-        SIGWINCH: Exit(TerminalResized);
-      end;
-      NoteSessionSignal(PCardinal(@SignalData[0])^);
-      Exit(0);
-    end;
-    Result := fpRead(StdInputHandle, Buffer, Size);
-  until (Result >= 0) or (fpGetErrNo <> ESysEINTR);
-  if (Result < 0) and (fpGetErrNo = ESysEIO) then
-  begin
-    NoteSessionSignal(SIGHUP);
-    Exit(0);
-  end;
-  if Result < 0 then
-    RaiseSystemError('Could not read terminal input', fpGetErrNo);
 end;
 
 function PreviousCharacter(const Text: string; Offset: SizeInt): SizeInt;
@@ -288,7 +240,7 @@ begin
 end;
 
 constructor TLineEditor.Create(const Prompt: string; History: TStrings; Completion: TCommandCompletion;
-  SignalHandle: cint; const Original, Editing: TermIOS);
+  Session: TRawTerminalSession);
 begin
   inherited Create;
   FPrompt := Copy(Prompt, LastDelimiter(#10, Prompt) + 1, MaxInt);
@@ -296,9 +248,7 @@ begin
   if Assigned(History) then
     FHistoryIndex := History.Count;
   FCompletion := Completion;
-  FSignalHandle := SignalHandle;
-  FOriginal := Original;
-  FEditing := Editing;
+  FSession := Session;
 end;
 
 function TLineEditor.ReadByte(out Key: Char; Timeout: Integer): Boolean;
@@ -312,12 +262,12 @@ begin
     Exit(True);
   end;
   repeat
-    Count := ReadTerminalBytes(FSignalHandle, Key, SizeOf(Key), Timeout);
+    Count := FSession.ReadInput(Key, SizeOf(Key), Timeout);
     case Count of
       TerminalSuspended: Suspend;
       TerminalResumed:
         begin
-          TCSetAttr(StdInputHandle, TCSANOW, FEditing);
+          FSession.ResumeEditing;
           if not FShowingCompletion then
           begin
             ChangePrompt(FPrompt);
@@ -365,17 +315,8 @@ begin
 end;
 
 procedure TLineEditor.Suspend;
-var
-  Signals, Previous: TSigSet;
 begin
-  TCSetAttr(StdInputHandle, TCSANOW, FOriginal);
-  WriteDiagnostic('');
-  fpSigEmptySet(Signals);
-  fpSigAddSet(Signals, SIGTSTP);
-  fpSigProcMask(SIG_UNBLOCK, @Signals, @Previous);
-  fpKill(fpGetPid, SIGTSTP);
-  fpSigProcMask(SIG_SETMASK, @Previous, nil);
-  TCSetAttr(StdInputHandle, TCSANOW, FEditing);
+  FSession.Suspend;
   if not FShowingCompletion then
   begin
     ChangePrompt(FPrompt);
@@ -724,71 +665,37 @@ end;
 function ReadTerminalLine(const Prompt: string; History: TStrings; Completion: TCommandCompletion;
   out Line: string): Boolean;
 var
-  Signals, Previous: TSigSet;
-  Original, Editing: TermIOS;
+  Session: TRawTerminalSession;
   Editor: TLineEditor;
   Buffer: array[0..4095] of Char;
   Count: ssize_t;
-  SignalHandle, Signal: cint;
-  RawMode: Boolean;
 begin
-  RawMode := (GetEnvironmentVariable('TERM') <> 'dumb') and (IsATTY(StdErr) = 1);
-  fpSigEmptySet(Signals);
-  for Signal in SessionSignals do
-    fpSigAddSet(Signals, Signal);
-  if RawMode then
-  begin
-    fpSigAddSet(Signals, SIGTSTP);
-    fpSigAddSet(Signals, SIGCONT);
-    fpSigAddSet(Signals, SIGWINCH);
-  end;
-  if fpSigProcMask(SIG_BLOCK, @Signals, @Previous) <> 0 then
-    RaiseSystemError('Could not block signals while reading the terminal', fpGetErrNo);
+  Session := TRawTerminalSession.Create;
   try
-    if SessionSignal <> 0 then
+    if not Session.Ready then
       Exit(False);
-    SignalHandle := signalfd(-1, @Signals, O_CLOEXEC);
-    if SignalHandle < 0 then
-      RaiseSystemError('Could not open the terminal signal descriptor', cerrno);
-    try
-      if not RawMode then
-      begin
-        WritePrompt(Prompt);
-        Count := ReadTerminalBytes(SignalHandle, Buffer, SizeOf(Buffer), -1);
-        if Count = 0 then
-          Exit(False);
-        if Buffer[Count - 1] = #10 then
-          Dec(Count);
-        SetString(Line, PChar(@Buffer[0]), Count);
-        Exit(True);
-      end;
+    if not Session.RawMode then
+    begin
+      WritePrompt(Prompt);
+      Count := Session.ReadInput(Buffer, SizeOf(Buffer), -1);
+      if Count = 0 then
+        Exit(False);
+      if Buffer[Count - 1] = #10 then
+        Dec(Count);
+      SetString(Line, PChar(@Buffer[0]), Count);
+      Exit(True);
+    end;
 
-      if TCGetAttr(StdInputHandle, Original) <> 0 then
-        RaiseSystemError('Could not read terminal attributes', fpGetErrNo);
-      Editing := Original;
-      Editing.c_lflag := Editing.c_lflag and not (ICANON or ECHO or ISIG or IEXTEN);
-      Editing.c_iflag := Editing.c_iflag and not (IXON or IXOFF);
-      Editing.c_cc[VMIN] := 1;
-      Editing.c_cc[VTIME] := 0;
-      if TCSetAttr(StdInputHandle, TCSANOW, Editing) <> 0 then
-        RaiseSystemError('Could not enable terminal editing mode', fpGetErrNo);
-      try
-        UseTerminalLocale;
-        Editor := TLineEditor.Create(Prompt, History, Completion, SignalHandle, Original, Editing);
-        try
-          WritePrompt(Prompt);
-          Result := Editor.ReadLine(Line);
-        finally
-          Editor.Free;
-        end;
-      finally
-        TCSetAttr(StdInputHandle, TCSANOW, Original);
-      end;
+    UseTerminalLocale;
+    Editor := TLineEditor.Create(Prompt, History, Completion, Session);
+    try
+      WritePrompt(Prompt);
+      Result := Editor.ReadLine(Line);
     finally
-      fpClose(SignalHandle);
+      Editor.Free;
     end;
   finally
-    fpSigProcMask(SIG_SETMASK, @Previous, nil);
+    Session.Free;
   end;
 end;
 

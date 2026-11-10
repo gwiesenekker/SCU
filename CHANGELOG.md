@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Manage the terminal signal mask, signal descriptor, and editing settings in one session object.
 - Separate build and editor process handling from session signal handling.
 - Separate shared errors, file operations, and locks into dedicated units.
 - Separate SQLite connection and schema management, revision and audit storage, and checkpoint display formatting.
