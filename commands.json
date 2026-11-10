@@ -547,6 +547,23 @@
       "help": "Save the current library without leaving the session."
     },
     {
+      "name": "show_history",
+      "aliases": ["shoh"],
+      "summary": "Show recent commands from the library audit trail.",
+      "arguments": [
+        {
+          "name": "number_of_lines",
+          "type": "integer",
+          "aliases": ["lines", "nl", "nol"],
+          "value": 20,
+          "prompt_for_default": false,
+          "description": "Maximum number of recent command attempts to display."
+        }
+      ],
+      "options": [],
+      "help": "Show recent audited commands in chronological order, with their canonical names, arguments, and options."
+    },
+    {
       "name": "show_library",
       "aliases": ["shol"],
       "summary": "Show the library header as JSON.",

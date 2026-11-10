@@ -20,8 +20,6 @@ type
     FInteractive: Boolean;
     FOutput: TScuOutput;
     FPendingLibrary: TDeckLibrary;
-    FAuditCache: TAuditSessionCache;
-    function SessionAuditCache: PAuditSessionCache;
     function ResolveSnapshot(Command: TScuCommand; LibraryFile: TDeckLibrary; const Deck: string): TLibrarySnapshot;
     function OutputPath(const Path: string): string;
     function BulkOutputDirectory(Command: TScuCommand): string;
@@ -31,6 +29,7 @@ type
     procedure RunCommandInDirectory(Command: TScuCommand; const OutputDirectory: string);
     procedure BuildProcessGroup(Sender: TObject);
     procedure RunBuild(const Build: TBuildRequest; const Expansion: string);
+    procedure WriteHistoryLine(const Payload: RawByteString);
   public
     constructor Create(const LibraryPath: string; Interactive: Boolean; Output: TScuOutput);
     destructor Destroy; override;
@@ -62,13 +61,6 @@ destructor TScuExecutor.Destroy;
 begin
   FPendingLibrary.Free;
   inherited Destroy;
-end;
-
-function TScuExecutor.SessionAuditCache: PAuditSessionCache;
-begin
-  Result := nil;
-  if FInteractive then
-    Result := @FAuditCache;
 end;
 
 function TScuExecutor.ResolveSnapshot(Command: TScuCommand; LibraryFile: TDeckLibrary; const Deck: string): TLibrarySnapshot;
@@ -498,14 +490,13 @@ begin
         Database := TSQLiteLibrary.Create(FLibraryPath, False, False);
         Database.BeginTransaction(False);
         Database.EnsureSchema(False);
-        Audit := TAuditLog.Create(Database, Expansion, False, SessionAuditCache);
+        Audit := TAuditLog.Create(Database, Expansion);
         try
           if (Failure = '') and (Build.Checkpoint.Version <> '') then
             Database.SaveExpansionCheckpoint(Build.Checkpoint.Version, Build.OutputPath,
               Build.CommentPrefix, Build.Checkpoint.LibraryRevision, False);
           Audit.RecordBuild(Expansion, Build.Command, Build.OutputPath, Failure = '', Failure);
           Database.Commit;
-          Audit.Remember;
         finally
           Audit.Free;
         end;
@@ -561,17 +552,23 @@ begin
   end;
 end;
 
+procedure TScuExecutor.WriteHistoryLine(const Payload: RawByteString);
+begin
+  FOutput.WriteLine(FormatAuditCommand(Payload));
+end;
+
 procedure TScuExecutor.RunCommandInDirectory(Command: TScuCommand; const OutputDirectory: string);
 var
   Lock: TLibraryLock;
   Audit: TAuditLog;
   Database: TSQLiteLibrary;
   LibraryFile: TDeckLibrary;
-  LibraryExists, Verifying, Initializing, Committed, PendingSave: Boolean;
+  LibraryExists, Verifying, ListingHistory, Initializing, Committed, PendingSave: Boolean;
   Checkpoint, Detail, Expansion, ExpansionVersion: string;
   SnapshotsUsed: TAuditSnapshots;
   Build: TBuildRequest;
   Contents: TJSONObject;
+  HistoryLimit: Int64;
 
   procedure RaiseMissingLibrary;
   begin
@@ -585,6 +582,7 @@ begin
     raise EScuError.CreateFmt('%s is only available in interactive mode.', [Command.Name]);
   FLibraryPath := CanonicalFile(FLibraryPath);
   Verifying := Command.Name = 'verify_audit';
+  ListingHistory := Command.Name = 'show_history';
   Initializing := (Command.Name = 'initialize_library') or (Command.Name = 'init');
   Build := Default(TBuildRequest);
   Lock := nil;
@@ -599,11 +597,20 @@ begin
       raise EScuError.Create('Expected a lowercase SHA-256 audit head.');
     if not RegularFileExists(FLibraryPath) and not Initializing then
       RaiseMissingLibrary;
-    Database := TSQLiteLibrary.Create(FLibraryPath, Initializing, Verifying);
-    Database.BeginTransaction(Verifying);
+    Database := TSQLiteLibrary.Create(FLibraryPath, Initializing, Verifying or ListingHistory);
+    Database.BeginTransaction(Verifying or ListingHistory);
     Database.EnsureSchema(Initializing);
     LibraryExists := Database.StateKey <> '';
-    Audit := TAuditLog.Create(Database, Checkpoint, Verifying, SessionAuditCache);
+    if ListingHistory then
+    begin
+      if not LibraryExists then
+        RaiseMissingLibrary;
+      if not TryStrToInt64(Command.Arguments[0].Value, HistoryLimit) or (HistoryLimit < 1) then
+        raise EScuError.Create('Expected a positive number_of_lines.');
+      Database.ReadCommandHistory(HistoryLimit, @WriteHistoryLine);
+      Exit;
+    end;
+    Audit := TAuditLog.Create(Database, Checkpoint, Verifying);
     if (LibraryExists or Assigned(FPendingLibrary)) and (Audit.Records = 0) then
       raise EScuError.Create('The audit log for the existing library is empty.');
     if Verifying then
@@ -630,6 +637,8 @@ begin
         // files for a different version or prefix, even if expansion fails.
         Database.Commit;
         Database.BeginTransaction(False);
+        FreeAndNil(Audit);
+        Audit := TAuditLog.Create(Database, Checkpoint);
       end;
     end;
     Audit.BeginCommand(Command);
@@ -670,7 +679,6 @@ begin
           Database.Execute('ROLLBACK TO scu_operation');
           Audit.EndCommand(False, E.Message, SnapshotsUsed, Assigned(FPendingLibrary));
           Database.Commit;
-          Audit.Remember;
         except
           on AuditError: Exception do
             raise EScuError.CreateFmt('%s Also could not save the audit outcome: %s',
@@ -692,7 +700,6 @@ begin
       end;
       Database.Commit;
       Committed := True;
-      Audit.Remember;
       if Build.Command <> '' then
         Expansion := Audit.Head;
     except

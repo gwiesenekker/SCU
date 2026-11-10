@@ -626,6 +626,62 @@ class ScuIntegration(unittest.TestCase):
         self.run_scu("verify_audit", error="digest mismatch")
         self.run_scu("store_deck", "other", "input", error="digest mismatch")
 
+    def test_one_shot_commands_reuse_audit_state_and_full_verification_reads_the_prefix(self):
+        self.run_scu("list_versions")
+        head = self.run_scu("verify_audit_trail").split("head=")[1]
+        with closing(sqlite3.connect(self.library, isolation_level=None)) as database:
+            self.assertEqual(database.execute("SELECT record_count, head FROM audit_state").fetchone(), (4, head))
+            trigger, = database.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'audit_state_update'"
+            ).fetchone()
+            # Bypass normal SQL invalidation to simulate tampering with the verified prefix on disk.
+            database.execute("DROP TRIGGER audit_state_update")
+            database.execute("UPDATE audit_records SET line = replace(line, 'initialize_library', 'initialize_other') "
+                             "WHERE sequence = 1")
+            database.execute(trigger)
+            self.run_scu("list_versions")
+            last, = database.execute("SELECT line FROM audit_records WHERE sequence = 6").fetchone()
+            self.assertEqual(database.execute("SELECT record_count, head FROM audit_state").fetchone(),
+                             (6, last[:64]))
+        self.run_scu("verify_audit_trail", error="Audit digest mismatch at record 1")
+
+    def test_audit_state_is_seeded_for_an_existing_library(self):
+        self.run_scu("list_versions")
+        with closing(sqlite3.connect(self.library, isolation_level=None)) as database:
+            database.executescript("""
+                DROP TRIGGER audit_state_insert;
+                DROP TRIGGER audit_state_update;
+                DROP TRIGGER audit_state_delete;
+                DROP INDEX audit_digest;
+                DROP TABLE audit_state;
+                PRAGMA user_version = 3;
+            """)
+            self.assertIn("records=4 interrupted=0", self.run_scu("verify_audit_trail"))
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (3,))
+            self.run_scu("list_versions")
+            self.assertEqual(database.execute("SELECT record_count FROM audit_state").fetchone(), (6,))
+            database.execute("UPDATE audit_state SET head = ?", ("0" * 64,))
+        self.run_scu("list_versions", error="Stored audit state does not match the audit log")
+        self.run_scu("verify_audit_trail", error="Stored audit state does not match the audit log")
+
+    def test_show_history_lists_expanded_commands_and_accepts_a_line_count(self):
+        for index in range(1, 22):
+            self.run_scu("cred", f"deck-{index}")
+        self.run_scu("ddl", "v=1.0")
+        self.run_scu("extd", "dn=deck-21", "o=output copy")
+        before = self.audit_lines()
+        history = self.run_scu("show_history").splitlines()
+        self.assertEqual(len(history), 20)
+        self.assertEqual(history[0], 'create_deck deck_name=deck-4 from_file=""')
+        self.assertEqual(history[-2:], [
+            "display_deck_list version=1.0",
+            'extract_deck deck_name=deck-21 output_file="output copy"',
+        ])
+        self.assertEqual(self.run_scu("shoh", "2").splitlines(), history[-2:])
+        self.assertEqual(self.run_scu("show_history", "nl=1"), history[-1])
+        self.run_scu("show_history", "0", error="Expected a positive number_of_lines")
+        self.assertEqual(self.audit_lines(), before)
+
     def test_verify_audit_detects_changed_sqlite_payload(self):
         original_db = self.root / "original.sqlite"
         replacement_db = self.root / "replacement.sqlite"
@@ -756,10 +812,12 @@ class ScuIntegration(unittest.TestCase):
         before_head = self.run_scu(path, "verify_audit")
         with closing(sqlite3.connect(path, isolation_level=None)) as database:
             before = self.sqlite_state(database)
+            state = database.execute("SELECT * FROM audit_state").fetchall()
             self.reject_sqlite_audit_outcome(database)
             self.run_scu(path, "create_deck", "staged",
                          error="injected audit write failure")
             self.assertEqual(self.sqlite_state(database), before)
+            self.assertEqual(database.execute("SELECT * FROM audit_state").fetchall(), state)
             self.assertEqual(self.run_scu(path, "verify_audit"), before_head)
             database.execute("DROP TRIGGER reject_audit_outcome")
             self.run_scu(path, "create_deck", "staged")
@@ -854,6 +912,58 @@ class ScuIntegration(unittest.TestCase):
         self.assertEqual((output / "main").read_bytes(), b"main\nfirst\n")
         self.assertIn("Wrote 4 deck(s)", self.run_scu(path, "expmd", "1.1", output))
         self.assertEqual((output / "main").read_bytes(), b"main\nsecond\n")
+
+    def test_incremental_expansion_uses_copy_metadata_without_decoding_unrelated_decks(self):
+        output = self.root / "expanded"
+        output.mkdir()
+        self.store("leaf", b"first\n")
+        self.store("middle", b"  #SCU_COPY LEAF\r\n#SCU_COPY leaf\n", "comment_prefix=#")
+        self.store("main", b"//SCU_COPY middle\n")
+        self.store("unrelated", b"separate\n")
+        self.assertIn("Wrote 4 deck(s)", self.run_scu("expmd", "1.0", output))
+        unrelated_inode = (output / "unrelated").stat().st_ino
+        self.store("leaf", b"second\n")
+        with closing(sqlite3.connect(self.library, isolation_level=None)) as database:
+            metadata, = database.execute(
+                "SELECT copy_metadata FROM deck_revisions WHERE deck_name = 'middle'"
+            ).fetchone()
+            self.assertEqual(json.loads(metadata), {"prefix": "#", "targets": ["leaf"]})
+            # A graph walk that opens unrelated source would fail the checksum.
+            database.execute("UPDATE deck_revisions SET payload = json_set(payload, '$.sha1', ?) "
+                             "WHERE deck_name = 'unrelated'", ("0" * 40,))
+            self.assertIn("Wrote 3 deck(s)", self.run_scu("expmd", "1.0", output))
+            self.assertEqual((output / "main").read_bytes(), b"second\nsecond\n")
+            self.assertEqual((output / "unrelated").stat().st_ino, unrelated_inode)
+            self.run_scu("verify_audit_trail", error="Library revision 4 does not match the audit log")
+            database.execute("UPDATE deck_revisions SET copy_metadata = json_set(copy_metadata, '$.targets', "
+                             "json('[]')) WHERE deck_name = 'middle'")
+        self.run_scu("verify_audit_trail", error="SQLite COPY metadata does not match revision 2")
+
+    def test_copy_dependency_scan_handles_prefix_overrides_and_caches_older_revisions(self):
+        output = self.root / "expanded"
+        output.mkdir()
+        self.store("leaf", b"first\n")
+        self.store("parent", b"#SCU_COPY leaf\n")
+        self.store("legacy", b"#SCU_COPY leaf\n", "comment_prefix=#")
+        with closing(sqlite3.connect(self.library, isolation_level=None)) as database:
+            # Recreate the stored shape of a revision predating the COPY index.
+            database.execute("UPDATE deck_revisions SET payload = json_remove(payload, '$.copy_metadata'), "
+                             "copy_metadata = NULL WHERE deck_name = 'legacy'")
+            legacy, = database.execute("SELECT payload FROM deck_revisions WHERE deck_name = 'legacy'").fetchone()
+            self.run_scu("expmd", "1.0", output, "comment_prefix=#")
+            self.store("leaf", b"second\n")
+            self.assertIn("Wrote 3 deck(s)", self.run_scu("expmd", "1.0", output, "comment_prefix=#"))
+            self.assertEqual((output / "parent").read_bytes(), b"second\n")
+            self.assertEqual((output / "legacy").read_bytes(), b"second\n")
+            payload, metadata = database.execute(
+                "SELECT payload, copy_metadata FROM deck_revisions WHERE deck_name = 'legacy'"
+            ).fetchone()
+            self.assertEqual(payload, legacy)
+            self.assertEqual(json.loads(metadata), {"prefix": "#", "targets": ["leaf"]})
+            original, = database.execute(
+                "SELECT copy_metadata FROM deck_revisions WHERE deck_name = 'parent'"
+            ).fetchone()
+            self.assertEqual(json.loads(original), {"prefix": "//", "targets": []})
 
     def test_sqlite_expansion_checkpoint_advances_only_with_audited_build(self):
         path = self.root / "project.sqlite"
@@ -1029,7 +1139,7 @@ class ScuIntegration(unittest.TestCase):
             self.run_scu(path, "verify_audit")
             self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (1,))
             self.run_scu(path, "modify_library", "build_command=true")
-            self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (3,))
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (5,))
             source = self.root / "source"
             source.write_bytes(b"//SCU$VERSION\n")
             self.run_scu(path, "store_deck", "main", source)
@@ -1040,7 +1150,7 @@ class ScuIntegration(unittest.TestCase):
             self.run_scu(path, "verify_audit")
             self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (2,))
             self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expmd", "1.0", output))
-            self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (3,))
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (5,))
             self.assertEqual((output / "main").read_bytes(), b"1.0\n")
             self.run_scu(path, "expmd", "1.0", output, "comment_prefix=#", "build=no")
             self.assertEqual((output / "main").read_bytes(), b"//1.0\n")
@@ -1314,16 +1424,16 @@ class ScuIntegration(unittest.TestCase):
         definitions = json.loads(SCU.with_name("commands.json").read_bytes())
         display = next(command for command in definitions["commands"]
                        if command["name"] == "display_deck")
-        display["aliases"].append("show_history")
+        display["aliases"].append("show_deck_history")
         display["arguments"][0].update(type="float", aliases=["number"], value="scu$required")
         definitions["library_option"]["aliases"] = ["lib"]
         (self.root / "commands.json").write_text(json.dumps(definitions))
-        self.assertIn("number", self.run_scu("display_command", "show_history", executable=executable))
-        self.assertIn("1\t1.0\t", self.run_scu("--lib", self.library, "show_history",
+        self.assertIn("number", self.run_scu("display_command", "show_deck_history", executable=executable))
+        self.assertIn("1\t1.0\t", self.run_scu("--lib", self.library, "show_deck_history",
                                                "number=1.25", executable=executable))
-        self.run_scu("show_history", "number=1,25", error="Expected float", executable=executable)
-        self.run_scu("show_history", "number=nan", error="Expected float", executable=executable)
-        self.run_scu("show_history", "dn=1.25", error="Expected float", executable=executable)
+        self.run_scu("show_deck_history", "number=1,25", error="Expected float", executable=executable)
+        self.run_scu("show_deck_history", "number=nan", error="Expected float", executable=executable)
+        self.run_scu("show_deck_history", "dn=1.25", error="Expected float", executable=executable)
         self.assertEqual(self.run_scu("extd", "dn=1.25", "o=old-alias", executable=executable), "")
 
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]

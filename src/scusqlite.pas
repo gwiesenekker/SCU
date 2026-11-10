@@ -9,12 +9,17 @@ uses
 
 type
   TAuditLineVisitor = procedure(const Line: RawByteString) of object;
+  TAuditState = record
+    RecordCount, Interrupted: Int64;
+    Head, Pending, PendingCommand: string;
+    Initialized: Boolean;
+  end;
 
   TSQLiteLibrary = class
   private
     FHandle: psqlite3;
-    FPath: string;
     FReadOnly: Boolean;
+    FSchemaVersion: Integer;
     procedure Check(Status: cint);
     function Prepare(const SQL: RawByteString): psqlite3_stmt;
     function Next(Statement: psqlite3_stmt): Boolean;
@@ -23,6 +28,8 @@ type
     function ReadMetadata: TJSONObject;
     function GetCurrentVersion: string;
     procedure CreateExpansionCheckpoints;
+    procedure CreateAuditState;
+    procedure CreateCopyMetadata;
   public
     constructor Create(const Path: string; AllowCreate, ReadOnly: Boolean);
     destructor Destroy; override;
@@ -34,11 +41,21 @@ type
     function RevisionCount: Integer;
     function ReadDocument: TJSONObject;
     function ReadRevision(Sequence: Integer): TJSONObject;
+    function ReadCopyMetadata(Revision: Integer): TJSONObject;
+    function ReadRevisionCopyMetadata(Sequence: Integer): RawByteString;
+    procedure CacheCopyMetadata(Sequence: Integer; const Metadata: RawByteString);
     procedure SaveMetadata(const Payload: RawByteString);
-    procedure AppendRevision(Sequence: Integer; const Deck, Version, DeckRevision, Payload: RawByteString);
-    function AuditCacheVersion: string;
+    procedure AppendRevision(Sequence: Integer;
+      const Deck, Version, DeckRevision, Payload, CopyMetadata: RawByteString);
+    function AuditStateUsable: Boolean;
+    function ReadAuditState(out State: TAuditState): Boolean;
+    procedure SaveAuditState(const State: TAuditState);
+    procedure ClearAuditState;
+    function ReadAuditTail(out Sequence: Int64; out Line, PreviousDigest: RawByteString): Boolean;
+    function HasAuditDigest(const Digest: string): Boolean;
     procedure ReadAudit(Visit: TAuditLineVisitor);
-    procedure AppendAudit(const Line: RawByteString);
+    procedure ReadCommandHistory(Limit: Int64; Visit: TAuditLineVisitor);
+    procedure AppendAudit(Sequence: Int64; const Line: RawByteString);
     procedure ListExpansionCheckpoints(Dest: TStrings);
     function ReadExpansionCheckpoint(const Version, Directory: string; out Revision: Integer;
       out Refresh, BuildPending: Boolean): Boolean;
@@ -47,7 +64,6 @@ type
     procedure SaveExpansionCheckpoint(const Version, Directory, Prefix: string; Revision: Integer;
       BuildPending: Boolean);
     property CurrentVersion: string read GetCurrentVersion;
-    property Path: string read FPath;
   end;
 
 implementation
@@ -71,7 +87,6 @@ var
   Flags, Handle: cint;
 begin
   inherited Create;
-  FPath := Path;
   FReadOnly := ReadOnly;
   if ReadOnly then
     Flags := SQLITE_OPEN_READONLY
@@ -167,25 +182,29 @@ end;
 
 procedure TSQLiteLibrary.EnsureSchema(AllowCreate: Boolean);
 var
-  ID, SchemaVersion: RawByteString;
+  ID: RawByteString;
 begin
   ID := Scalar('PRAGMA application_id');
   if ID = ApplicationID then
   begin
-    SchemaVersion := Scalar('PRAGMA user_version');
-    if SchemaVersion = '1' then
+    FSchemaVersion := StrToIntDef(Scalar('PRAGMA user_version'), 0);
+    if not (FSchemaVersion in [1..5]) then
+      raise EScuError.Create('Unsupported SQLite library schema.');
+    if not FReadOnly then
     begin
-      if not FReadOnly then
+      if FSchemaVersion = 1 then
         CreateExpansionCheckpoints;
-    end
-    else if SchemaVersion = '2' then
-    begin
-      if not FReadOnly then
+      if FSchemaVersion = 2 then
+      begin
         Execute('ALTER TABLE expansion_checkpoints ADD COLUMN build_pending INTEGER NOT NULL DEFAULT 0 ' +
           'CHECK (build_pending IN (0, 1)); PRAGMA user_version = 3');
-    end
-    else if SchemaVersion <> '3' then
-      raise EScuError.Create('Unsupported SQLite library schema.');
+        FSchemaVersion := 3;
+      end;
+      if FSchemaVersion = 3 then
+        CreateAuditState;
+      if FSchemaVersion = 4 then
+        CreateCopyMetadata;
+    end;
     Exit;
   end;
   if not AllowCreate or (ID <> '0') or (Scalar('SELECT count(*) FROM sqlite_master') <> '0') then
@@ -199,6 +218,8 @@ begin
     'CREATE TABLE audit_records (sequence INTEGER PRIMARY KEY, line TEXT NOT NULL);' +
     'PRAGMA application_id = ' + ApplicationID);
   CreateExpansionCheckpoints;
+  CreateAuditState;
+  CreateCopyMetadata;
 end;
 
 procedure TSQLiteLibrary.CreateExpansionCheckpoints;
@@ -208,6 +229,33 @@ begin
     'revision INTEGER NOT NULL CHECK (revision >= 0), comment_prefix TEXT, ' +
     'build_pending INTEGER NOT NULL DEFAULT 0 CHECK (build_pending IN (0, 1)), ' +
     'PRIMARY KEY (version, output_directory)); PRAGMA user_version = 3');
+  FSchemaVersion := 3;
+end;
+
+procedure TSQLiteLibrary.CreateAuditState;
+begin
+  Execute('CREATE TABLE IF NOT EXISTS audit_state (' +
+    'id INTEGER PRIMARY KEY CHECK (id = 1), record_count INTEGER NOT NULL CHECK (record_count > 0), ' +
+    'head TEXT NOT NULL, pending TEXT NOT NULL, pending_command TEXT NOT NULL, ' +
+    'interrupted INTEGER NOT NULL CHECK (interrupted >= 0 AND interrupted < record_count), ' +
+    'initialized INTEGER NOT NULL CHECK (initialized IN (0, 1)));' +
+    'CREATE INDEX IF NOT EXISTS audit_digest ON audit_records (substr(line, 1, 64));' +
+    'CREATE TRIGGER IF NOT EXISTS audit_state_insert AFTER INSERT ON audit_records ' +
+      'BEGIN DELETE FROM audit_state WHERE id = 1; END;' +
+    'CREATE TRIGGER IF NOT EXISTS audit_state_update AFTER UPDATE ON audit_records ' +
+      'BEGIN DELETE FROM audit_state WHERE id = 1; END;' +
+    'CREATE TRIGGER IF NOT EXISTS audit_state_delete AFTER DELETE ON audit_records ' +
+      'BEGIN DELETE FROM audit_state WHERE id = 1; END;' +
+    'PRAGMA user_version = 4');
+  FSchemaVersion := 4;
+end;
+
+procedure TSQLiteLibrary.CreateCopyMetadata;
+begin
+  if Scalar('SELECT 1 FROM pragma_table_info(''deck_revisions'') WHERE name = ''copy_metadata''') = '' then
+    Execute('ALTER TABLE deck_revisions ADD COLUMN copy_metadata TEXT');
+  Execute('PRAGMA user_version = 5');
+  FSchemaVersion := 5;
 end;
 
 procedure TSQLiteLibrary.ListExpansionCheckpoints(Dest: TStrings);
@@ -406,13 +454,88 @@ end;
 function TSQLiteLibrary.ReadRevision(Sequence: Integer): TJSONObject;
 var
   Statement: psqlite3_stmt;
+  Metadata: TJSONData;
+  IndexMetadata: RawByteString;
 begin
-  Statement := Prepare('SELECT payload FROM deck_revisions WHERE sequence = ?');
+  if FSchemaVersion >= 5 then
+    Statement := Prepare('SELECT payload, copy_metadata FROM deck_revisions WHERE sequence = ?')
+  else
+    Statement := Prepare('SELECT payload FROM deck_revisions WHERE sequence = ?');
   try
     Check(sqlite3_bind_int(Statement, 1, Sequence));
     if not Next(Statement) then
       raise EScuError.CreateFmt('SQLite library revision %d is missing.', [Sequence]);
     Result := ParseObject(ColumnText(Statement, 0));
+    if FSchemaVersion >= 5 then
+    begin
+      Metadata := Result.Find('copy_metadata');
+      IndexMetadata := ColumnText(Statement, 1);
+      if Assigned(Metadata) and (Metadata.AsJSON <> IndexMetadata) then
+      begin
+        Result.Free;
+        raise EScuError.CreateFmt('SQLite COPY metadata does not match revision %d.', [Sequence]);
+      end;
+    end;
+  finally
+    sqlite3_finalize(Statement);
+  end;
+end;
+
+function TSQLiteLibrary.ReadRevisionCopyMetadata(Sequence: Integer): RawByteString;
+var
+  Statement: psqlite3_stmt;
+begin
+  Result := '';
+  if FSchemaVersion < 5 then
+    Exit;
+  Statement := Prepare('SELECT copy_metadata FROM deck_revisions WHERE sequence = ?');
+  try
+    Check(sqlite3_bind_int(Statement, 1, Sequence));
+    if Next(Statement) then
+      Result := ColumnText(Statement, 0);
+  finally
+    sqlite3_finalize(Statement);
+  end;
+end;
+
+procedure TSQLiteLibrary.CacheCopyMetadata(Sequence: Integer; const Metadata: RawByteString);
+var
+  Statement: psqlite3_stmt;
+begin
+  Statement := Prepare('UPDATE deck_revisions SET copy_metadata = ? WHERE sequence = ? AND copy_metadata IS NULL');
+  try
+    BindText(Statement, 1, Metadata);
+    Check(sqlite3_bind_int(Statement, 2, Sequence));
+    Next(Statement);
+  finally
+    sqlite3_finalize(Statement);
+  end;
+end;
+
+function TSQLiteLibrary.ReadCopyMetadata(Revision: Integer): TJSONObject;
+var
+  Statement: psqlite3_stmt;
+  Name: string;
+begin
+  Statement := Prepare('SELECT stored.deck_name, stored.copy_metadata FROM (' +
+    'SELECT max(sequence) AS sequence FROM deck_revisions WHERE sequence <= ? GROUP BY deck_name' +
+    ') AS visible JOIN deck_revisions AS stored ON stored.sequence = visible.sequence');
+  try
+    Check(sqlite3_bind_int(Statement, 1, Revision));
+    Result := TJSONObject.Create;
+    try
+      while Next(Statement) do
+      begin
+        Name := ColumnText(Statement, 0);
+        if sqlite3_column_type(Statement, 1) = SQLITE_NULL then
+          Result.Add(Name)
+        else
+          Result.Add(Name, ParseObject(ColumnText(Statement, 1)));
+      end;
+    except
+      Result.Free;
+      raise;
+    end;
   finally
     sqlite3_finalize(Statement);
   end;
@@ -433,31 +556,109 @@ begin
 end;
 
 procedure TSQLiteLibrary.AppendRevision(Sequence: Integer;
-  const Deck, Version, DeckRevision, Payload: RawByteString);
+  const Deck, Version, DeckRevision, Payload, CopyMetadata: RawByteString);
 var
   Statement: psqlite3_stmt;
 begin
-  Statement := Prepare('INSERT INTO deck_revisions VALUES (?, ?, ?, ?, ?)');
+  Statement := Prepare('INSERT INTO deck_revisions ' +
+    '(sequence, deck_name, library_version, deck_revision, payload, copy_metadata) VALUES (?, ?, ?, ?, ?, ?)');
   try
     Check(sqlite3_bind_int(Statement, 1, Sequence));
     BindText(Statement, 2, Deck);
     BindText(Statement, 3, Version);
     BindText(Statement, 4, DeckRevision);
     BindText(Statement, 5, Payload);
+    BindText(Statement, 6, CopyMetadata);
     Next(Statement);
   finally
     sqlite3_finalize(Statement);
   end;
 end;
 
-function TSQLiteLibrary.AuditCacheVersion: string;
+function TSQLiteLibrary.AuditStateUsable: Boolean;
 begin
+  // A custom trigger may change audit records during our own transaction.
+  Result := (FSchemaVersion >= 4) and (Scalar('SELECT count(*) = 3 AND ' +
+    'sum(name IN (''audit_state_insert'', ''audit_state_update'', ''audit_state_delete'')) = 3 ' +
+    'FROM sqlite_master WHERE type = ''trigger''') = '1');
+end;
+
+function TSQLiteLibrary.ReadAuditState(out State: TAuditState): Boolean;
+var
+  Statement: psqlite3_stmt;
+begin
+  State := Default(TAuditState);
+  if FSchemaVersion < 4 then
+    Exit(False);
+  Statement := Prepare('SELECT record_count, head, pending, pending_command, interrupted, initialized ' +
+    'FROM audit_state WHERE id = 1');
   try
-    // A custom trigger may change earlier audit records during our own transaction.
-    Result := Scalar('SELECT data_version FROM pragma_data_version ' +
-      'WHERE NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type = ''trigger'')');
-  except
-    on E: EScuError do Result := '';
+    Result := Next(Statement);
+    if not Result then
+      Exit;
+    State.RecordCount := sqlite3_column_int64(Statement, 0);
+    State.Head := ColumnText(Statement, 1);
+    State.Pending := ColumnText(Statement, 2);
+    State.PendingCommand := ColumnText(Statement, 3);
+    State.Interrupted := sqlite3_column_int64(Statement, 4);
+    State.Initialized := sqlite3_column_int(Statement, 5) <> 0;
+  finally
+    sqlite3_finalize(Statement);
+  end;
+end;
+
+procedure TSQLiteLibrary.SaveAuditState(const State: TAuditState);
+var
+  Statement: psqlite3_stmt;
+begin
+  Statement := Prepare('INSERT INTO audit_state VALUES (1, ?, ?, ?, ?, ?, ?)');
+  try
+    Check(sqlite3_bind_int64(Statement, 1, State.RecordCount));
+    BindText(Statement, 2, State.Head);
+    BindText(Statement, 3, State.Pending);
+    BindText(Statement, 4, State.PendingCommand);
+    Check(sqlite3_bind_int64(Statement, 5, State.Interrupted));
+    Check(sqlite3_bind_int(Statement, 6, Ord(State.Initialized)));
+    Next(Statement);
+  finally
+    sqlite3_finalize(Statement);
+  end;
+end;
+
+procedure TSQLiteLibrary.ClearAuditState;
+begin
+  Execute('DELETE FROM audit_state WHERE id = 1');
+end;
+
+function TSQLiteLibrary.ReadAuditTail(out Sequence: Int64; out Line, PreviousDigest: RawByteString): Boolean;
+var
+  Statement: psqlite3_stmt;
+begin
+  Statement := Prepare('SELECT tail.sequence, tail.line, ' +
+    '(SELECT substr(line, 1, 64) FROM audit_records WHERE sequence = tail.sequence - 1) ' +
+    'FROM audit_records AS tail ORDER BY tail.sequence DESC LIMIT 1');
+  try
+    Result := Next(Statement);
+    if not Result then
+      Exit;
+    Sequence := sqlite3_column_int64(Statement, 0);
+    Line := ColumnText(Statement, 1);
+    PreviousDigest := ColumnText(Statement, 2);
+  finally
+    sqlite3_finalize(Statement);
+  end;
+end;
+
+function TSQLiteLibrary.HasAuditDigest(const Digest: string): Boolean;
+var
+  Statement: psqlite3_stmt;
+begin
+  Statement := Prepare('SELECT 1 FROM audit_records WHERE substr(line, 1, 64) = ? LIMIT 1');
+  try
+    BindText(Statement, 1, Digest);
+    Result := Next(Statement);
+  finally
+    sqlite3_finalize(Statement);
   end;
 end;
 
@@ -481,13 +682,31 @@ begin
   end;
 end;
 
-procedure TSQLiteLibrary.AppendAudit(const Line: RawByteString);
+procedure TSQLiteLibrary.ReadCommandHistory(Limit: Int64; Visit: TAuditLineVisitor);
 var
   Statement: psqlite3_stmt;
 begin
-  Statement := Prepare('INSERT INTO audit_records (line) VALUES (?)');
+  Statement := Prepare('SELECT payload FROM (' +
+    'SELECT sequence, substr(line, 66) AS payload FROM audit_records ' +
+    'WHERE json_extract(substr(line, 66), ''$.phase'') = ''begin'' ' +
+    'ORDER BY sequence DESC LIMIT ?) ORDER BY sequence');
   try
-    BindText(Statement, 1, Line);
+    Check(sqlite3_bind_int64(Statement, 1, Limit));
+    while Next(Statement) do
+      Visit(ColumnText(Statement, 0));
+  finally
+    sqlite3_finalize(Statement);
+  end;
+end;
+
+procedure TSQLiteLibrary.AppendAudit(Sequence: Int64; const Line: RawByteString);
+var
+  Statement: psqlite3_stmt;
+begin
+  Statement := Prepare('INSERT INTO audit_records (sequence, line) VALUES (?, ?)');
+  try
+    Check(sqlite3_bind_int64(Statement, 1, Sequence));
+    BindText(Statement, 2, Line);
     Next(Statement);
   finally
     sqlite3_finalize(Statement);

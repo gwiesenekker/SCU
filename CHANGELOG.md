@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Persist the audit head and count in SQLite to keep routine audit appends fast as history grows.
+- Use per-revision COPY metadata to find incremental build dependencies without decoding unrelated decks.
+- Add `show_history` to display the latest 20 canonical audited commands or a supplied line count.
 - Separate command parsing from library execution and audit the same canonical command object that the executor receives.
 - Use SQLite for all live libraries and audit records. Remove the legacy JSON backend and its migration commands.
 - Add deck and library version macros and separate UTC modification and expansion macros.

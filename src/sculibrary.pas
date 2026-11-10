@@ -20,6 +20,7 @@ type
 
   TDeckSource = record
     Bytes: RawByteString;
+    LibraryRevision: Integer;
     ModifiedUTC: string;
     DeckVersion: string;
     CommentPrefix: string;
@@ -59,6 +60,8 @@ type
     function SavedContents: TJSONObject;
     function HeaderDigest: string;
     function RevisionDigest(Sequence: Integer): string;
+    function CopyMetadataAt(Revision: Integer): TJSONObject;
+    procedure CacheCopyMetadata(const Source: TDeckSource; Targets: TStrings);
     function Store(const Deck: string; const Source: RawByteString;
       CreateOnly: Boolean = False; const Prefix: string = ''): Integer;
     function Extract(const Deck: string; Revision: Integer; const SelectedVersion: string = ''): TDeckSource;
@@ -100,7 +103,7 @@ function DeckName(const Name: string): string;
 implementation
 
 uses
-  SysUtils, DateUtils, FGL, ScuIO, ScuJSON, ScuCodec, ScuVersionNumbers, ScuSignals;
+  SysUtils, DateUtils, FGL, ScuIO, ScuJSON, ScuCodec, ScuVersionNumbers, ScuSignals, ScuDirectives;
 
 const
   MaxDeckRevision = 999;
@@ -137,6 +140,40 @@ begin
   Result := Field(Entry, 'modified_utc', jtString).AsString;
   if not TryISO8601ToDate(Result, Stamp) or (UtcTimestamp(Stamp) <> Result) then
     raise EScuError.CreateFmt('Invalid modification timestamp for deck "%s".', [Deck]);
+end;
+
+function MakeCopyMetadata(const Prefix: string; Targets: TStrings): TJSONObject;
+var
+  Values: TJSONArray;
+  Target: string;
+begin
+  Result := TJSONObject.Create;
+  try
+    Result.Add('prefix', Prefix);
+    Values := TJSONArray.Create;
+    Result.Add('targets', Values);
+    for Target in Targets do
+      Values.Add(Target);
+  except
+    Result.Free;
+    raise;
+  end;
+end;
+
+function ScanCopyMetadata(const Source: RawByteString; const Prefix: string): TJSONObject;
+var
+  Targets: TStringList;
+begin
+  Targets := TStringList.Create;
+  try
+    Targets.CaseSensitive := True;
+    Targets.Sorted := True;
+    Targets.Duplicates := dupIgnore;
+    CollectCopyTargets(Source, Prefix, Targets);
+    Result := MakeCopyMetadata(Prefix, Targets);
+  finally
+    Targets.Free;
+  end;
 end;
 
 function StoredCommentPrefix(Entry: TJSONObject): string;
@@ -392,7 +429,8 @@ begin
   begin
     Entry := RevisionAt(Index);
     Database.AppendRevision(Index + 1, Field(Entry, 'deck', jtString).AsString,
-      VersionAt(Index + 1), FormatFixed(FDeckNumbers[Index], 3), Entry.AsJSON);
+      VersionAt(Index + 1), FormatFixed(FDeckNumbers[Index], 3), Entry.AsJSON,
+      Field(Entry, 'copy_metadata', jtObject).AsJSON);
   end;
 end;
 
@@ -402,8 +440,45 @@ begin
 end;
 
 function TDeckLibrary.RevisionDigest(Sequence: Integer): string;
+var
+  Entry, Metadata: TJSONObject;
+  Indexed: RawByteString;
 begin
-  Result := AuditSHA256(RevisionPayloadAt(Sequence - 1).AsJSON);
+  Entry := RevisionPayloadAt(Sequence - 1);
+  if not Assigned(Entry.Find('copy_metadata')) then
+  begin
+    // Older audit digests cover the original payload. Validate derived metadata separately.
+    Indexed := FDatabase.ReadRevisionCopyMetadata(Sequence);
+    if Indexed <> '' then
+    begin
+      Metadata := ScanCopyMetadata(DecodeDeck(Field(Entry, 'zstd_base64', jtString).AsString,
+        Field(Entry, 'sha1', jtString).AsString, IntegerField(Entry, 'size')), StoredCommentPrefix(Entry));
+      try
+        if Metadata.AsJSON <> Indexed then
+          raise EScuError.CreateFmt('SQLite COPY metadata does not match revision %d.', [Sequence]);
+      finally
+        Metadata.Free;
+      end;
+    end;
+  end;
+  Result := AuditSHA256(Entry.AsJSON);
+end;
+
+function TDeckLibrary.CopyMetadataAt(Revision: Integer): TJSONObject;
+begin
+  Result := FDatabase.ReadCopyMetadata(Revision);
+end;
+
+procedure TDeckLibrary.CacheCopyMetadata(const Source: TDeckSource; Targets: TStrings);
+var
+  Metadata: TJSONObject;
+begin
+  Metadata := MakeCopyMetadata(Source.CommentPrefix, Targets);
+  try
+    FDatabase.CacheCopyMetadata(Source.LibraryRevision, Metadata.AsJSON);
+  finally
+    Metadata.Free;
+  end;
 end;
 
 function TDeckLibrary.SavedContents: TJSONObject;
@@ -551,6 +626,7 @@ begin
     Entry.Add('sha1', Digest);
     Entry.Add('modified_utc', UtcTimestamp(UtcNow));
     Entry.Add('zstd_base64', EncodeDeck(Source));
+    Entry.Add('copy_metadata', ScanCopyMetadata(Source, CommentPrefix));
     CheckSessionInterrupt;
   except
     Entry.Free;
@@ -587,6 +663,7 @@ begin
     raise EScuError.CreateFmt('Deck "%s" does not exist at revision %d.', [Name, Revision]);
   end;
   Entry := RevisionPayloadAt(StoredRevision - 1);
+  Result.LibraryRevision := StoredRevision;
   Result.CommentPrefix := StoredCommentPrefix(Entry);
   Result.ModifiedUTC := ModificationTime(Entry, Name);
   Result.DeckVersion := DeckVersionAt(StoredRevision);

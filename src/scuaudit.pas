@@ -1,7 +1,6 @@
 unit ScuAudit;
 
 {$mode objfpc}{$H+}
-{$modeswitch advancedrecords}
 
 interface
 
@@ -16,19 +15,6 @@ type
 
   TAuditRevisionDigests = specialize TFPGMap<Integer, string>;
 
-  TAuditFileStamp = record
-    Device, Inode, Size, Modified, ModifiedNanos, Changed, ChangedNanos: QWord;
-  end;
-
-  TAuditSessionCache = record
-  private
-    Path, Head, Pending, PendingCommand: string;
-    Records, Interrupted: Int64;
-    Initialized: Boolean;
-    Files: array[0..2] of TAuditFileStamp;
-  end;
-  PAuditSessionCache = ^TAuditSessionCache;
-
   TAuditLog = class
   private
     FDatabase: TSQLiteLibrary;
@@ -40,20 +26,17 @@ type
     FContents: TAuditRevisionDigests;
     FHeaderDigest: string;
     FRevisionCount: Integer;
-    FCache: PAuditSessionCache;
-    FStoragePath, FCacheVersion: string;
-    FLastFileStamp: TAuditFileStamp;
-    FCacheable: Boolean;
+    FUseState: Boolean;
     function GetInterrupted: Int64;
-    function Resume(const Checkpoint: string): Boolean;
+    function CurrentState: TAuditState;
+    function Resume(const State: TAuditState; const Checkpoint: string): Boolean;
     procedure Accept(const Line: RawByteString);
     procedure AcceptContents(Event: TJSONObject);
     procedure Append(Event: TJSONObject);
   public
     constructor Create(Database: TSQLiteLibrary; const Checkpoint: string = '';
-      VerifyData: Boolean = False; Cache: PAuditSessionCache = nil);
+      VerifyData: Boolean = False);
     destructor Destroy; override;
-    procedure Remember;
     procedure BeginCommand(Command: TScuCommand);
     procedure EndCommand(Success: Boolean; const Detail: string; const Snapshots: TAuditSnapshots;
       PendingSave: Boolean = False; Contents: TJSONObject = nil);
@@ -66,6 +49,8 @@ type
     property SavedHeaderDigest: string read FHeaderDigest;
   end;
 
+function FormatAuditCommand(const Payload: RawByteString): string;
+
 implementation
 
 uses
@@ -76,101 +61,107 @@ const
   MaxRecordSize = 16 * 1024 * 1024;
   AuditDomain = 'SCU audit v1 ';
 
-function FileStamp(const Info: Stat): TAuditFileStamp;
-begin
-  Result.Device := Info.st_dev;
-  Result.Inode := Info.st_ino;
-  Result.Size := Info.st_size;
-  Result.Modified := Info.st_mtime;
-  Result.ModifiedNanos := Info.st_mtime_nsec;
-  Result.Changed := Info.st_ctime;
-  Result.ChangedNanos := Info.st_ctime_nsec;
-end;
-
-function ReadFileStamp(const Path: string; out Stamp: TAuditFileStamp; Optional: Boolean): Boolean;
+function FormatAuditCommand(const Payload: RawByteString): string;
 var
-  Info: Stat;
+  Event: TJSONObject;
+
+  function ArgumentValue(const Value: string): string;
+  var
+    Character: Char;
+  begin
+    if Value = '' then
+      Exit('""');
+    for Character in Value do
+      if not (Character in ['a'..'z', 'A'..'Z', '0'..'9', '_', '-', '.', '/']) then
+        Exit('"' + StringToJSONString(Value) + '"');
+    Result := Value;
+  end;
+
+  procedure AddParameters(const Name: string);
+  var
+    Fields: TJSONObject;
+    Index: Integer;
+  begin
+    if not Assigned(Event.Find(Name)) then
+      Exit;
+    Fields := TJSONObject(Field(Event, Name, jtObject));
+    for Index := 0 to Fields.Count - 1 do
+      Result := Result + ' ' + Fields.Names[Index] + '=' + ArgumentValue(Fields.Items[Index].AsString);
+  end;
+
 begin
-  Stamp := Default(TAuditFileStamp);
-  if fpLStat(Path, Info) <> 0 then
-    Exit(Optional and (fpGetErrNo = ESysENOENT));
-  Result := FPS_ISREG(Info.st_mode);
-  if Result then
-    Stamp := FileStamp(Info);
+  Event := ParseObject(Payload);
+  try
+    Result := Field(Event, 'command', jtString).AsString;
+    AddParameters('parameters');
+    AddParameters('options');
+  finally
+    Event.Free;
+  end;
 end;
 
-function ReadStorageStamp(const Path: string; var State: TAuditSessionCache): Boolean;
+function TAuditLog.CurrentState: TAuditState;
 begin
-  Result := ReadFileStamp(Path, State.Files[0], False) and
-    ReadFileStamp(Path + '-wal', State.Files[1], True) and
-    ReadFileStamp(Path + '-journal', State.Files[2], True);
+  Result.RecordCount := FRecords;
+  Result.Head := FHead;
+  Result.Pending := FPending;
+  Result.PendingCommand := FPendingCommand;
+  Result.Interrupted := FInterrupted;
+  Result.Initialized := FInitialized;
 end;
 
-function TAuditLog.Resume(const Checkpoint: string): Boolean;
+function TAuditLog.Resume(const State: TAuditState; const Checkpoint: string): Boolean;
 var
-  Current: TAuditSessionCache;
+  Sequence: Int64;
+  Tail, PreviousDigest: RawByteString;
 begin
-  Result := FCacheable and (FCache^.Path = FStoragePath) and
-    ((Checkpoint = '') or (Checkpoint = FCache^.Head)) and
-    ReadStorageStamp(FStoragePath, Current) and
-    CompareMem(@Current.Files, @FCache^.Files, SizeOf(Current.Files));
-  if not Result then
+  Result := False;
+  if not FDatabase.ReadAuditTail(Sequence, Tail, PreviousDigest) or
+    (Sequence <> State.RecordCount) or (Length(Tail) <= HashLength + 1) or
+    (Tail[HashLength + 1] <> ' ') or (Copy(Tail, 1, HashLength) <> State.Head) then
     Exit;
-  FHead := FCache^.Head;
-  FPending := FCache^.Pending;
-  FPendingCommand := FCache^.PendingCommand;
-  FRecords := FCache^.Records;
-  FInterrupted := FCache^.Interrupted;
-  FInitialized := FCache^.Initialized;
+  if Sequence = 1 then
+    PreviousDigest := FHead;
+  if not IsHexDigest(PreviousDigest, HashLength) or
+    (State.Head <> AuditSHA256(AuditDomain + PreviousDigest + ' ' + Copy(Tail, HashLength + 2, MaxInt))) then
+    Exit;
+  if (Checkpoint <> '') and (Checkpoint <> State.Head) and not FDatabase.HasAuditDigest(Checkpoint) then
+    raise EScuError.Create('Saved audit head is absent from the verified chain.');
+  FHead := State.Head;
+  FPending := State.Pending;
+  FPendingCommand := State.PendingCommand;
+  FRecords := State.RecordCount;
+  FInterrupted := State.Interrupted;
+  FInitialized := State.Initialized;
+  Result := True;
 end;
 
-procedure TAuditLog.Remember;
+constructor TAuditLog.Create(Database: TSQLiteLibrary; const Checkpoint: string; VerifyData: Boolean);
 var
-  Current: TAuditSessionCache;
-begin
-  // The caller holds the library lock and has committed the audit outcome.
-  if not FCacheable or not ReadStorageStamp(FStoragePath, Current) then
-    Exit;
-  if (Current.Files[0].Device <> FLastFileStamp.Device) or
-    (Current.Files[0].Inode <> FLastFileStamp.Inode) or
-    (FDatabase.AuditCacheVersion <> FCacheVersion) then
-    Exit;
-  Current.Path := FStoragePath;
-  Current.Head := FHead;
-  Current.Pending := FPending;
-  Current.PendingCommand := FPendingCommand;
-  Current.Records := FRecords;
-  Current.Interrupted := FInterrupted;
-  Current.Initialized := FInitialized;
-  FCache^ := Current;
-end;
-
-constructor TAuditLog.Create(Database: TSQLiteLibrary; const Checkpoint: string;
-  VerifyData: Boolean; Cache: PAuditSessionCache);
+  State: TAuditState;
+  HasState: Boolean;
 begin
   inherited Create;
   FDatabase := Database;
-  FStoragePath := Database.Path;
   FHead := StringOfChar('0', HashLength);
   if VerifyData then
   begin
     FContents := TAuditRevisionDigests.Create;
     FContents.Sorted := True;
-  end
-  else
-    FCache := Cache;
-  if Assigned(FCache) then
-  begin
-    FCacheVersion := Database.AuditCacheVersion;
-    FCacheable := (FCacheVersion <> '') and ReadFileStamp(FStoragePath, FLastFileStamp, False);
   end;
-  if Resume(Checkpoint) then
+  FUseState := not VerifyData and Database.AuditStateUsable;
+  HasState := Database.ReadAuditState(State);
+  if FUseState and HasState and Resume(State, Checkpoint) then
     Exit;
   FCheckpoint := Checkpoint;
   FFoundCheckpoint := Checkpoint = '';
   Database.ReadAudit(@Accept);
   if not FFoundCheckpoint then
     raise EScuError.Create('Saved audit head is absent from the verified chain.');
+  if HasState and ((State.RecordCount <> FRecords) or (State.Head <> FHead) or
+    (State.Pending <> FPending) or (State.PendingCommand <> FPendingCommand) or
+    (State.Interrupted <> FInterrupted) or (State.Initialized <> FInitialized)) then
+    raise EScuError.Create('Stored audit state does not match the audit log.');
 end;
 
 destructor TAuditLog.Destroy;
@@ -294,7 +285,11 @@ begin
   if Length(Line) > MaxRecordSize then
     raise EScuError.Create('Audit record exceeds the size limit.');
   Accept(Line);
-  FDatabase.AppendAudit(Line);
+  FDatabase.AppendAudit(FRecords, Line);
+  if FUseState then
+    FDatabase.SaveAuditState(CurrentState)
+  else
+    FDatabase.ClearAuditState;
 end;
 
 procedure TAuditLog.BeginCommand(Command: TScuCommand);

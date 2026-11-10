@@ -34,14 +34,13 @@ type
 implementation
 
 uses
-  SysUtils, ScuIO, ScuVersions, ScuSignals;
+  SysUtils, FPJSON, ScuIO, ScuJSON, ScuVersions, ScuSignals, ScuDirectives;
 
 type
   TMacro = (NoMacro, ModifiedDate, ModifiedTime, LibraryVersion, DeckVersion,
     ModifiedDateTime, ExpansionDate, ExpansionTime, ExpansionDateTime);
 
 const
-  CopyDirective = 'SCU_COPY';
   MacroNames: array[ModifiedDate..ExpansionDateTime, 0..2] of string = (
     ('SCU$LAST_MODIFIED_DATE', 'SCU$DATE', '$SCU_DATE'),
     ('SCU$LAST_MODIFIED_TIME', 'SCU$TIME', '$SCU_TIME'),
@@ -56,18 +55,6 @@ const
   MaxDepth = 64;
   MaxVisits = 10000;
   MaxSourceBytes = 256 * 1024 * 1024;
-
-function IsIdentifierChar(Value: Char): Boolean;
-begin
-  Result := Value in ['A'..'Z', 'a'..'z', '0'..'9', '_'];
-end;
-
-function HasToken(const Line: RawByteString; Index: SizeInt; const Token: string): Boolean;
-begin
-  Result := (Copy(Line, Index, Length(Token)) = Token) and
-    ((Index + Length(Token) > Length(Line)) or
-      not IsIdentifierChar(Line[Index + Length(Token)]));
-end;
 
 function MacroAt(const Line: RawByteString; Index: SizeInt;
   out TokenLength: SizeInt; AfterPrefix: Boolean = False): TMacro;
@@ -88,43 +75,6 @@ begin
         Exit(Candidate);
       end;
   Result := NoMacro;
-end;
-
-procedure ReadSourceLine(const Source: RawByteString; var Index: SizeInt;
-  out Line, Ending: RawByteString);
-var
-  Start: SizeInt;
-begin
-  Start := Index;
-  while (Index <= Length(Source)) and not (Source[Index] in [#10, #13]) do
-    Inc(Index);
-  Line := Copy(Source, Start, Index - Start);
-  Start := Index;
-  if (Index <= Length(Source)) and (Source[Index] = #13) then
-    Inc(Index);
-  if (Index <= Length(Source)) and (Source[Index] = #10) then
-    Inc(Index);
-  Ending := Copy(Source, Start, Index - Start);
-end;
-
-function DirectiveStart(const Line: RawByteString; const Prefix: string; out First: SizeInt): SizeInt;
-begin
-  First := 1;
-  while (First <= Length(Line)) and (Line[First] in [' ', #9]) do
-    Inc(First);
-  if Copy(Line, First, Length(Prefix)) = Prefix then
-    Exit(First + Length(Prefix));
-  Result := 0;
-end;
-
-function TryCopyTarget(const Line: RawByteString; Directive: SizeInt; out Target: string): Boolean;
-var
-  Separator: SizeInt;
-begin
-  Separator := Directive + Length(CopyDirective);
-  Result := (Separator <= Length(Line)) and (Line[Separator] in [' ', #9]);
-  if Result then
-    Target := Trim(Copy(Line, Separator, MaxInt));
 end;
 
 constructor TDeckExpander.Create(ALibrary: TDeckLibrary; ARevision: Integer; const Version, Prefix: string;
@@ -282,50 +232,59 @@ end;
 
 procedure TDeckExpander.IncludeCopyDependents(Decks: TStringList);
 var
-  Visible, Parents, Pending, Dependents: TStringList;
+  Visible: TJSONObject;
+  Metadata: TJSONObject;
+  RecordedTargets: TJSONArray;
+  Parents, Pending, Targets, Dependents: TStringList;
   Name, Target, Prefix: string;
-  Line, Ending: RawByteString;
   Stored: TDeckSource;
-  Index, First, Directive: SizeInt;
-  Entry, Head: Integer;
+  Index, TargetIndex, Entry, Head: Integer;
 begin
   if Decks.Count = 0 then
     Exit;
-  Visible := TStringList.Create;
+  Visible := FLibrary.CopyMetadataAt(FRevision);
   Parents := TStringList.Create;
   Pending := TStringList.Create;
+  Targets := TStringList.Create;
   try
-    Visible.CaseSensitive := True;
-    Visible.Sorted := True;
-    Visible.Duplicates := dupIgnore;
-    FLibrary.ChangedDecks(0, FRevision, Visible);
     if Visible.Count = Decks.Count then
       Exit;
     Parents.CaseSensitive := True;
     Parents.Sorted := True;
     Parents.OwnsObjects := True;
-    for Name in Visible do
+    Targets.CaseSensitive := True;
+    Targets.Sorted := True;
+    Targets.Duplicates := dupIgnore;
+    for Index := 0 to Visible.Count - 1 do
     begin
       CheckSessionInterrupt;
-      // Decks already scheduled for output do not need incoming edges.
+      Name := Visible.Names[Index];
       if Decks.IndexOf(Name) >= 0 then
         Continue;
-      Stored := FLibrary.Extract(Name, FRevision);
-      Prefix := EffectivePrefix(Stored);
-      Index := 1;
-      while Index <= Length(Stored.Bytes) do
+      Targets.Clear;
+      Metadata := nil;
+      if Visible.Items[Index] is TJSONObject then
+        Metadata := TJSONObject(Visible.Items[Index]);
+      if Assigned(Metadata) and ((FPrefixOverride = '') or
+        (Field(Metadata, 'prefix', jtString).AsString = FPrefixOverride)) then
       begin
-        ReadSourceLine(Stored.Bytes, Index, Line, Ending);
-        Directive := DirectiveStart(Line, Prefix, First);
-        if (Directive = 0) or not HasToken(Line, Directive, CopyDirective) or
-          not TryCopyTarget(Line, Directive, Target) then
-          Continue;
-        Target := LowerCase(Target);
+        RecordedTargets := TJSONArray(Field(Metadata, 'targets', jtArray));
+        for TargetIndex := 0 to RecordedTargets.Count - 1 do
+          Targets.Add(RecordedTargets.Strings[TargetIndex]);
+      end
+      else
+      begin
+        Stored := FLibrary.Extract(Name, FRevision);
+        Prefix := EffectivePrefix(Stored);
+        CollectCopyTargets(Stored.Bytes, Prefix, Targets);
+        if not Assigned(Metadata) and (Prefix = Stored.CommentPrefix) then
+          FLibrary.CacheCopyMetadata(Stored, Targets);
+      end;
+      for Target in Targets do
+      begin
         if not Parents.Find(Target, Entry) then
           Entry := Parents.AddObject(Target, TStringList.Create);
-        Dependents := TStringList(Parents.Objects[Entry]);
-        if (Dependents.Count = 0) or (Dependents[Dependents.Count - 1] <> Name) then
-          Dependents.Add(Name);
+        TStringList(Parents.Objects[Entry]).Add(Name);
       end;
     end;
     Pending.Assign(Decks);
@@ -345,6 +304,7 @@ begin
       Inc(Head);
     end;
   finally
+    Targets.Free;
     Pending.Free;
     Parents.Free;
     Visible.Free;

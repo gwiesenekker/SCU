@@ -193,9 +193,8 @@ beside the selected library. Pass `output_directory=.` to write to the
 shell's working directory.
 
 Both bulk commands use lowercase deck names as filenames and require an
-existing destination directory. `extract_modified_decks` and JSON-backed
-`expand_modified_decks` write the latest revision of each deck stored or
-edited in the specified version.
+existing destination directory. `extract_modified_decks` writes the latest
+revision of each deck stored or edited in the specified version.
 
 For a SQLite library, `expand_modified_decks` starts with the decks edited
 in the selected version and includes their direct and indirect `SCU_COPY`
@@ -204,6 +203,10 @@ version and absolute output directory. If no decks have changed, SCU writes
 no files. A newly configured build command can build files that SCU previously
 expanded without a build.
 Save pending interactive edits with `save_library` before running the batch.
+SCU records `SCU_COPY` targets with each deck revision. Incremental runs use
+those targets to find dependents without opening unrelated source payloads.
+Revisions created before the index are scanned when first needed. A different
+comment-prefix override scans the affected source to discover its targets.
 
 The checkpoint advances with the successful build audit record. When
 `build_command` is empty, it advances with the successful expansion audit
@@ -465,7 +468,7 @@ pending edits available for retry.
 The audit trail includes failed commands that reach an initialized log and
 can record their outcome. Help commands, command-line parsing errors, checks
 for missing or busy output directories,
-`verify_audit`, and interactive `quit` with no pending changes do not append
+`show_history`, `verify_audit`, and interactive `quit` with no pending changes do not append
 records. Outcomes against a working library with unsaved changes carry
 `pending_save`. Quitting with pending changes records whether SCU saved or
 discarded them. The log records arguments, the effective
@@ -502,10 +505,15 @@ SHA-256 digests of the header and newly saved deck revisions. `verify_audit`
 checks those digests against the library. Older revisions without a recorded
 digest still have their stored SHA-1 checked when extracted.
 
-Interactive sessions and scripts read from standard input reuse their verified
-audit state between commands when the audit storage matches the session's last
-write. SCU scans the chain again after another process changes the storage.
-`verify_audit` (also `verify_audit_trail`) always scans the full chain.
+SCU saves the audit head and record count in SQLite in the same transaction as
+each append. Ordinary commands check the tail against that state. Changes to
+audit rows through SQL invalidate it and make the next command scan the chain.
+`verify_audit` (also `verify_audit_trail`) always scans the full chain and checks
+recorded deck and header digests.
+
+Run `show_history` to display the latest 20 audited command attempts in
+chronological order, with canonical names and named parameters. Pass a count
+as in `show_history 50` or `show_history number_of_lines=50`.
 
 ## Frontend integration
 
