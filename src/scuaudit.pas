@@ -1,6 +1,7 @@
 unit ScuAudit;
 
 {$mode objfpc}{$H+}
+{$modeswitch advancedrecords}
 
 interface
 
@@ -15,9 +16,21 @@ type
 
   TAuditRevisionDigests = specialize TFPGMap<Integer, string>;
 
+  TAuditFileStamp = record
+    Device, Inode, Size, Modified, ModifiedNanos, Changed, ChangedNanos: QWord;
+  end;
+
+  TAuditSessionCache = record
+  private
+    Path, Head, Pending, PendingCommand: string;
+    Records, Interrupted: Int64;
+    Initialized: Boolean;
+    Files: array[0..2] of TAuditFileStamp;
+  end;
+  PAuditSessionCache = ^TAuditSessionCache;
+
   TAuditLog = class
   private
-    FPath: string;
     FHandle: THandle;
     FDatabase: TSQLiteLibrary;
     FCheckpoint: string;
@@ -28,17 +41,24 @@ type
     FContents: TAuditRevisionDigests;
     FHeaderDigest: string;
     FRevisionCount: Integer;
+    FCache: PAuditSessionCache;
+    FStoragePath, FCacheVersion: string;
+    FLastFileStamp: TAuditFileStamp;
+    FCacheable: Boolean;
     function GetInterrupted: Int64;
+    function Resume(const Checkpoint: string): Boolean;
     procedure Accept(const Line: RawByteString);
     procedure AcceptContents(Event: TJSONObject);
     procedure Scan(const Checkpoint: string; RepairTail: Boolean = False);
     procedure Append(Event: TJSONObject);
   public
     constructor Create(const Path: string; AllowCreate, ReadOnly: Boolean;
-      const Checkpoint: string = ''; RepairTail: Boolean = False); overload;
+      const Checkpoint: string = ''; RepairTail: Boolean = False;
+      Cache: PAuditSessionCache = nil); overload;
     constructor Create(Database: TSQLiteLibrary; const Checkpoint: string = '';
-      VerifyData: Boolean = False); overload;
+      VerifyData: Boolean = False; Cache: PAuditSessionCache = nil); overload;
     destructor Destroy; override;
+    procedure Remember;
     procedure ImportFile(const Path: string);
     procedure BeginCommand(const Command: string; ArgumentNames: TJSONArray;
       Arguments, Options: TStrings);
@@ -64,8 +84,85 @@ const
   MaxRecordSize = 16 * 1024 * 1024;
   AuditDomain = 'SCU audit v1 ';
 
+function FileStamp(const Info: Stat): TAuditFileStamp;
+begin
+  Result.Device := Info.st_dev;
+  Result.Inode := Info.st_ino;
+  Result.Size := Info.st_size;
+  Result.Modified := Info.st_mtime;
+  Result.ModifiedNanos := Info.st_mtime_nsec;
+  Result.Changed := Info.st_ctime;
+  Result.ChangedNanos := Info.st_ctime_nsec;
+end;
+
+function ReadFileStamp(const Path: string; out Stamp: TAuditFileStamp; Optional: Boolean): Boolean;
+var
+  Info: Stat;
+begin
+  Stamp := Default(TAuditFileStamp);
+  if fpLStat(Path, Info) <> 0 then
+    Exit(Optional and (fpGetErrNo = ESysENOENT));
+  Result := FPS_ISREG(Info.st_mode);
+  if Result then
+    Stamp := FileStamp(Info);
+end;
+
+function ReadStorageStamp(const Path: string; SQLite: Boolean; var State: TAuditSessionCache): Boolean;
+begin
+  State.Files[1] := Default(TAuditFileStamp);
+  State.Files[2] := Default(TAuditFileStamp);
+  Result := ReadFileStamp(Path, State.Files[0], False) and
+    (not SQLite or (ReadFileStamp(Path + '-wal', State.Files[1], True) and
+    ReadFileStamp(Path + '-journal', State.Files[2], True)));
+end;
+
+function TAuditLog.Resume(const Checkpoint: string): Boolean;
+var
+  Current: TAuditSessionCache;
+begin
+  Result := FCacheable and (FCache^.Path = FStoragePath) and
+    ((Checkpoint = '') or (Checkpoint = FCache^.Head)) and
+    ReadStorageStamp(FStoragePath, Assigned(FDatabase), Current) and
+    CompareMem(@Current.Files, @FCache^.Files, SizeOf(Current.Files)) and
+    (Assigned(FDatabase) or CompareMem(@Current.Files[0], @FLastFileStamp, SizeOf(FLastFileStamp)));
+  if not Result then
+    Exit;
+  FHead := FCache^.Head;
+  FPending := FCache^.Pending;
+  FPendingCommand := FCache^.PendingCommand;
+  FRecords := FCache^.Records;
+  FInterrupted := FCache^.Interrupted;
+  FInitialized := FCache^.Initialized;
+end;
+
+procedure TAuditLog.Remember;
+var
+  Current: TAuditSessionCache;
+begin
+  // The caller holds the library lock and has committed the audit outcome.
+  if not FCacheable or not ReadStorageStamp(FStoragePath, Assigned(FDatabase), Current) then
+    Exit;
+  if Assigned(FDatabase) then
+  begin
+    if (Current.Files[0].Device <> FLastFileStamp.Device) or
+      (Current.Files[0].Inode <> FLastFileStamp.Inode) or
+      (FDatabase.AuditCacheVersion <> FCacheVersion) then
+      Exit;
+  end
+  else if not CompareMem(@Current.Files[0], @FLastFileStamp, SizeOf(FLastFileStamp)) then
+    Exit;
+  Current.Path := FStoragePath;
+  Current.Head := FHead;
+  Current.Pending := FPending;
+  Current.PendingCommand := FPendingCommand;
+  Current.Records := FRecords;
+  Current.Interrupted := FInterrupted;
+  Current.Initialized := FInitialized;
+  FCache^ := Current;
+end;
+
 constructor TAuditLog.Create(const Path: string; AllowCreate, ReadOnly: Boolean;
-  const Checkpoint: string; RepairTail: Boolean);
+  const Checkpoint: string; RepairTail: Boolean; Cache: PAuditSessionCache);
 var
   Flags: cint;
   Info: Stat;
@@ -73,7 +170,7 @@ var
 begin
   inherited Create;
   FHandle := -1;
-  FPath := Path;
+  FStoragePath := Path;
   FHead := StringOfChar('0', HashLength);
   if ReadOnly then
   begin
@@ -98,20 +195,36 @@ begin
     raise EScuError.Create('Expected a regular audit log file.');
   if Created then
     SyncParent(Path);
-  Scan(Checkpoint, RepairTail);
+  if not ReadOnly and not RepairTail then
+    FCache := Cache;
+  FCacheable := Assigned(FCache);
+  FLastFileStamp := FileStamp(Info);
+  if not Resume(Checkpoint) then
+    Scan(Checkpoint, RepairTail);
 end;
 
-constructor TAuditLog.Create(Database: TSQLiteLibrary; const Checkpoint: string; VerifyData: Boolean);
+constructor TAuditLog.Create(Database: TSQLiteLibrary; const Checkpoint: string;
+  VerifyData: Boolean; Cache: PAuditSessionCache);
 begin
   inherited Create;
   FHandle := -1;
   FDatabase := Database;
+  FStoragePath := Database.Path;
   FHead := StringOfChar('0', HashLength);
   if VerifyData then
   begin
     FContents := TAuditRevisionDigests.Create;
     FContents.Sorted := True;
+  end
+  else
+    FCache := Cache;
+  if Assigned(FCache) then
+  begin
+    FCacheVersion := Database.AuditCacheVersion;
+    FCacheable := (FCacheVersion <> '') and ReadFileStamp(FStoragePath, FLastFileStamp, False);
   end;
+  if Resume(Checkpoint) then
+    Exit;
   FCheckpoint := Checkpoint;
   FFoundCheckpoint := Checkpoint = '';
   Database.ReadAudit(@Accept);
@@ -304,7 +417,7 @@ begin
         [Offset]);
     if fpFTruncate(FHandle, Offset) <> 0 then
       RaiseLastOSError(fpGetErrNo);
-    SyncFile(FHandle, FPath);
+    SyncFile(FHandle, FStoragePath);
     FRepairedBytes := Length(Line);
   end;
 end;
@@ -313,6 +426,8 @@ procedure TAuditLog.Append(Event: TJSONObject);
 var
   Payload, Line: RawByteString;
   Stream: THandleStream;
+  Info: Stat;
+  Current: TAuditFileStamp;
 begin
   Event.Add('utc', UtcTimestamp(UtcNow));
   Payload := Event.AsJSON;
@@ -325,11 +440,27 @@ begin
     FDatabase.AppendAudit(Line);
     Exit;
   end;
+  if FCacheable then
+  begin
+    FCacheable := fpFStat(FHandle, Info) = 0;
+    if FCacheable then
+    begin
+      Current := FileStamp(Info);
+      FCacheable := CompareMem(@Current, @FLastFileStamp, SizeOf(Current));
+    end;
+  end;
   Line := Line + #10;
   Stream := THandleStream.Create(FHandle);
   try
     Stream.WriteBuffer(Line[1], Length(Line));
-    SyncFile(FHandle, FPath);
+    SyncFile(FHandle, FStoragePath);
+    if FCacheable then
+    begin
+      FCacheable := (fpFStat(FHandle, Info) = 0) and
+        (QWord(Info.st_size) = FLastFileStamp.Size + QWord(Length(Line)));
+      if FCacheable then
+        FLastFileStamp := FileStamp(Info);
+    end;
   finally
     Stream.Free;
   end;

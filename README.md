@@ -62,14 +62,17 @@ Use `ln=PATH` to initialize a new library with an extensionless name.
 
 At the `scu>` prompt, enter one command per line. Use single or double quotes
 for values with spaces, such as `extract_deck main.pas output_file="working copy.pas"`.
+An assignment such as `output_file=` supplies an empty value. Attach a named
+value directly after `=`, as in `ln=project.sqlite`, or use `--library project.sqlite`.
 Interactive library changes are visible in the session and stay in memory
 until you run `save_library` (`savl`). Enter `quit_session`, `quit`, or `q` to
 save pending changes and leave, or use `quit save_library=no` to discard changes
-since the last save. End-of-input and terminal hangup also save pending
-changes. If a hangup save fails, SCU attempts to write a private recovery JSON
-file beside the library. If the original SQLite database is unavailable, the
-recovery file contains the pending revisions and header. One-shot commands
-save immediately, and `initialize_library` creates the empty library immediately.
+since the last save. End-of-input, terminal hangup, SIGTERM, and SIGQUIT also
+save pending changes. If a signal-triggered save fails, SCU attempts to write a
+private recovery JSON file beside the library. If the original SQLite database
+is unavailable, the recovery file contains the pending revisions and header.
+One-shot commands save immediately, and `initialize_library` creates the empty
+library immediately.
 If another session changes the saved library, a save reports the conflict.
 At a terminal, SCU keeps the pending changes available at the prompt. When
 reading redirected input, SCU omits the `scu>` prompt. Errors are reported and
@@ -416,8 +419,10 @@ writing their output. `build=no` skips the build. A bulk expansion runs the
 command once when it writes at least one deck or a previous SQLite expansion
 is waiting to be built. The shell runs in the current working directory and
 receives the absolute output file or directory as `$1`. Builds receive empty
-standard input. Review the build command before expanding a library from
-someone else, or use `build=no` to expand without running it.
+standard input. At an interactive terminal, a build can prompt through `/dev/tty`.
+SCU restores the terminal after the build. Review the build command before
+expanding a library from someone else, or use `build=no` to expand without
+running it.
 
 ```sh
 scu modify_library build_command='cc "$1" -o main'
@@ -483,8 +488,9 @@ An attempt without a recorded outcome
 is counted as interrupted.
 
 Each audit line contains a lowercase SHA-256 digest, a space, and the JSON
-event. The digest covers the literal `SCU audit v1 ` prefix, the previous
-digest (64 zeros for the first line), a space, and the exact JSON bytes. The
+event. The chain uses no secret key. The digest covers the literal
+`SCU audit v1 ` prefix, the previous digest (64 zeros for the first line), a
+space, and the exact JSON bytes. The
 chain detects changed records and partial writes. For JSON audit logs,
 `verify_audit` reports the byte offset of an incomplete final record.
 `repair_audit` verifies every complete record before removing the incomplete
@@ -503,6 +509,11 @@ head detects changes to the chain through that checkpoint. New saves record
 SHA-256 digests of the header and newly saved deck revisions. `verify_audit`
 checks those digests against the library. Older revisions without a recorded
 digest still have their stored SHA-1 checked when extracted.
+
+Interactive sessions and scripts read from standard input reuse their verified
+audit state between commands when the audit storage matches the session's last
+write. SCU scans the chain again after another process changes the storage.
+`verify_audit` (also `verify_audit_trail`) always scans the full chain.
 
 ## Historical reference
 

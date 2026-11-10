@@ -13,6 +13,7 @@ type
   TSQLiteLibrary = class
   private
     FHandle: psqlite3;
+    FPath: string;
     FReadOnly: Boolean;
     procedure Check(Status: cint);
     function Prepare(const SQL: RawByteString): psqlite3_stmt;
@@ -35,6 +36,7 @@ type
     function ReadRevision(Sequence: Integer): TJSONObject;
     procedure SaveMetadata(const Payload: RawByteString);
     procedure AppendRevision(Sequence: Integer; const Deck, Version, DeckRevision, Payload: RawByteString);
+    function AuditCacheVersion: string;
     procedure ReadAudit(Visit: TAuditLineVisitor);
     procedure AppendAudit(const Line: RawByteString);
     procedure ExportAudit(Dest: TStream; Limit: Int64);
@@ -46,6 +48,7 @@ type
     procedure SaveExpansionCheckpoint(const Version, Directory, Prefix: string; Revision: Integer;
       BuildPending: Boolean);
     property CurrentVersion: string read GetCurrentVersion;
+    property Path: string read FPath;
   end;
 
 function IsSQLiteLibrary(const Path: string): Boolean;
@@ -95,6 +98,7 @@ var
   Flags, Handle: cint;
 begin
   inherited Create;
+  FPath := Path;
   FReadOnly := ReadOnly;
   if ReadOnly then
     Flags := SQLITE_OPEN_READONLY
@@ -470,6 +474,17 @@ begin
     Next(Statement);
   finally
     sqlite3_finalize(Statement);
+  end;
+end;
+
+function TSQLiteLibrary.AuditCacheVersion: string;
+begin
+  try
+    // A custom trigger may change earlier audit records during our own transaction.
+    Result := Scalar('SELECT data_version FROM pragma_data_version ' +
+      'WHERE NOT EXISTS (SELECT 1 FROM sqlite_master WHERE type = ''trigger'')');
+  except
+    on E: EScuError do Result := '';
   end;
 end;
 

@@ -9,12 +9,13 @@ uses
 
 type
   EScuError = class(Exception);
+  TStopLockWait = function: Boolean;
 
   TLibraryLock = class
   private
     FHandle: THandle;
   public
-    constructor Create(const Path: string);
+    constructor Create(const Path: string; StopWaiting: TStopLockWait = nil);
     constructor CreateForDirectory(const Path: string);
     destructor Destroy; override;
   end;
@@ -84,9 +85,9 @@ begin
   Result := StrPas(@Resolved[0]);
 end;
 
-constructor TLibraryLock.Create(const Path: string);
+constructor TLibraryLock.Create(const Path: string; StopWaiting: TStopLockWait);
 var
-  Status: cint;
+  Flags, Error: cint;
   Info: Stat;
 begin
   inherited Create;
@@ -95,11 +96,20 @@ begin
     RaiseLastOSError(fpGetErrNo);
   if (fpFStat(FHandle, Info) <> 0) or not FPS_ISREG(Info.st_mode) then
     raise EScuError.Create('Expected a regular library lock file.');
-  repeat
-    Status := fpFlock(FHandle, LOCK_EX);
-  until (Status = 0) or (fpGetErrNo <> ESysEINTR);
-  if Status <> 0 then
-    RaiseLastOSError(fpGetErrNo);
+  Flags := LOCK_EX;
+  if Assigned(StopWaiting) then
+    Flags := Flags or LOCK_NB;
+  while fpFlock(FHandle, Flags) <> 0 do
+  begin
+    Error := fpGetErrNo;
+    if Error = ESysEINTR then
+      Continue;
+    if not Assigned(StopWaiting) or (Error <> ESysEWOULDBLOCK) then
+      RaiseLastOSError(Error);
+    if StopWaiting() then
+      raise EScuError.CreateFmt('Library lock %s is busy during shutdown.', [Path]);
+    Sleep(20);
+  end;
 end;
 
 constructor TLibraryLock.CreateForDirectory(const Path: string);

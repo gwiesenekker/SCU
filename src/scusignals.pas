@@ -21,13 +21,22 @@ procedure StartSessionSignals(out Previous: TSessionSignalHandlers);
 procedure RestoreSessionSignals(const Previous: TSessionSignalHandlers);
 procedure NoteSessionSignal(Signal: cint); cdecl;
 procedure CheckSessionInterrupt;
-procedure WaitForChild(Child: TProcess; OwnProcessGroup: Boolean = False);
-function ChildExitStatus(Child: TProcess): Integer;
+function SessionEnding: Boolean;
+procedure StartBuildProcessGroup;
+function WaitForChild(Child: TProcess; OwnProcessGroup: Boolean = False;
+  ChildHandlesInterrupt: Boolean = False): Integer;
 
 implementation
 
 uses
-  SysUtils;
+  SysUtils, Unix, Termio, InitC;
+
+var
+  ChildOwnsInterrupt: Boolean;
+
+function setpgid(Pid, Group: cint): cint; cdecl; external 'c';
+function tcgetpgrp(Handle: cint): cint; cdecl; external 'c';
+function tcsetpgrp(Handle, Group: cint): cint; cdecl; external 'c';
 
 procedure NoteSessionSignal(Signal: cint); cdecl;
 begin
@@ -41,9 +50,15 @@ begin
     raise ECommandCancelled.Create('Command cancelled.');
 end;
 
+function SessionEnding: Boolean;
+begin
+  Result := SessionSignal in [SIGHUP, SIGTERM, SIGQUIT];
+end;
+
 procedure HandleSessionSignal(Signal: cint; Info: PSigInfo; Context: PSigContext); cdecl;
 begin
-  NoteSessionSignal(Signal);
+  if (Signal <> SIGINT) or not ChildOwnsInterrupt then
+    NoteSessionSignal(Signal);
 end;
 
 procedure StartSessionSignals(out Previous: TSessionSignalHandlers);
@@ -70,40 +85,107 @@ begin
     fpSigAction(SessionSignals[Index], @Previous[Index], nil);
 end;
 
-procedure WaitForChild(Child: TProcess; OwnProcessGroup: Boolean);
+function SetForegroundGroup(Group: cint): Boolean;
 var
-  Sent: cint;
-  Deadline: QWord;
+  Blocked, Previous: TSigSet;
+  Status: cint;
 begin
-  Sent := 0;
-  Deadline := 0;
-  Child.Execute;
-  while Child.Running do
-  begin
-    if (SessionSignal <> 0) and (SessionSignal <> Sent) then
-    begin
-      Sent := SessionSignal;
-      if not OwnProcessGroup or (fpKill(-Child.ProcessID, Sent) <> 0) then
-        fpKill(Child.ProcessID, Sent);
-      if OwnProcessGroup or (Sent <> SIGINT) then
-        Deadline := GetTickCount64 + 1500;
-    end
-    else if (Deadline <> 0) and (GetTickCount64 >= Deadline) then
-    begin
-      if not OwnProcessGroup or (fpKill(-Child.ProcessID, SIGKILL) <> 0) then
-        fpKill(Child.ProcessID, SIGKILL);
-      Deadline := 0;
-    end;
-    Sleep(10);
-  end;
+  // The caller may be in the background while transferring the terminal.
+  fpSigEmptySet(Blocked);
+  fpSigAddSet(Blocked, SIGTTOU);
+  if fpSigProcMask(SIG_BLOCK, @Blocked, @Previous) <> 0 then
+    Exit(False);
+  repeat
+    Status := tcsetpgrp(StdInputHandle, Group);
+  until (Status = 0) or (cerrno <> ESysEINTR);
+  fpSigProcMask(SIG_SETMASK, @Previous, nil);
+  Result := Status = 0;
 end;
 
-function ChildExitStatus(Child: TProcess): Integer;
+procedure StartBuildProcessGroup;
+var
+  Foreground: Boolean;
 begin
-  if WIfSignaled(Child.ExitStatus) then
-    Result := 128 + WTermSig(Child.ExitStatus)
-  else
-    Result := Child.ExitCode;
+  Foreground := tcgetpgrp(StdInputHandle) = fpGetPGrp;
+  if setpgid(0, 0) <> 0 then
+    fpExit(126);
+  // Give the build the terminal before it can read or write to it.
+  if Foreground and not SetForegroundGroup(fpGetPGrp) then
+    fpExit(126);
+end;
+
+function WaitForChild(Child: TProcess; OwnProcessGroup, ChildHandlesInterrupt: Boolean): Integer;
+var
+  Sent, Status, WaitOptions, ForegroundGroup: cint;
+  Pid, Waited: TPid;
+  Deadline: QWord;
+  TerminalMode: TermIOS;
+  RestoreTerminal, Stopped: Boolean;
+
+  procedure SignalChild(Signal: cint);
+  begin
+    if not OwnProcessGroup or (fpKill(-Pid, Signal) <> 0) then
+      fpKill(Pid, Signal);
+  end;
+
+begin
+  CheckSessionInterrupt;
+  if SessionEnding then
+    raise ECommandCancelled.Create('Command cancelled.');
+  ForegroundGroup := fpGetPGrp;
+  RestoreTerminal := OwnProcessGroup and (tcgetpgrp(StdInputHandle) = ForegroundGroup) and
+    (TCGetAttr(StdInputHandle, TerminalMode) = 0);
+  WaitOptions := WNOHANG;
+  if OwnProcessGroup then
+    WaitOptions := WaitOptions or WUNTRACED;
+  Sent := 0;
+  Deadline := 0;
+  Stopped := False;
+  ChildOwnsInterrupt := ChildHandlesInterrupt;
+  try
+    Child.Execute;
+    Pid := Child.ProcessID;
+    repeat
+      repeat
+        Waited := fpWaitPid(Pid, @Status, WaitOptions);
+      until (Waited >= 0) or (fpGetErrNo <> ESysEINTR);
+      if Waited < 0 then
+        RaiseLastOSError(fpGetErrNo);
+      if Waited = Pid then
+      begin
+        if not WIfStopped(Status) then
+          Break;
+        // A stopped build cannot finish while SCU is waiting for it.
+        Stopped := True;
+        SignalChild(SIGKILL);
+      end
+      else if (SessionSignal <> 0) and (SessionSignal <> Sent) then
+      begin
+        Sent := SessionSignal;
+        SignalChild(Sent);
+        Deadline := GetTickCount64 + 1500;
+      end
+      else if (Deadline <> 0) and (GetTickCount64 >= Deadline) then
+      begin
+        SignalChild(SIGKILL);
+        Deadline := 0;
+      end;
+      Sleep(10);
+    until False;
+    if Stopped then
+      raise EScuError.Create('Build command stopped before it finished.');
+    if WIfSignaled(Status) then
+      Result := 128 + WTermSig(Status)
+    else
+      Result := WExitStatus(Status);
+  finally
+    ChildOwnsInterrupt := False;
+    if RestoreTerminal and SetForegroundGroup(ForegroundGroup) then
+    begin
+      while (TCSetAttr(StdInputHandle, TCSANOW, TerminalMode) <> 0) and
+        (fpGetErrNo = ESysEINTR) do ;
+    end;
+  end;
 end;
 
 end.

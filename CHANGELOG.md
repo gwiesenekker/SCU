@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Keep empty named arguments separate from following values to protect output files.
+- Save or recover pending changes on SIGTERM and SIGQUIT, give interactive builds the terminal, and retain successful editor saves after Ctrl+C.
+- Add `verify_audit_trail` as an alias for `verify_audit`.
+- Reuse verified audit state within a session to keep command scripts fast as the log grows.
 - Default extract and expand destinations to the selected deck, respect explicit empty arguments, and accept `--option=value`.
 - Preserve unsaved edits across interrupted builds and terminal hangups, with a recovery file when a hangup save fails.
 - Isolate build input, serialize expansion output directories, and resolve bare editor names through PATH.

@@ -23,6 +23,8 @@ type
     FArguments, FOptions: TStringList;
     FInteractive, FFromSnapshotOmitted: Boolean;
     FPendingLibrary: TDeckLibrary;
+    FAuditCache: TAuditSessionCache;
+    function SessionAuditCache: PAuditSessionCache;
     function Definition(const Name: string): TJSONObject;
     function Option(const Name: string; const Default: string = ''): string;
     function ResolveSnapshot(LibraryFile: TDeckLibrary): TLibrarySnapshot;
@@ -62,8 +64,6 @@ const
   CurrentLibraryVersionSelector = 'scu$current_library_version';
   LibraryDirectorySelector = 'scu$library_directory';
   DeckNameSelector = 'scu$deck_name';
-
-function setpgid(Pid, Group: cint): cint; cdecl; external 'c';
 
 function CommandFile: string;
 var
@@ -121,6 +121,13 @@ begin
     Result := FOptions.ValueFromIndex[Index];
 end;
 
+function TScuCLI.SessionAuditCache: PAuditSessionCache;
+begin
+  Result := nil;
+  if FInteractive then
+    Result := @FAuditCache;
+end;
+
 function TScuCLI.SelectLibrary(Tokens: TStrings): Integer;
 var
   First, Name, LegacyDefault: string;
@@ -142,7 +149,7 @@ begin
       MatchesDefinition(FLibraryOption, Name) then
     begin
       Result := 1;
-      if (EqualsAt > 0) and (EqualsAt < Length(First)) then
+      if EqualsAt > 0 then
         FLibraryPath := Copy(First, EqualsAt + 1, MaxInt)
       else
       begin
@@ -151,6 +158,8 @@ begin
         FLibraryPath := Tokens[1];
         Result := 2;
       end;
+      if FLibraryPath = '' then
+        raise EScuError.CreateFmt('Expected a library name for %s.', [First]);
     end
     else if (Copy(First, 1, 1) <> '-') and (FindDefinition(FCommands, First) < 0) then
     begin
@@ -390,10 +399,7 @@ begin
           raise EScuError.CreateFmt('Ambiguous argument or option "%s" for %s.', [Key, FCommand]);
         if (Slot >= 0) or (OptionSlot >= 0) then
         begin
-          if (EqualsAt = Length(Value)) and ValueFollows then
-            Value := ReadValue(Key)
-          else
-            Value := Copy(Value, EqualsAt + 1, MaxInt);
+          Value := Copy(Value, EqualsAt + 1, MaxInt);
           if Slot >= 0 then
             SetArgument(Slot, Value)
           else
@@ -964,8 +970,7 @@ end;
 
 procedure TScuCLI.BuildProcessGroup(Sender: TObject);
 begin
-  if setpgid(0, 0) <> 0 then
-    fpExit(126);
+  StartBuildProcessGroup;
 end;
 
 procedure TScuCLI.RunBuild(const Build: TBuildRequest; const AuditPath, Expansion: string);
@@ -975,6 +980,7 @@ var
   Audit: TAuditLog;
   Database: TSQLiteLibrary;
   Failure: string;
+  Status: Integer;
 begin
   Failure := '';
   try
@@ -987,11 +993,11 @@ begin
       Child.Parameters.Add(Build.OutputPath);
       if FInteractive then
         Child.OnForkEvent := @BuildProcessGroup;
-      WaitForChild(Child, FInteractive);
-      if SessionSignal <> 0 then
+      Status := WaitForChild(Child, FInteractive);
+      if (SessionSignal <> 0) or (Status = 128 + SIGINT) then
         raise EScuError.Create('Build command interrupted.');
-      if ChildExitStatus(Child) <> 0 then
-        raise EScuError.CreateFmt('Build command failed with exit status %d.', [ChildExitStatus(Child)]);
+      if Status <> 0 then
+        raise EScuError.CreateFmt('Build command failed with exit status %d.', [Status]);
     finally
       Child.Free;
     end;
@@ -1000,7 +1006,7 @@ begin
   end;
 
   try
-    Lock := TLibraryLock.Create(FLibraryPath + '.lock');
+    Lock := TLibraryLock.Create(FLibraryPath + '.lock', @SessionEnding);
     try
       Database := nil;
       try
@@ -1009,10 +1015,10 @@ begin
           Database := TSQLiteLibrary.Create(FLibraryPath, False, False);
           Database.BeginTransaction(False);
           Database.EnsureSchema(False);
-          Audit := TAuditLog.Create(Database, Expansion);
+          Audit := TAuditLog.Create(Database, Expansion, False, SessionAuditCache);
         end
         else
-          Audit := TAuditLog.Create(AuditPath, False, False, Expansion);
+          Audit := TAuditLog.Create(AuditPath, False, False, Expansion, False, SessionAuditCache);
         try
           if (Failure = '') and (Build.Checkpoint.Version <> '') then
             Database.SaveExpansionCheckpoint(Build.Checkpoint.Version, Build.OutputPath,
@@ -1020,6 +1026,7 @@ begin
           Audit.RecordBuild(Expansion, Build.Command, Build.OutputPath, Failure = '', Failure);
           if Assigned(Database) then
             Database.Commit;
+          Audit.Remember;
         finally
           Audit.Free;
         end;
@@ -1158,9 +1165,9 @@ begin
     begin
       TransferPath := OutputPath(FArguments[0]);
       OutputPath(TransferPath + '.audit');
-      TransferLock := TLibraryLock.Create(OutputPath(TransferPath + '.lock'));
+      TransferLock := TLibraryLock.Create(OutputPath(TransferPath + '.lock'), @SessionEnding);
     end;
-    Lock := TLibraryLock.Create(FLibraryPath + '.lock');
+    Lock := TLibraryLock.Create(FLibraryPath + '.lock', @SessionEnding);
     Checkpoint := Option('head');
     if (FOptions.IndexOfName('head') >= 0) and not IsHexDigest(Checkpoint, 64) then
       raise EScuError.Create('Expected a lowercase SHA-256 audit head.');
@@ -1176,7 +1183,7 @@ begin
       Database.BeginTransaction(Verifying);
       Database.EnsureSchema(Initializing or Importing);
       LibraryExists := Database.StateKey <> '';
-      Audit := TAuditLog.Create(Database, Checkpoint, Verifying or Importing);
+      Audit := TAuditLog.Create(Database, Checkpoint, Verifying or Importing, SessionAuditCache);
     end
     else
     begin
@@ -1185,7 +1192,7 @@ begin
       if not LibraryExists and not Initializing and not Verifying and not RegularFileExists(AuditPath) then
         RaiseMissingLibrary;
       Audit := TAuditLog.Create(AuditPath, Initializing and not LibraryExists, Verifying, Checkpoint,
-        FCommand = 'repair_audit');
+        FCommand = 'repair_audit', SessionAuditCache);
     end;
     if (LibraryExists or Assigned(FPendingLibrary)) and (Audit.Records = 0) then
       raise EScuError.Create('The audit log for the existing library is empty.');
@@ -1269,7 +1276,7 @@ begin
         else
         begin
           Detail := ExecuteLibrary(LibraryFile, Database, OutputDirectory, SnapshotsUsed, Build);
-          if SessionSignal <> SIGHUP then
+          if not SessionEnding then
             Flush(Output);
           if Assigned(Database) and not FInteractive then
             LibraryFile.Save;
@@ -1286,6 +1293,7 @@ begin
           Audit.EndCommand(False, E.Message, SnapshotsUsed, Assigned(FPendingLibrary));
           if Assigned(Database) then
             Database.Commit;
+          Audit.Remember;
         except
           on AuditError: Exception do
             raise EScuError.CreateFmt('%s Also could not save the audit outcome: %s',
@@ -1308,13 +1316,14 @@ begin
       if Assigned(Database) then
         Database.Commit;
       Committed := True;
+      Audit.Remember;
       if Build.Command <> '' then
         Expansion := Audit.Head;
     except
       on E: Exception do
         raise EScuError.Create('Could not commit the command outcome: ' + E.Message);
     end;
-    if (Detail <> '') and (SessionSignal <> SIGHUP) then
+    if (Detail <> '') and not SessionEnding then
       WriteLn(Detail);
     if FCommand = 'display_library' then
       WriteLn(LibraryFile.HeaderJSON);
@@ -1374,6 +1383,8 @@ begin
   try
     RunInteractiveSession(Tokens);
   finally
+    if SessionSignal in [SIGTERM, SIGQUIT] then
+      ExitCode := 128 + SessionSignal;
     RestoreSessionSignals(Previous);
   end;
 end;
@@ -1449,14 +1460,9 @@ begin
       end
       else
       begin
-        if (SessionSignal = SIGTERM) or (SessionSignal = SIGQUIT) then
-        begin
-          ExitCode := 128 + SessionSignal;
-          Exit;
-        end;
         if SessionSignal = SIGINT then
           Continue;
-        EndOfInput := (Prompt = '') or (SessionSignal = SIGHUP) or (IsATTY(Input) <> 1);
+        EndOfInput := (Prompt = '') or SessionEnding or (IsATTY(Input) <> 1);
         if EndOfInput and (SessionSignal = 0) and not SawCommand and not FileExists(FLibraryPath) then
           raise EScuError.CreateFmt('Library "%s" does not exist. Use initialize_library to create it.',
             [FLibraryPath]);
@@ -1482,12 +1488,12 @@ begin
       on E: Exception do
       begin
         WriteDiagnostic('scu: ' + E.Message);
-        if EndOfInput and (SessionSignal = SIGHUP) then
+        if EndOfInput and SessionEnding then
           RecoverPendingLibrary;
         ExitCode := 1;
       end;
     end;
-    if SessionSignal <> SIGHUP then
+    if not SessionEnding then
       Flush(Output);
   until EndOfInput;
 end;

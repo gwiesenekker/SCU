@@ -115,6 +115,26 @@ class ScuIntegration(unittest.TestCase):
         self.run_scu("conl", "bc=")
         self.assertEqual(json.loads(self.run_scu("show_library"))["build_command"], "")
 
+    def test_empty_named_output_does_not_consume_the_following_deck(self):
+        self.store("main.pas", b"stored main\n")
+        self.store("shared.inc", b"stored shared\n")
+        working = self.root / "main.pas"
+        working.write_bytes(b"unsaved work\n")
+        for command in ("extract_deck", "expand_deck"):
+            with self.subTest(command=command):
+                result = subprocess.run(
+                    ["sh", "-c", 'OUT=""; "$1" "$2" output_file=$OUT main.pas', "sh", SCU, command],
+                    cwd=self.root, capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn("Expected a file path", result.stderr)
+                self.assertEqual(working.read_bytes(), b"unsaved work\n")
+        result = subprocess.run([SCU], cwd=self.root, input='extd o="" main.pas\n',
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("Expected a file path", result.stderr)
+        self.assertEqual(working.read_bytes(), b"unsaved work\n")
+
     def test_review_editor_uses_path_and_removes_backup_files(self):
         self.store("main", b"old")
         programs = self.root / "programs"
@@ -558,6 +578,46 @@ class ScuIntegration(unittest.TestCase):
         with closing(sqlite3.connect(original_db, isolation_level=None)) as connection:
             connection.execute("UPDATE deck_revisions SET payload = json_set(?, '$.sha1', ?)", (payload, "0" * 40))
         self.run_scu(original_db, "extd", "main", "tampered-output", error="SHA-1")
+
+    def test_interactive_audit_detects_changes_from_other_processes(self):
+        database = self.root / "shared.sqlite"
+        self.run_scu(database, "init")
+        for library in (self.library, database):
+            with self.subTest(library=library), closing(sqlite3.connect(database, isolation_level=None)) as db:
+                if library == database:
+                    self.assertEqual(db.execute("PRAGMA journal_mode=WAL").fetchone(), ("wal",))
+                with self.terminal_session(library, TERM="dumb") as (process, terminal, read_until):
+                    read_until(b"scu> ")
+                    # An independent SCU writer extends the chain between commands.
+                    self.run_scu(library, "list_versions")
+                    head = self.run_scu(library, "verify_audit").split("head=")[1]
+                    os.write(terminal, b"list_versions\n")
+                    self.assertIn(b"1.0\topen", read_until(b"scu> "))
+                    self.assertIn("records=8 interrupted=0", self.run_scu(library, "verify_audit", "head=" + head))
+
+                    # Change an older record without changing the chain's tail.
+                    if library == self.library:
+                        original = self.audit.read_bytes()
+                        stamps = self.audit.stat()
+                        self.audit.write_bytes(original.replace(b'"phase"', b'"phaze"', 1))
+                        os.utime(self.audit, ns=(stamps.st_atime_ns, stamps.st_mtime_ns))
+                    else:
+                        original, = db.execute("SELECT line FROM audit_records WHERE sequence = 1").fetchone()
+                        db.execute("UPDATE audit_records SET line = ? WHERE sequence = 1",
+                                   (original.replace('"phase"', '"phaze"', 1),))
+                    os.write(terminal, b"list_versions\n")
+                    self.assertIn(b"Audit digest mismatch at record 1", read_until(b"scu> "))
+                    self.run_scu(library, "verify_audit_trail", error="Audit digest mismatch at record 1")
+
+                    if library == self.library:
+                        self.audit.write_bytes(original)
+                    else:
+                        db.execute("UPDATE audit_records SET line = ? WHERE sequence = 1", (original,))
+                    os.write(terminal, b"list_versions\n")
+                    self.assertIn(b"1.0\topen", read_until(b"scu> "))
+                    self.assertIn("records=10 interrupted=0", self.run_scu(library, "verify_audit", "head=" + head))
+                    os.write(terminal, b"quit\n")
+                    self.assertEqual(process.wait(timeout=5), 1)
 
     def test_review_source_and_expansion_limits(self):
         source = self.root / "oversized"
@@ -1043,9 +1103,10 @@ class ScuIntegration(unittest.TestCase):
             ("display_deck", "deck_name=main.pas"),
             ("disd", "dn=main.pas"),
             ("disd", "main.pas"),
-            ("DD", "DN=", "main.pas"),
+            ("DD", "DN=main.pas"),
         ):
             self.assertEqual(self.run_scu(*arguments), expected)
+        self.run_scu("DD", "DN=", "main.pas", error="Too many arguments")
         listing = self.run_scu("display_deck_list", "--version", "1.1")
         self.assertEqual(self.run_scu("ddl", "v=1.1"), listing)
         self.assertEqual(self.run_scu("list_decks", "version=1.1"), listing)
@@ -1286,7 +1347,8 @@ class ScuIntegration(unittest.TestCase):
         self.run_scu(f"ln={name}", "store_deck", "main.pas", "source")
         self.assertEqual(self.run_scu(f"library_name={name}", "ddl"), "main.pas\t1.0-0.000")
         self.assertEqual(self.run_scu("--library", name, "ddl"), "main.pas\t1.0-0.000")
-        self.assertEqual(self.run_scu("ln=", name, "ddl"), "main.pas\t1.0-0.000")
+        self.assertEqual(self.run_scu("--ln", name, "ddl"), "main.pas\t1.0-0.000")
+        self.run_scu("ln=", name, "ddl", error="Expected a library name")
         self.assertEqual(self.run_scu("ddl"), "")
         self.run_scu("ln=", error="Expected a library name")
         self.run_scu("ln=init", "init")
@@ -1622,15 +1684,22 @@ class ScuIntegration(unittest.TestCase):
         self.run_scu("extract_deck", error="Missing required argument deck_name", executable=executable)
 
     @contextmanager
-    def terminal_session(self, *arguments, columns=None, rows=24, executable=SCU, **environment):
+    def terminal_session(self, *arguments, columns=None, rows=24, executable=SCU,
+                         controlling=False, **environment):
         master, slave = pty.openpty()
         env = dict(os.environ, XDG_STATE_HOME=str(self.root / "state"))
         env.update(environment)
+
+        def take_terminal():
+            os.setsid()
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
         try:
             if columns is not None:
                 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
             with subprocess.Popen([executable, *arguments], cwd=self.root, env=env, stdin=slave,
-                                  stdout=slave, stderr=slave) as process:
+                                  stdout=slave, stderr=slave,
+                                  preexec_fn=take_terminal if controlling else None) as process:
                 os.close(slave)
                 slave = None
 
@@ -1837,11 +1906,101 @@ class ScuIntegration(unittest.TestCase):
             self.assertEqual(process.wait(timeout=5), 0)
             self.assertTrue(termios.tcgetattr(terminal)[3] & termios.ICANON)
         self.assertIn("pending\t", self.run_scu("ddl"))
-        with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
+        for termination in (signal.SIGTERM, signal.SIGQUIT):
+            with self.subTest(signal=termination), self.terminal_session(TERM="xterm") as (
+                process, terminal, read_until
+            ):
+                read_until(b"scu> ")
+                name = termination.name.lower()
+                os.write(terminal, f"cred {name}\n".encode())
+                self.assertIn(b"version 1.0", read_until(b"scu> "))
+                process.send_signal(termination)
+                self.assertEqual(process.wait(timeout=5), 128 + termination)
+                self.assertTrue(termios.tcgetattr(terminal)[3] & termios.ICANON)
+                self.assertIn(f"{name}\t", self.run_scu("ddl"))
+        self.assertIn("interrupted=0", self.run_scu("verify_audit"))
+
+    def test_termination_recovers_pending_changes_when_library_lock_is_busy(self):
+        lock_path = self.library.with_suffix(".json.lock")
+        with self.terminal_session(TERM="dumb") as (process, terminal, read_until), lock_path.open("rb") as lock:
             read_until(b"scu> ")
+            os.write(terminal, b"cred pending\n")
+            self.assertIn(b"pending version", read_until(b"scu> "))
+            fcntl.flock(lock, fcntl.LOCK_EX)
             process.send_signal(signal.SIGTERM)
             self.assertEqual(process.wait(timeout=5), 128 + signal.SIGTERM)
-            self.assertTrue(termios.tcgetattr(terminal)[3] & termios.ICANON)
+        recovery, = self.root.glob("library.json.recovery-*.json")
+        document = json.loads(recovery.read_bytes())
+        self.assertEqual([entry["deck"] for entry in document["revisions"]], ["pending"])
+        self.assertEqual(recovery.stat().st_mode & 0o777, 0o600)
+        self.assertNotIn("pending\t", self.run_scu("ddl"))
+
+    def test_sigterm_during_build_saves_pending_changes(self):
+        database = self.root / "project.sqlite"
+        self.run_scu(database, "init")
+        self.run_scu(database, "cred", "main")
+        self.run_scu(database, "conl", "bc=echo build-started; exec sleep 30")
+        with self.terminal_session(database, TERM="dumb", controlling=True) as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"cred pending\n")
+            self.assertIn(b"pending version", read_until(b"scu> "))
+            os.write(terminal, b"expd main built\n")
+            read_until(b"build-started")
+            process.send_signal(signal.SIGTERM)
+            self.assertEqual(process.wait(timeout=5), 128 + signal.SIGTERM)
+        self.assertIn("pending\t", self.run_scu(database, "ddl"))
+        self.assertIn("interrupted=0", self.run_scu(database, "verify_audit_trail"))
+
+    def test_build_uses_the_controlling_terminal_and_returns_it_to_scu(self):
+        self.store("main", b"source")
+        self.run_scu("conl", 'bc=stty tostop </dev/tty || exit; printf "Build answer? "; '
+                     'read answer </dev/tty; echo "got=$answer"')
+        with self.terminal_session(TERM="dumb", controlling=True) as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"expd main output\n")
+            read_until(b"Build answer? ")
+            os.write(terminal, b"yes\n")
+            self.assertIn(b"got=yes", read_until(b"scu> "))
+            self.assertFalse(termios.tcgetattr(terminal)[3] & termios.TOSTOP)
+            os.write(terminal, b"expd main output\n")
+            read_until(b"Build answer? ")
+            os.write(terminal, b"\x03")
+            self.assertIn(b"Build command interrupted", read_until(b"scu> "))
+            os.write(terminal, b"quit\n")
+            self.assertEqual(process.wait(timeout=5), 1)
+        events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit.read_bytes().splitlines()]
+        self.assertEqual([event["success"] for event in events if event["phase"] == "build"], [True, False])
+
+    def test_stopped_build_returns_control_to_scu(self):
+        self.store("main", b"source")
+        self.run_scu("conl", "bc=kill -STOP $$")
+        with self.terminal_session(TERM="dumb", controlling=True) as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"expd main output\n")
+            self.assertIn(b"Build command stopped before it finished", read_until(b"scu> "))
+            os.write(terminal, b"quit\n")
+            self.assertEqual(process.wait(timeout=5), 1)
+
+    def test_editor_save_is_kept_when_editor_handles_ctrl_c(self):
+        self.store("main", b"original\n")
+        editor = ["sh", "-c", 'trap \'echo editor-caught\' INT; echo editor-ready; '
+                  'while ! read answer || [ "$answer" != finish ]; do :; done; '
+                  'printf "edited\\n" >> "$0"']
+        self.run_scu("conl", "editor=" + json.dumps(editor))
+        with self.terminal_session(TERM="dumb", controlling=True) as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"edid main\n")
+            read_until(b"editor-ready")
+            os.write(terminal, b"\x03")
+            response = read_until(b"editor-caught")
+            os.write(terminal, b"finish\n")
+            response += read_until(b"scu> ")
+            self.assertEqual(response.count(b"editor-caught"), 1, response)
+            self.assertIn(b"main version 1.0 revision 0.001", response)
+            os.write(terminal, b"quit\n")
+            self.assertEqual(process.wait(timeout=5), 0)
+        self.run_scu("extd", "main", "saved")
+        self.assertEqual((self.root / "saved").read_bytes(), b"original\nedited\n")
 
     def test_review_hangup_conflict_writes_a_recovery_library(self):
         path = self.root / "project.sqlite"

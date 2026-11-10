@@ -370,10 +370,10 @@ var
       Bindings.PositionalOnly := True
     else if Position >= 0 then
     begin
-      if (EqualsAt = 0) or (EqualsAt = Length(Spelling)) then
+      if EqualsAt = 0 then
       begin
         Bindings.Pending := Position;
-        Bindings.ConsumeNamed := (EqualsAt = 0) and not ParameterRequired(ParameterAt(Position), False);
+        Bindings.ConsumeNamed := not ParameterRequired(ParameterAt(Position), False);
       end
       else
         RecordValue(Bindings, Position, Copy(Spelling, EqualsAt + 1, MaxInt));

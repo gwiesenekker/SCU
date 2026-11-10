@@ -648,7 +648,7 @@
     },
     {
       "name": "verify_audit",
-      "aliases": ["vera"],
+      "aliases": ["vera", "verify_audit_trail"],
       "summary": "Verify the audit chain and optionally check for a saved head.",
       "arguments": [],
       "options": [

@@ -80,7 +80,7 @@ var
   Updated: RawByteString;
   Editor: TProcess;
   Args: TJSONArray;
-  Index: Integer;
+  Index, Status: Integer;
 begin
   LibraryFile.RequireOpenVersion;
   Name := DeckName(Deck);
@@ -96,11 +96,11 @@ begin
       for Index := 1 to Args.Count - 1 do
         Editor.Parameters.Add(Args.Strings[Index]);
       Editor.Parameters.Add(Path);
-      WaitForChild(Editor);
-      if SessionSignal <> 0 then
+      Status := WaitForChild(Editor, False, True);
+      if SessionEnding then
         raise EScuError.Create('Editor interrupted.');
-      if ChildExitStatus(Editor) <> 0 then
-        raise EScuError.CreateFmt('Editor failed with exit status %d.', [ChildExitStatus(Editor)]);
+      if Status <> 0 then
+        raise EScuError.CreateFmt('Editor failed with exit status %d.', [Status]);
     finally
       Editor.Free;
     end;
