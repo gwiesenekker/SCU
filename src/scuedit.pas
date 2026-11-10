@@ -12,7 +12,7 @@ function EditDeck(LibraryFile: TDeckLibrary; Database: TSQLiteLibrary; const Dec
 implementation
 
 uses
-  SysUtils, Classes, BaseUnix, Process, ScuErrors, ScuFiles, ScuCodec, ScuSignals;
+  SysUtils, Classes, BaseUnix, Process, ScuErrors, ScuFiles, ScuCodec, ScuProcess, ScuSignals;
 
 function EditorPath(const Name: string): string;
 var

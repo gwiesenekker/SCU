@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Separate build and editor process handling from session signal handling.
 - Separate shared errors, file operations, and locks into dedicated units.
 - Separate SQLite connection and schema management, revision and audit storage, and checkpoint display formatting.
 - Use named SQLite open factories to start transactions and check schemas consistently.
