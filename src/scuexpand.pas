@@ -5,12 +5,13 @@ unit ScuExpand;
 interface
 
 uses
-  Classes, ScuLibrary;
+  Classes, ScuLibrary, ScuSQLite;
 
 type
   TDeckExpander = class
   private
     FLibrary: TDeckLibrary;
+    FDatabase: TSQLiteLibrary;
     FRevision: Integer;
     FPrefixOverride, FDefaultPrefix: string;
     FVersion, FMissingDeckVersion, FExpansionUTC: string;
@@ -24,7 +25,7 @@ type
     procedure ExpandInto(const Deck: string);
     procedure ExpandMacros(const Line: RawByteString; const Stored: TDeckSource);
   public
-    constructor Create(ALibrary: TDeckLibrary; ARevision: Integer; const Version, Prefix: string;
+    constructor Create(ALibrary: TDeckLibrary; Database: TSQLiteLibrary; ARevision: Integer; const Version, Prefix: string;
       const MissingDeckVersion: string = '');
     destructor Destroy; override;
     function Expand(const Deck: string): RawByteString;
@@ -34,7 +35,7 @@ type
 implementation
 
 uses
-  SysUtils, FPJSON, ScuIO, ScuJSON, ScuVersions, ScuSignals, ScuDirectives;
+  SysUtils, FPJSON, ScuIO, ScuJSON, ScuVersions, ScuSignals, ScuDirectives, ScuCopyMetadata;
 
 type
   TMacro = (NoMacro, ModifiedDate, ModifiedTime, LibraryVersion, DeckVersion,
@@ -84,13 +85,14 @@ begin
   Result := NoMacro;
 end;
 
-constructor TDeckExpander.Create(ALibrary: TDeckLibrary; ARevision: Integer; const Version, Prefix: string;
+constructor TDeckExpander.Create(ALibrary: TDeckLibrary; Database: TSQLiteLibrary; ARevision: Integer; const Version, Prefix: string;
   const MissingDeckVersion: string);
 begin
   inherited Create;
   if Prefix <> '' then
     ValidateCommentPrefix(Prefix);
   FLibrary := ALibrary;
+  FDatabase := Database;
   FRevision := ARevision;
   FVersion := Version;
   FExpansionUTC := UtcTimestamp(UtcNow);
@@ -187,7 +189,7 @@ begin
     Inc(FVisits);
     if FVisits > MaxVisits then
       raise EScuError.Create('Expansion exceeds 10000 deck visits.');
-    Stored := FLibrary.Extract(Name, FRevision, FMissingDeckVersion);
+    Stored := FLibrary.Extract(FDatabase, Name, FRevision, FMissingDeckVersion);
     Prefix := EffectivePrefix(Stored);
     Source := Stored.Bytes;
     Inc(FSourceBytes, Length(Source));
@@ -256,7 +258,7 @@ var
 begin
   if Decks.Count = 0 then
     Exit;
-  Visible := FLibrary.CopyMetadataAt(FRevision);
+  Visible := FDatabase.ReadCopyMetadata(FRevision);
   Parents := TStringList.Create;
   Pending := TStringList.Create;
   Targets := TStringList.Create;
@@ -288,11 +290,11 @@ begin
       end
       else
       begin
-        Stored := FLibrary.Extract(Name, FRevision);
+        Stored := FLibrary.Extract(FDatabase, Name, FRevision);
         Prefix := EffectivePrefix(Stored);
         CollectCopyTargets(Stored.Bytes, Prefix, Targets);
         if not Assigned(Metadata) and (Prefix = Stored.CommentPrefix) then
-          FLibrary.CacheCopyMetadata(Stored, Targets);
+          CacheCopyMetadata(FDatabase, Stored.LibraryRevision, Stored.CommentPrefix, Targets);
       end;
       for Target in Targets do
       begin

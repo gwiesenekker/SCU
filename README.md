@@ -524,8 +524,10 @@ the verified chain. A person with write access to the entire log can rewrite
 the chain or remove complete entries from its end. An independently saved
 head detects changes to the chain through that checkpoint. New saves record
 SHA-256 digests of the header and newly saved deck revisions. `verify_audit`
-checks those digests against the library. Older revisions without a recorded
-digest still have their stored SHA-1 checked when extracted.
+checks those digests against the library. SCU preserves the serialized field
+order and extra JSON fields when it loads headers and revisions into the
+typed library model. Older revisions without a recorded digest still have
+their stored SHA-1 checked when extracted.
 
 SCU saves the audit head and record count in SQLite in the same transaction as
 each append. Ordinary commands check the tail against that state. Changes to

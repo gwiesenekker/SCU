@@ -213,7 +213,7 @@ begin
   for Index := 0 to FContents.Count - 1 do
   begin
     Sequence := FContents.Keys[Index];
-    if LibraryFile.RevisionDigest(Sequence) <> FContents.Data[Index] then
+    if LibraryFile.RevisionDigest(Sequence, FDatabase) <> FContents.Data[Index] then
       raise EScuError.CreateFmt('Library revision %d does not match the audit log.', [Sequence]);
   end;
 end;

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Use typed library headers, versions, and revision entries with stable ownership and audit-compatible serialization.
 - Load and validate the command catalog at startup and share typed definitions across parsing, completion, and help.
 - Share tokenization and argument binding between command parsing and Tab completion, and render help in a dedicated unit.
 - Split library commands into handlers while the executor manages locks, transactions, and the audit trail.

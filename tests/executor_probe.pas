@@ -3,7 +3,7 @@ program ExecutorProbe;
 {$mode objfpc}{$H+}
 
 uses
-  Classes, SysUtils, ScuCommand, ScuExecutor, ScuOutput;
+  Classes, SysUtils, ScuCommand, ScuExecutor, ScuLibraryModel, ScuLibraryStore, ScuOutput, ScuSQLite;
 
 type
   TCapturedOutput = class(TScuOutput)
@@ -26,6 +26,34 @@ end;
 
 procedure TCapturedOutput.Flush;
 begin
+end;
+
+procedure CheckLazyRevision(const Path: string);
+var
+  Database: TSQLiteLibrary;
+  Store: TLibraryStore;
+  Entry: TLibraryRevision;
+begin
+  Database := TSQLiteLibrary.Create(Path, False, True);
+  try
+    Database.BeginTransaction(True);
+    Database.EnsureSchema(False);
+    Store := TLibraryStore.Create(Path, '', Database);
+    try
+      Entry := Store[0];
+      if Entry.Loaded or (Entry.Name <> 'example.pas') or (Entry.Number <> 0) then
+        raise Exception.Create('Expected a revision index without a payload.');
+      if (Store.PayloadAt(0, Database) <> Entry) or (Store[0] <> Entry) or
+        not Entry.Loaded or (Entry.CommentPrefix <> '#') then
+        raise Exception.Create('Loading the payload changed the revision entry.');
+      if Store.PayloadAt(0, nil) <> Entry then
+        raise Exception.Create('Expected the loaded payload to be cached by the entry.');
+    finally
+      Store.Free;
+    end;
+  finally
+    Database.Free;
+  end;
 end;
 
 var
@@ -72,6 +100,7 @@ begin
     if (Capture.Text <> 'example.pas'#9'1.0-0.000' + LineEnding) or
       (Capture.Diagnostics <> 'Using version 1.0, library revision 1.' + LineEnding) then
       raise Exception.Create('Unexpected executor output.');
+    CheckLazyRevision(ParamStr(1));
   finally
     Options.Free;
     Executor.Free;

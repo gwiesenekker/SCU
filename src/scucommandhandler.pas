@@ -20,6 +20,7 @@ type
     LibraryPath, OutputDirectory: string;
     LibraryFile: TDeckLibrary;
     Database: TSQLiteLibrary;
+    StagedSave: TLibrarySave;
     Output: TScuOutput;
     Snapshots: TAuditSnapshots;
     Build: TBuildRequest;

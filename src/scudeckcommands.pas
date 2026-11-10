@@ -41,7 +41,7 @@ begin
   Bytes := '';
   if not CreateOnly or (Path <> '') then
     Bytes := ReadBytes(Path, MaxDeckSize);
-  Revision := Context.LibraryFile.Store(Deck, Bytes, CreateOnly, PrefixOption(Context.Command));
+  Revision := Context.LibraryFile.Store(Context.Database, Deck, Bytes, CreateOnly, PrefixOption(Context.Command));
   Result := DeckWriteReport(Context.LibraryFile, Deck, Revision);
 end;
 
@@ -60,7 +60,7 @@ var
   Deck: string;
 begin
   Deck := DeckName(ResolveDeck(Context));
-  Result := DeckWriteReport(Context.LibraryFile, Deck, EditDeck(Context.LibraryFile, Deck));
+  Result := DeckWriteReport(Context.LibraryFile, Deck, EditDeck(Context.LibraryFile, Context.Database, Deck));
 end;
 
 function DisplayDeck(var Context: TCommandContext): string;
@@ -70,7 +70,7 @@ var
 begin
   Rows := TStringList.Create;
   try
-    Context.LibraryFile.ListDeckHistory(ResolveDeck(Context), Rows);
+    Context.LibraryFile.ListDeckHistory(Context.Database, ResolveDeck(Context), Rows);
     for Row in Rows do
       Context.Output.WriteLine(Row);
   finally
@@ -123,8 +123,8 @@ begin
     FromSnapshot := LibraryFile.PreviousDeckSnapshot(Deck, ToSnapshot.LibraryRevision);
     Context.Snapshots.FromDeckVersion := LibraryFile.DeckVersion[FromSnapshot.LibraryRevision];
   end;
-  Source := LibraryFile.Extract(Deck, FromSnapshot.LibraryRevision);
-  OtherSource := LibraryFile.Extract(Deck, ToSnapshot.LibraryRevision);
+  Source := LibraryFile.Extract(Context.Database, Deck, FromSnapshot.LibraryRevision);
+  OtherSource := LibraryFile.Extract(Context.Database, Deck, ToSnapshot.LibraryRevision);
   WriteDeckDiff(Source.Bytes, OtherSource.Bytes, Deck + '@' + Context.Snapshots.FromDeckVersion,
     Deck + '@' + Context.Snapshots.ToDeckVersion, Context.Output);
   Context.Output.Report('From deck version ' + Context.Snapshots.FromDeckVersion + '.');

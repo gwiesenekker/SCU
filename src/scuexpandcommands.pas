@@ -113,7 +113,7 @@ begin
   Path := OutputPath(Context, Path);
   if Expand then
   begin
-    Expander := TDeckExpander.Create(Context.LibraryFile, Context.Snapshots.Selected.LibraryRevision,
+    Expander := TDeckExpander.Create(Context.LibraryFile, Context.Database, Context.Snapshots.Selected.LibraryRevision,
       Context.Snapshots.Selected.Version, PrefixOption(Context.Command), MissingDeckVersion);
     try
       Bytes := Expander.Expand(Deck);
@@ -123,7 +123,7 @@ begin
   end
   else
   begin
-    Source := Context.LibraryFile.Extract(Deck, Context.Snapshots.Selected.LibraryRevision, MissingDeckVersion);
+    Source := Context.LibraryFile.Extract(Context.Database, Deck, Context.Snapshots.Selected.LibraryRevision, MissingDeckVersion);
     Bytes := Source.Bytes;
   end;
   CheckSessionInterrupt;
@@ -195,7 +195,7 @@ begin
     if Expand then
     begin
       Prefix := PrefixOption(Context.Command);
-      Expander := TDeckExpander.Create(LibraryFile, Revision, Version, Prefix);
+      Expander := TDeckExpander.Create(LibraryFile, Context.Database, Revision, Version, Prefix);
       Expander.IncludeCopyDependents(Names);
     end;
     Destinations := TStringList.Create;
@@ -207,7 +207,7 @@ begin
         Bytes := Expander.Expand(Names[Index])
       else
       begin
-        Source := LibraryFile.Extract(Names[Index], Revision);
+        Source := LibraryFile.Extract(Context.Database, Names[Index], Revision);
         Bytes := Source.Bytes;
       end;
       CheckSessionInterrupt;

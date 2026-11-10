@@ -26,13 +26,13 @@ uses
 
 function InitializeLibrary(var Context: TCommandContext): string;
 begin
-  Context.LibraryFile.Save;
+  Context.LibraryFile.Save(Context.Database, Context.StagedSave);
   Result := 'Initialized version ' + Context.LibraryFile.CurrentVersion;
 end;
 
 function SaveRecoveredLibrary(var Context: TCommandContext): string;
 begin
-  Context.LibraryFile.Save;
+  Context.LibraryFile.Save(Context.Database, Context.StagedSave);
   Context.Snapshots.Selected := Context.LibraryFile.CurrentSnapshot;
   Result := Format('Restored %d revision(s) to "%s".', [Context.LibraryFile.Revision, Context.LibraryPath]);
 end;
@@ -49,7 +49,7 @@ begin
     Exit('Discarded unsaved library changes.');
   if not Context.LibraryFile.Modified then
     Exit('No unsaved library changes.');
-  Context.LibraryFile.Save;
+  Context.LibraryFile.Save(Context.Database, Context.StagedSave);
   Context.Snapshots.Selected := Context.LibraryFile.CurrentSnapshot;
   Result := 'Saved library.';
 end;

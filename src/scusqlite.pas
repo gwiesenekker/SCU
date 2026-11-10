@@ -9,6 +9,7 @@ uses
 
 type
   TAuditLineVisitor = procedure(const Line: RawByteString) of object;
+  TRevisionIndexVisitor = procedure(const Deck, DeckRevision: string) of object;
   TAuditState = record
     RecordCount, Interrupted: Int64;
     Head, Pending, PendingCommand: string;
@@ -21,7 +22,6 @@ type
     FReadOnly: Boolean;
     FSchemaVersion: Integer;
     function Scalar(const SQL: RawByteString): RawByteString;
-    function ReadMetadata: TJSONObject;
     function GetCurrentVersion: string;
     procedure CreateExpansionCheckpoints;
     procedure CreateAuditState;
@@ -35,7 +35,8 @@ type
     procedure EnsureSchema(AllowCreate: Boolean);
     function StateKey: string;
     function RevisionCount: Integer;
-    function ReadDocument: TJSONObject;
+    function ReadMetadata: TJSONObject;
+    procedure ReadRevisionIndex(Visit: TRevisionIndexVisitor);
     function ReadRevision(Sequence: Integer): TJSONObject;
     function ReadCopyMetadata(Revision: Integer): TJSONObject;
     function ReadRevisionCopyMetadata(Sequence: Integer): RawByteString;
@@ -472,33 +473,24 @@ begin
   end;
 end;
 
-function TSQLiteLibrary.ReadDocument: TJSONObject;
+procedure TSQLiteLibrary.ReadRevisionIndex(Visit: TRevisionIndexVisitor);
 var
-  Revisions: TJSONArray;
   Statement: TSQLiteStatement;
-  Entry: TJSONObject;
+  Sequence: Int64;
 begin
-  Result := ReadMetadata;
+  Sequence := 0;
+  Statement := TSQLiteStatement.Create(FHandle,
+    'SELECT sequence, deck_name, deck_revision FROM deck_revisions ORDER BY sequence');
   try
-    Revisions := TJSONArray.Create;
-    Result.Add('revisions', Revisions);
-    Statement := TSQLiteStatement.Create(FHandle, 'SELECT sequence, deck_name, deck_revision FROM deck_revisions ORDER BY sequence');
-    try
-      while Statement.Step do
-      begin
-        if Statement.Int64s[0] <> Int64(Revisions.Count) + 1 then
-          raise EScuError.Create('Invalid SQLite deck revision sequence.');
-        Entry := TJSONObject.Create;
-        Revisions.Add(Entry);
-        Entry.Add('deck', Statement.Text[1]);
-        Entry.Add('deck_revision', Statement.Text[2]);
-      end;
-    finally
-      Statement.Free;
+    while Statement.Step do
+    begin
+      Inc(Sequence);
+      if Statement.Int64s[0] <> Sequence then
+        raise EScuError.Create('Invalid SQLite deck revision sequence.');
+      Visit(Statement.Text[1], Statement.Text[2]);
     end;
-  except
-    Result.Free;
-    raise;
+  finally
+    Statement.Free;
   end;
 end;
 

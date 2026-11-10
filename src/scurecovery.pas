@@ -67,7 +67,7 @@ begin
         raise EScuError.Create('The base library does not match the saved snapshot in the recovery file.');
       if Count <> Base.RevisionCount then
         raise EScuError.Create('The base library revision count does not match the recovery file.');
-      BaseDocument := Base.ReadDocument;
+      BaseDocument := Base.ReadMetadata;
       try
         CheckBaseHistory(TJSONObject(Field(BaseDocument, 'header', jtObject)), Header);
       finally

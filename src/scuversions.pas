@@ -8,9 +8,16 @@ uses
   Classes, FPJSON;
 
 type
+  TVersionEntry = record
+    Name, CommentPrefix: string;
+    BaseRevision: Integer;
+    Locked: Boolean;
+  end;
+
   TVersionHistory = class
   private
-    FEntries: TJSONArray;
+    FEntries: array of TVersionEntry;
+    FSerialized: TJSONArray; // Borrowed from the header that owns the original JSON.
     function Entry(Index: Integer): TJSONObject;
     function GetCurrent: string;
     function GetLocked: Boolean;
@@ -92,23 +99,34 @@ end;
 constructor TVersionHistory.Create(Entries: TJSONArray; Latest: Integer);
 var
   Index, Base, PreviousBase, Major: Integer;
+  StoredBase: Int64;
+  Item: TJSONObject;
   Minor: Int64;
   Name, PreviousName: string;
   IsLocked: Boolean;
 begin
   inherited Create;
-  FEntries := Entries;
+  FSerialized := Entries;
+  SetLength(FEntries, Entries.Count);
   PreviousBase := 0;
   PreviousName := '';
-  for Index := 0 to FEntries.Count - 1 do
+  for Index := 0 to Length(FEntries) - 1 do
   begin
-    Name := Field(Entry(Index), 'name', jtString).AsString;
+    Item := Entry(Index);
+    Name := Field(Item, 'name', jtString).AsString;
     ParseVersion(Name, Major, Minor);
-    ValidateCommentPrefix(Field(Entry(Index), 'comment_prefix', jtString).AsString);
-    Base := BaseRevision(Index);
-    IsLocked := Field(Entry(Index), 'locked', jtBoolean).AsBoolean;
+    FEntries[Index].CommentPrefix := Field(Item, 'comment_prefix', jtString).AsString;
+    ValidateCommentPrefix(FEntries[Index].CommentPrefix);
+    StoredBase := IntegerField(Item, 'base_revision');
+    if (StoredBase < 0) or (StoredBase > High(Integer)) then
+      raise EScuError.Create('Invalid version base revision.');
+    Base := StoredBase;
+    IsLocked := Field(Item, 'locked', jtBoolean).AsBoolean;
+    FEntries[Index].Name := Name;
+    FEntries[Index].BaseRevision := Base;
+    FEntries[Index].Locked := IsLocked;
     if (Base > Latest) or (Base < PreviousBase) or ((Index = 0) and (Base <> 0)) or
-      ((Index < FEntries.Count - 1) and not IsLocked) or
+      ((Index < Length(FEntries) - 1) and not IsLocked) or
       ((Index > 0) and not (LaterVersion(Name, PreviousName) or LaterVersion(Name, PreviousName, True))) then
       raise EScuError.Create('Invalid version history.');
     PreviousBase := Base;
@@ -118,34 +136,29 @@ end;
 
 function TVersionHistory.Entry(Index: Integer): TJSONObject;
 begin
-  if not (FEntries.Items[Index] is TJSONObject) then
+  if not (FSerialized.Items[Index] is TJSONObject) then
     raise EScuError.Create('Invalid version history entry.');
-  Result := TJSONObject(FEntries.Items[Index]);
+  Result := TJSONObject(FSerialized.Items[Index]);
 end;
 
 function TVersionHistory.GetCurrent: string;
 begin
-  Result := Field(Entry(FEntries.Count - 1), 'name', jtString).AsString;
+  Result := FEntries[Length(FEntries) - 1].Name;
 end;
 
 function TVersionHistory.GetLocked: Boolean;
 begin
-  Result := Field(Entry(FEntries.Count - 1), 'locked', jtBoolean).AsBoolean;
+  Result := FEntries[Length(FEntries) - 1].Locked;
 end;
 
 function TVersionHistory.BaseRevision(Index: Integer): Integer;
-var
-  Value: Int64;
 begin
-  Value := IntegerField(Entry(Index), 'base_revision');
-  if (Value < 0) or (Value > High(Integer)) then
-    raise EScuError.Create('Invalid version base revision.');
-  Result := Value;
+  Result := FEntries[Index].BaseRevision;
 end;
 
 function TVersionHistory.EndRevision(Index, Latest: Integer): Integer;
 begin
-  if Index < FEntries.Count - 1 then
+  if Index < Length(FEntries) - 1 then
     Result := BaseRevision(Index + 1)
   else
     Result := Latest;
@@ -153,19 +166,20 @@ end;
 
 function TVersionHistory.TryPrevious(out Name: string; out Last: Integer): Boolean;
 begin
-  Result := FEntries.Count > 1;
+  Result := Length(FEntries) > 1;
   if not Result then
     Exit;
   // Every version before the current one is locked.
-  Name := Field(Entry(FEntries.Count - 2), 'name', jtString).AsString;
-  Last := BaseRevision(FEntries.Count - 1);
+  Name := FEntries[Length(FEntries) - 2].Name;
+  Last := BaseRevision(Length(FEntries) - 1);
 end;
 
 procedure TVersionHistory.Lock;
 begin
   if Locked then
     raise EScuError.CreateFmt('Version %s is already locked.', [Current]);
-  Entry(FEntries.Count - 1).Booleans['locked'] := True;
+  Entry(Length(FEntries) - 1).Booleans['locked'] := True;
+  FEntries[High(FEntries)].Locked := True;
 end;
 
 procedure TVersionHistory.Start(const Name, Prefix: string; Latest: Integer);
@@ -175,22 +189,28 @@ var
   Item: TJSONObject;
 begin
   ParseVersion(Name, Major, Minor);
-  if FEntries.Count > 0 then
+  if Length(FEntries) > 0 then
   begin
     if not Locked then
       raise EScuError.CreateFmt('Lock version %s before starting a new version.', [Current]);
     if not LaterVersion(Name, Current) then
       raise EScuError.CreateFmt('The new version must be greater than %s.', [Current]);
-    for Index := 0 to FEntries.Count - 1 do
-      if Field(Entry(Index), 'name', jtString).AsString = Name then
+    for Index := 0 to Length(FEntries) - 1 do
+      if FEntries[Index].Name = Name then
         raise EScuError.CreateFmt('Version "%s" already exists.', [Name]);
   end;
   Item := TJSONObject.Create;
-  FEntries.Add(Item);
+  FSerialized.Add(Item);
   Item.Add('name', Name);
   Item.Add('base_revision', Latest);
   Item.Add('locked', False);
   Item.Add('comment_prefix', Prefix);
+  Index := Length(FEntries);
+  SetLength(FEntries, Index + 1);
+  FEntries[Index].Name := Name;
+  FEntries[Index].BaseRevision := Latest;
+  FEntries[Index].Locked := False;
+  FEntries[Index].CommentPrefix := Prefix;
 end;
 
 function TVersionHistory.NextVersion(Increment: Int64): string;
@@ -217,8 +237,8 @@ end;
 
 function TVersionHistory.IndexOf(const Name: string): Integer;
 begin
-  for Result := 0 to FEntries.Count - 1 do
-    if Field(Entry(Result), 'name', jtString).AsString = Name then
+  for Result := 0 to Length(FEntries) - 1 do
+    if FEntries[Result].Name = Name then
       Exit;
   raise EScuError.CreateFmt('Version "%s" does not exist.', [Name]);
 end;
@@ -234,7 +254,7 @@ end;
 
 function TVersionHistory.CommentPrefix(const Name: string): string;
 begin
-  Result := Field(Entry(IndexOf(Name)), 'comment_prefix', jtString).AsString;
+  Result := FEntries[IndexOf(Name)].CommentPrefix;
 end;
 
 procedure TVersionHistory.SetCommentPrefix(const Prefix: string; Latest: Integer);
@@ -242,10 +262,11 @@ var
   Index: Integer;
 begin
   ValidateCommentPrefix(Prefix);
-  Index := FEntries.Count - 1;
+  Index := Length(FEntries) - 1;
   if Locked or (BaseRevision(Index) <> Latest) then
     raise EScuError.Create('Set the comment prefix before the open version receives its first revision.');
   Entry(Index).Strings['comment_prefix'] := Prefix;
+  FEntries[Index].CommentPrefix := Prefix;
 end;
 
 procedure TVersionHistory.List(Latest: Integer; Dest: TStrings);
@@ -253,13 +274,13 @@ var
   Index: Integer;
   State: string;
 begin
-  for Index := 0 to FEntries.Count - 1 do
+  for Index := 0 to Length(FEntries) - 1 do
   begin
-    if Field(Entry(Index), 'locked', jtBoolean).AsBoolean then
+    if FEntries[Index].Locked then
       State := 'locked'
     else
       State := 'open';
-    Dest.Add(Format('%s'#9'%s'#9'%d'#9'%d', [Field(Entry(Index), 'name', jtString).AsString,
+    Dest.Add(Format('%s'#9'%s'#9'%d'#9'%d', [FEntries[Index].Name,
       State, BaseRevision(Index), EndRevision(Index, Latest)]));
   end;
 end;
@@ -268,9 +289,9 @@ procedure TVersionHistory.ListNames(Latest, MinimumRevision: Integer; Dest: TStr
 var
   Index: Integer;
 begin
-  for Index := 0 to FEntries.Count - 1 do
+  for Index := 0 to Length(FEntries) - 1 do
     if EndRevision(Index, Latest) >= MinimumRevision then
-      Dest.Add(Field(Entry(Index), 'name', jtString).AsString);
+      Dest.Add(FEntries[Index].Name);
 end;
 
 function TVersionHistory.AtRevision(Revision: Integer): string;
@@ -278,7 +299,7 @@ var
   First, Last, Middle: Integer;
 begin
   First := 0;
-  Last := FEntries.Count - 1;
+  Last := Length(FEntries) - 1;
   while First < Last do
   begin
     Middle := First + (Last - First + 1) div 2;
@@ -288,7 +309,7 @@ begin
     else
       Last := Middle - 1;
   end;
-  Result := Field(Entry(First), 'name', jtString).AsString;
+  Result := FEntries[First].Name;
 end;
 
 end.

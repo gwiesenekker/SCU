@@ -102,7 +102,7 @@ begin
   Contents := nil;
   try
     if Assigned(Context.LibraryFile) then
-      Contents := Context.LibraryFile.SavedContents;
+      Contents := Context.LibraryFile.SavedContents(Context.StagedSave);
     Audit.EndCommand(True, Detail, Context.Snapshots, PendingSave, Contents);
   finally
     Contents.Free;
@@ -133,7 +133,7 @@ begin
         try
           Context.Database.BeginTransaction(False);
           Context.Database.EnsureSchema(True);
-          Context.LibraryFile := TDeckLibrary.CreateRecovered(Document, Context.Database);
+          Context.LibraryFile := TDeckLibrary.CreateRecovered(Document);
           try
             Audit := TAuditLog.Create(Context.Database);
             try
@@ -285,9 +285,7 @@ begin
           if not LibraryExists then
             RaiseMissingLibrary;
           Context.LibraryFile := TDeckLibrary.Create(FLibraryPath, '', Context.Database);
-        end
-        else
-          Context.LibraryFile.AttachDatabase(Context.Database);
+        end;
       end;
       if not Assigned(Handler.Run) then
         raise EScuError.CreateFmt('No implementation for command "%s".', [Command.Name]);
@@ -297,7 +295,7 @@ begin
         if not SessionEnding then
           FOutput.Flush;
         if not FInteractive then
-          Context.LibraryFile.Save;
+          Context.LibraryFile.Save(Context.Database, Context.StagedSave);
       end;
     except
       on E: Exception do
@@ -335,7 +333,8 @@ begin
   finally
     if Assigned(Context.LibraryFile) then
     begin
-      Context.LibraryFile.FinishDatabaseSave(Committed);
+      if Committed then
+        Context.LibraryFile.AcceptSave(Context.StagedSave);
       if FInteractive and Context.LibraryFile.Modified and not Initializing then
         FPendingLibrary := Context.LibraryFile
       else

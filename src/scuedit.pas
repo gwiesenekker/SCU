@@ -5,14 +5,14 @@ unit ScuEdit;
 interface
 
 uses
-  ScuLibrary;
+  ScuLibrary, ScuSQLite;
 
-function EditDeck(LibraryFile: TDeckLibrary; const Deck: string): Integer;
+function EditDeck(LibraryFile: TDeckLibrary; Database: TSQLiteLibrary; const Deck: string): Integer;
 
 implementation
 
 uses
-  SysUtils, Classes, BaseUnix, Process, FPJSON, ScuIO, ScuCodec, ScuSignals;
+  SysUtils, Classes, BaseUnix, Process, ScuIO, ScuCodec, ScuSignals;
 
 function EditorPath(const Name: string): string;
 var
@@ -73,28 +73,26 @@ begin
   RemoveDir(Path);
 end;
 
-function EditDeck(LibraryFile: TDeckLibrary; const Deck: string): Integer;
+function EditDeck(LibraryFile: TDeckLibrary; Database: TSQLiteLibrary; const Deck: string): Integer;
 var
   Name, TempDir, Path: string;
   Source: TDeckSource;
   Updated: RawByteString;
   Editor: TProcess;
-  Args: TJSONArray;
   Index, Status: Integer;
 begin
   LibraryFile.RequireOpenVersion;
   Name := DeckName(Deck);
-  Source := LibraryFile.Extract(Name, LibraryFile.Revision, LibraryFile.CurrentVersion);
+  Source := LibraryFile.Extract(Database, Name, LibraryFile.Revision, LibraryFile.CurrentVersion);
   TempDir := MakeTempDirectory('scu-edit');
   Path := IncludeTrailingPathDelimiter(TempDir) + Name;
   try
     AtomicWrite(Path, Source.Bytes);
     Editor := TProcess.Create(nil);
     try
-      Args := LibraryFile.Editor;
-      Editor.Executable := EditorPath(Args.Strings[0]);
-      for Index := 1 to Args.Count - 1 do
-        Editor.Parameters.Add(Args.Strings[Index]);
+      Editor.Executable := EditorPath(LibraryFile.EditorArguments[0]);
+      for Index := 1 to LibraryFile.EditorCount - 1 do
+        Editor.Parameters.Add(LibraryFile.EditorArguments[Index]);
       Editor.Parameters.Add(Path);
       Status := WaitForChild(Editor, False, True);
       if SessionEnding then
@@ -110,7 +108,7 @@ begin
     if Updated = Source.Bytes then
       Result := 0
     else
-      Result := LibraryFile.Store(Name, Updated);
+      Result := LibraryFile.Store(Database, Name, Updated);
   finally
     RemoveWorkingDirectory(TempDir);
   end;

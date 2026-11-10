@@ -744,6 +744,54 @@ class ScuIntegration(unittest.TestCase):
             connection.execute("UPDATE deck_revisions SET payload = json_set(?, '$.sha1', ?)", (payload, "0" * 40))
         self.run_scu(original_db, "extd", "main", "tampered-output", error="SHA-1")
 
+    def test_library_audit_keeps_legacy_json_field_order_and_unknown_fields(self):
+        self.store("main", b"first\n")
+        document = self.read_library()
+        header = document["header"]
+        for name in ("build_command", "version_increment", "revision_increment", "last_modified_deck"):
+            del header[name]
+        header["extension"] = {"z": 1, "a": "retained"}
+        header["versions"][0]["extension"] = ["retained"]
+        revision = document["revisions"][0]
+        for name in ("comment_prefix", "deck_revision", "copy_metadata"):
+            del revision[name]
+        document["revisions"][0] = {"extension": {"z": 2, "a": "retained"}, **revision}
+        recovery = self.root / "legacy-recovery.json"
+        recovery.write_text(json.dumps(document))
+        restored = self.root / "restored.sqlite"
+        self.run_scu(restored, "recover_library", recovery)
+        verification = self.run_scu(restored, "verify_audit_trail")
+        head = verification.split("head=")[1]
+        contents = json.loads(self.audit_lines(restored)[-1].split(b" ", 1)[1])["saved_contents"]
+
+        with closing(sqlite3.connect(restored, isolation_level=None)) as database:
+            stored_metadata, = database.execute("SELECT payload FROM library").fetchone()
+            stored_revision, = database.execute("SELECT payload FROM deck_revisions").fetchone()
+            metadata = json.loads(stored_metadata)
+            self.assertEqual(list(metadata["header"]), list(header) + [
+                "build_command", "version_increment", "revision_increment", "last_modified_deck",
+            ])
+            self.assertEqual(list(json.loads(stored_revision)), list(document["revisions"][0]))
+            self.assertEqual(contents["revision_sha256"], [hashlib.sha256(stored_revision.encode()).hexdigest()])
+            header_start = re.search(r'"header"\s*:\s*', stored_metadata).end()
+            _, header_length = json.JSONDecoder().raw_decode(stored_metadata[header_start:])
+            serialized_header = stored_metadata[header_start:header_start + header_length]
+            self.assertEqual(contents["header_sha256"], hashlib.sha256(serialized_header.encode()).hexdigest())
+
+            database.execute("UPDATE library SET payload = ?", (json.dumps(metadata, indent=2),))
+            database.execute("UPDATE deck_revisions SET payload = ?",
+                             (json.dumps(json.loads(stored_revision), indent=2),))
+            self.assertEqual(self.run_scu(restored, "verify_audit_trail", f"head={head}"), verification)
+            self.run_scu(restored, "lock_version")
+            self.run_scu(restored, "start_version")
+            self.run_scu(restored, "verify_audit_trail", f"head={head}")
+            payload, = database.execute("SELECT payload FROM library").fetchone()
+            self.assertEqual(json.loads(payload)["header"]["extension"], header["extension"])
+            self.assertEqual(json.loads(payload)["header"]["versions"][0]["extension"], ["retained"])
+            database.execute("UPDATE deck_revisions SET payload = ?",
+                             (json.dumps(json.loads(stored_revision), sort_keys=True),))
+            self.run_scu(restored, "verify_audit_trail", error="Library revision 1 does not match the audit log")
+
     def test_interactive_audit_detects_changes_from_other_processes(self):
         for mode in ("delete", "wal"):
             library = self.root / f"shared-{mode}.sqlite"
