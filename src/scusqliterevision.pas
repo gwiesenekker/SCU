@@ -18,9 +18,11 @@ type
     constructor Create(Database: TSQLiteConnection; SchemaVersion: Integer);
     function StateKey: string;
     function RevisionCount: Integer;
+    // The caller owns the returned JSON object.
     function ReadMetadata: TJSONObject;
     function ReadCurrentVersion: string;
     procedure ReadRevisionIndex(Visit: TRevisionIndexVisitor);
+    // The caller owns the returned JSON objects.
     function ReadRevision(Sequence: Integer): TJSONObject;
     function ReadCopyMetadata(Revision: Integer): TJSONObject;
     function ReadRevisionCopyMetadata(Sequence: Integer): RawByteString;

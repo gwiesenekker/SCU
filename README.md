@@ -305,9 +305,9 @@ selectors such as `'scu$previous_deck_version'` in a shell. `extract_deck` and `
 also accept a deck version as `--version` for the named deck.
 SCU compares the deck as it exists in each snapshot, including inherited source.
 SCU generates unified diffs in memory with three lines of context, keeping COPY
-directives and macros intact. For large comparisons that reach the search
-limit, SCU keeps the shared beginning and end and reports the rest as one
-replacement. Decks containing NUL bytes are compared as binary data. A completed
+directives and macros intact. If the search reaches its limit of 3,072 line
+edits or exhausts its search budget, SCU keeps the shared beginning and end
+and reports the rest as one replacement. Decks containing NUL bytes are compared as binary data. A completed
 comparison exits successfully even when differences are found. Identical
 source produces no diff. SCU reports both resolved deck versions on standard
 error and uses them in patch labels. An inherited deck shows the label from
@@ -467,21 +467,24 @@ A build that already holds a directory lock gets an error if it invokes
 
 SCU records a deck's modification timestamp when its revision is stored.
 Repeated expansions of the same locked version with the same options produce
-the same bytes.
+the same bytes when the source and its COPY dependencies are unchanged and
+do not use `SCU$EXPANSION_*` macros.
 
 ## Storage and audit
 
 SQLite stores each deck revision as JSON with a base64-encoded zstd
 frame, a SHA-1 checksum, and a byte count for the original source. SCU verifies
 the checksum and byte count on read. Decks and expanded output are limited to
-64 MiB each. New source output
-files respect the process's umask and replacements retain existing permission
-bits. Libraries and lock files are created with private permissions. Expansion also
-caps nesting and total source processed.
+64 MiB each. New source output files respect the process's umask.
+Replacements retain the existing permission bits and group ownership.
+If SCU cannot retain the group, the replacement fails. Libraries and lock files
+are created with private permissions. Expansion also caps nesting and total
+source processed.
 
 SCU serializes library commands with a sibling `PATH.lock` file. The file stays
 on disk so concurrent commands use the same lock. SCU releases the lock when
-the command finishes. SQLite stores each revision in a separate row and keeps
+the command finishes. `show_history` reads a SQLite snapshot without taking
+that lock. SQLite stores each revision in a separate row and keeps
 audit records in the database. A save commits library changes and the command's
 audit records in one transaction. If writing the successful outcome fails, SQLite rolls back
 the save and its audit attempt. An interactive `save_library` keeps the
@@ -504,7 +507,8 @@ resolved `snapshot` in their outcome, with its `version` and
 fail after SCU resolves the snapshot.
 `diff_deck` records its resolved labels as `from_deck_version` and
 `to_deck_version`. Commands using `scu$last_modified_deck` record its resolved
-name as `resolved_deck`.
+name as `resolved_deck`. File extraction and expansion also record the
+absolute `output_path`, or the `output_directory` for a batch.
 An attempt without a recorded outcome
 is counted as interrupted.
 
@@ -536,8 +540,11 @@ audit rows through SQL invalidate it and make the next command scan the chain.
 recorded deck and header digests.
 
 Run `show_history` to display the latest 20 audited command attempts in
-chronological order, with canonical names and named parameters. Pass a count
+chronological order, with canonical names, named parameters, and a
+tab-separated status. `pending save` describes the state when the command
+finished. A later save or discard is a separate audit event. Pass a count
 as in `show_history 50` or `show_history number_of_lines=50`.
+The displayed parameters can include sensitive values recorded in the audit log.
 
 ## Frontend integration
 

@@ -7,14 +7,15 @@ interface
 uses
   Classes, SysUtils;
 
+type
+  TAtomicWriteOptions = set of (awNoReplace, awSourceOutput);
+
 function CanonicalFile(const Path: string): string;
 function CanonicalDirectory(const Path: string): string;
 function RegularFileExists(const Path: string): Boolean;
 function ReadBytes(const Path: string; Limit: Int64): RawByteString;
-procedure AtomicWrite(const Path: string; const Data: RawByteString; ReplaceExisting: Boolean = True;
-  SourceOutput: Boolean = False); overload;
-procedure AtomicWrite(const Path: string; Data: TStream; ReplaceExisting: Boolean = True;
-  SourceOutput: Boolean = False); overload;
+procedure AtomicWrite(const Path: string; const Data: RawByteString; Options: TAtomicWriteOptions = []); overload;
+procedure AtomicWrite(const Path: string; Data: TStream; Options: TAtomicWriteOptions = []); overload;
 function MakeTempDirectory(const Prefix: string): string;
 procedure SyncFile(Handle: THandle; const Path: string);
 procedure SyncParent(const Path: string);
@@ -28,6 +29,7 @@ function realpath(Path, Resolved: PChar): PChar; cdecl; external 'c';
 function mkstemp(Template: PChar): LongInt; cdecl; external 'c';
 function mkdtemp(Template: PChar): PChar; cdecl; external 'c';
 function fchmod(Handle: cint; Mode: mode_t): cint; cdecl; external 'c';
+function fchown(Handle: cint; Owner: uid_t; Group: gid_t): cint; cdecl; external 'c';
 
 function MakeTempDirectory(const Prefix: string): string;
 begin
@@ -132,13 +134,13 @@ begin
   end;
 end;
 
-procedure AtomicWrite(const Path: string; Data: TStream; ReplaceExisting, SourceOutput: Boolean);
+procedure AtomicWrite(const Path: string; Data: TStream; Options: TAtomicWriteOptions);
 var
   TempPath: string;
   Handle: THandle;
   Stream: THandleStream;
   Mode, Mask: mode_t;
-  Info: Stat;
+  Info, TempInfo: Stat;
 begin
   TempPath := IncludeTrailingPathDelimiter(ExtractFileDir(Path)) + '.scu-XXXXXX';
   UniqueString(TempPath);
@@ -157,10 +159,19 @@ begin
           on E: EStreamError do
             raise EScuError.CreateFmt('Could not write "%s": %s', [Path, E.Message]);
         end;
-        if SourceOutput then
+        if awSourceOutput in Options then
         begin
           if (fpLStat(Path, Info) = 0) and FPS_ISREG(Info.st_mode) then
-            Mode := Info.st_mode and &777
+          begin
+            Mode := Info.st_mode and &777;
+            if not (awNoReplace in Options) then
+            begin
+              if fpFStat(Handle, TempInfo) <> 0 then
+                RaiseSystemError('Could not inspect temporary output for "' + Path + '"', fpGetErrNo);
+              if (Info.st_gid <> TempInfo.st_gid) and (fchown(Handle, uid_t(-1), Info.st_gid) <> 0) then
+                RaiseSystemError('Could not preserve the group of "' + Path + '"', cerrno);
+            end;
+          end
           else
           begin
             Mask := fpUmask(0);
@@ -177,7 +188,7 @@ begin
     finally
       fpClose(Handle);
     end;
-    if ReplaceExisting then
+    if not (awNoReplace in Options) then
     begin
       if fpRename(TempPath, Path) <> 0 then
         raise EScuError.CreateFmt('Could not replace %s: %s', [Path, SysErrorMessage(fpGetErrNo)]);
@@ -198,13 +209,13 @@ begin
   end;
 end;
 
-procedure AtomicWrite(const Path: string; const Data: RawByteString; ReplaceExisting, SourceOutput: Boolean);
+procedure AtomicWrite(const Path: string; const Data: RawByteString; Options: TAtomicWriteOptions);
 var
   Stream: TRawByteStringStream;
 begin
   Stream := TRawByteStringStream.Create(Data);
   try
-    AtomicWrite(Path, Stream, ReplaceExisting, SourceOutput);
+    AtomicWrite(Path, Stream, Options);
   finally
     Stream.Free;
   end;

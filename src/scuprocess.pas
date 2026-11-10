@@ -7,9 +7,11 @@ interface
 uses
   Process;
 
+type
+  TChildProcessOptions = set of (cpOwnProcessGroup, cpHandlesInterrupt);
+
 procedure StartBuildProcessGroup;
-function WaitForChild(Child: TProcess; OwnProcessGroup: Boolean = False;
-  ChildHandlesInterrupt: Boolean = False): Integer;
+function WaitForChild(Child: TProcess; Options: TChildProcessOptions = []): Integer;
 
 implementation
 
@@ -49,18 +51,46 @@ begin
     fpExit(126);
 end;
 
-function WaitForChild(Child: TProcess; OwnProcessGroup, ChildHandlesInterrupt: Boolean): Integer;
+function WaitForChild(Child: TProcess; Options: TChildProcessOptions): Integer;
 var
   Sent, Status, WaitOptions, ForegroundGroup: cint;
   Pid, Waited: TPid;
   Deadline: QWord;
   TerminalMode: TermIOS;
   RestoreTerminal, Stopped: Boolean;
+  Received: cint;
 
   procedure SignalChild(Signal: cint);
   begin
-    if not OwnProcessGroup or (fpKill(-Pid, Signal) <> 0) then
+    if not (cpOwnProcessGroup in Options) or (fpKill(-Pid, Signal) <> 0) then
       fpKill(Pid, Signal);
+  end;
+
+  function SuspendBuild: Boolean;
+  var
+    BuildMode: TermIOS;
+    HasBuildMode: Boolean;
+  begin
+    // Return the terminal to SCU before stopping so its shell can regain it.
+    if not RestoreTerminal or (tcgetpgrp(StdInputHandle) <> Pid) or
+      not SetForegroundGroup(ForegroundGroup) then
+      Exit(False);
+    HasBuildMode := TCGetAttr(StdInputHandle, BuildMode) = 0;
+    TCSetAttr(StdInputHandle, TCSANOW, TerminalMode);
+    if ForegroundGroup = fpGetPid then
+      fpKill(-ForegroundGroup, SIGTSTP)
+    else
+      fpKill(fpGetPid, SIGTSTP);
+    // A background resume leaves the terminal with the shell.
+    if tcgetpgrp(StdInputHandle) = ForegroundGroup then
+    begin
+      if HasBuildMode then
+        TCSetAttr(StdInputHandle, TCSANOW, BuildMode);
+      if not SetForegroundGroup(Pid) then
+        Exit(False);
+    end;
+    SignalChild(SIGCONT);
+    Result := True;
   end;
 
 begin
@@ -68,15 +98,15 @@ begin
   if SessionEnding then
     raise ECommandCancelled.Create('Command cancelled.');
   ForegroundGroup := fpGetPGrp;
-  RestoreTerminal := OwnProcessGroup and (tcgetpgrp(StdInputHandle) = ForegroundGroup) and
+  RestoreTerminal := (cpOwnProcessGroup in Options) and (tcgetpgrp(StdInputHandle) = ForegroundGroup) and
     (TCGetAttr(StdInputHandle, TerminalMode) = 0);
   WaitOptions := WNOHANG;
-  if OwnProcessGroup then
+  if cpOwnProcessGroup in Options then
     WaitOptions := WaitOptions or WUNTRACED;
   Sent := 0;
   Deadline := 0;
   Stopped := False;
-  SetChildHandlesInterrupt(ChildHandlesInterrupt);
+  SetChildHandlesInterrupt(cpHandlesInterrupt in Options);
   try
     try
       Child.Execute;
@@ -95,20 +125,26 @@ begin
       begin
         if not WIfStopped(Status) then
           Break;
-        // A stopped build cannot finish while SCU is waiting for it.
+        if (WStopSig(Status) = SIGTSTP) and (PendingSignal = 0) and SuspendBuild then
+          Continue;
+        // Other stops cannot be resumed through the shell's job control.
         Stopped := True;
         SignalChild(SIGKILL);
       end
-      else if (SessionSignal <> 0) and (SessionSignal <> Sent) then
+      else
       begin
-        Sent := SessionSignal;
-        SignalChild(Sent);
-        Deadline := GetTickCount64 + 1500;
-      end
-      else if (Deadline <> 0) and (GetTickCount64 >= Deadline) then
-      begin
-        SignalChild(SIGKILL);
-        Deadline := 0;
+        Received := PendingSignal;
+        if (Received <> 0) and (Received <> Sent) then
+        begin
+          Sent := Received;
+          SignalChild(Sent);
+          Deadline := GetTickCount64 + 1500;
+        end
+        else if (Deadline <> 0) and (GetTickCount64 >= Deadline) then
+        begin
+          SignalChild(SIGKILL);
+          Deadline := 0;
+        end;
       end;
       Sleep(10);
     until False;

@@ -22,7 +22,7 @@ function ShowHistory(var Context: TCommandContext): string;
 implementation
 
 uses
-  Classes, SysUtils, FPJSON, ScuAudit, ScuCommands, ScuErrors, ScuJSON, ScuLibrary, ScuOutput;
+  Classes, SysUtils, FPJSON, ScuAudit, ScuCommands, ScuErrors, ScuJSON, ScuLibrary, ScuOutput, ScuSignals;
 
 function InitializeLibrary(var Context: TCommandContext): string;
 begin
@@ -80,16 +80,15 @@ end;
 
 function ConfigureLibrary(var Context: TCommandContext): string;
 var
-  VersionIncrement, RevisionIncrement: string;
-  ChangePrefix, ChangeBuild: Boolean;
+  Settings: TLibrarySettingsChange;
   Editor: TJSONData;
 begin
-  ChangePrefix := Context.Command.HasOption('comment-prefix');
-  ChangeBuild := Context.Command.HasOption('build_command');
-  VersionIncrement := Context.Command.Option('version_increment');
-  RevisionIncrement := Context.Command.Option('revision_increment');
-  if (Context.Command.HasOption('version_increment') and (VersionIncrement = '')) or
-    (Context.Command.HasOption('revision_increment') and (RevisionIncrement = '')) then
+  Settings.ChangePrefix := Context.Command.HasOption('comment-prefix');
+  Settings.ChangeBuild := Context.Command.HasOption('build_command');
+  Settings.VersionIncrement := Context.Command.Option('version_increment');
+  Settings.RevisionIncrement := Context.Command.Option('revision_increment');
+  if (Context.Command.HasOption('version_increment') and (Settings.VersionIncrement = '')) or
+    (Context.Command.HasOption('revision_increment') and (Settings.RevisionIncrement = '')) then
     raise EScuError.Create('Expected a positive increment.');
   Editor := nil;
   try
@@ -99,11 +98,13 @@ begin
       if not (Editor is TJSONArray) then
         raise EScuError.Create('Invalid value for --editor: The editor must be a JSON array of strings.');
     end;
-    if not ChangePrefix and not ChangeBuild and (Editor = nil) and
-      (VersionIncrement = '') and (RevisionIncrement = '') then
+    if not Settings.ChangePrefix and not Settings.ChangeBuild and (Editor = nil) and
+      (Settings.VersionIncrement = '') and (Settings.RevisionIncrement = '') then
       raise EScuError.Create('Specify at least one library setting.');
-    Context.LibraryFile.Configure(ChangePrefix, PrefixOption(Context.Command), TJSONArray(Editor),
-      VersionIncrement, RevisionIncrement, ChangeBuild, Context.Command.Option('build_command'));
+    Settings.Prefix := PrefixOption(Context.Command);
+    Settings.Editor := TJSONArray(Editor);
+    Settings.BuildCommand := Context.Command.Option('build_command');
+    Context.LibraryFile.Configure(Settings);
     Result := 'Updated library header';
   finally
     Editor.Free;
@@ -142,12 +143,33 @@ type
   THistoryWriter = class
   public
     Output: TScuOutput;
-    procedure WriteLine(const Payload: RawByteString);
+    procedure WriteLine(const Attempt, Outcome: RawByteString);
   end;
 
-procedure THistoryWriter.WriteLine(const Payload: RawByteString);
+function HistoryStatus(const Outcome: RawByteString): string;
+var
+  Event: TJSONObject;
 begin
-  Output.WriteLine(FormatAuditCommand(Payload));
+  if Outcome = '' then
+    Exit('interrupted');
+  Event := ParseObject(Outcome, 'Audit history outcome');
+  try
+    if Event.Get('cancelled', False) then
+      Exit('cancelled');
+    if not Field(Event, 'success', jtBoolean).AsBoolean then
+      Exit('failed');
+    if Event.Get('pending_save', False) then
+      Exit('pending save');
+    Result := 'succeeded';
+  finally
+    Event.Free;
+  end;
+end;
+
+procedure THistoryWriter.WriteLine(const Attempt, Outcome: RawByteString);
+begin
+  CheckSessionInterrupt;
+  Output.WriteLine(FormatAuditCommand(Attempt) + #9 + HistoryStatus(Outcome));
 end;
 
 function ShowHistory(var Context: TCommandContext): string;

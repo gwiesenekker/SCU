@@ -13,12 +13,11 @@ const
 type
   TSessionSignalHandlers = array[Low(SessionSignals)..High(SessionSignals)] of SigActionRec;
 
-var
-  SessionSignal: cint;
-
 procedure StartSessionSignals(out Previous: TSessionSignalHandlers);
 procedure RestoreSessionSignals(const Previous: TSessionSignalHandlers);
 procedure NoteSessionSignal(Signal: cint); cdecl;
+function PendingSignal: cint;
+function ClearInterrupt: Boolean;
 procedure CheckSessionInterrupt;
 function SessionEnding: Boolean;
 // Editors in SCU's process group receive terminal Ctrl+C directly.
@@ -30,6 +29,7 @@ uses
   SysUtils, ScuErrors;
 
 var
+  SessionSignal: cint;
   ChildOwnsInterrupt: Boolean;
 
 procedure SetChildHandlesInterrupt(Value: Boolean);
@@ -41,6 +41,35 @@ procedure NoteSessionSignal(Signal: cint); cdecl;
 begin
   if (SessionSignal = 0) or (Signal <> SIGINT) then
     SessionSignal := Signal;
+end;
+
+function PendingSignal: cint;
+begin
+  Result := SessionSignal;
+end;
+
+function ClearInterrupt: Boolean;
+var
+  Signals, Previous: TSigSet;
+  Signal: cint;
+begin
+  // The handler can replace SIGINT with a termination signal. Block the
+  // session signals until the check and clear are both complete.
+  Result := False;
+  if SessionSignal <> SIGINT then
+    Exit;
+  fpSigEmptySet(Signals);
+  for Signal in SessionSignals do
+    fpSigAddSet(Signals, Signal);
+  if fpSigProcMask(SIG_BLOCK, @Signals, @Previous) <> 0 then
+    RaiseSystemError('Could not block session signals while clearing Ctrl+C', fpGetErrNo);
+  try
+    Result := SessionSignal = SIGINT;
+    if Result then
+      SessionSignal := 0;
+  finally
+    fpSigProcMask(SIG_SETMASK, @Previous, nil);
+  end;
 end;
 
 procedure CheckSessionInterrupt;

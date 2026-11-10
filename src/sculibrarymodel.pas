@@ -11,6 +11,12 @@ const
   MaxDeckRevision = 999;
 
 type
+  TLibrarySettingsChange = record
+    ChangePrefix, ChangeBuild: Boolean;
+    Prefix, BuildCommand, VersionIncrement, RevisionIncrement: string;
+    Editor: TJSONArray; // Borrowed during Configure.
+  end;
+
   TLibraryHeader = class
   private
     FSerialized: TJSONObject; // Borrowed from the store's metadata document.
@@ -23,9 +29,7 @@ type
   public
     constructor Create(Header: TJSONObject; RevisionCount: Integer; const LastDeck: string);
     destructor Destroy; override;
-    function Configure(ChangePrefix: Boolean; const Prefix: string; NewEditor: TJSONArray;
-      const VersionIncrement, RevisionIncrement: string; ChangeBuild: Boolean;
-      const NewBuildCommand: string; RevisionCount: Integer): Boolean;
+    function Configure(const Settings: TLibrarySettingsChange; RevisionCount: Integer): Boolean;
     procedure SetLastModifiedDeck(const Deck: string);
     procedure StartVersion(const Name: string; RevisionCount: Integer);
     function CloneJSON: TJSONObject;
@@ -240,9 +244,7 @@ begin
   Result := AuditSHA256(FSerialized.AsJSON);
 end;
 
-function TLibraryHeader.Configure(ChangePrefix: Boolean; const Prefix: string; NewEditor: TJSONArray;
-  const VersionIncrement, RevisionIncrement: string; ChangeBuild: Boolean;
-  const NewBuildCommand: string; RevisionCount: Integer): Boolean;
+function TLibraryHeader.Configure(const Settings: TLibrarySettingsChange; RevisionCount: Integer): Boolean;
 var
   VersionValue, RevisionValue: string;
   VersionStep, NewRevisionStep: Int64;
@@ -253,24 +255,24 @@ begin
   RevisionValue := FRevisionIncrement;
   VersionStep := FVersionStep;
   NewRevisionStep := FRevisionStep;
-  if VersionIncrement <> '' then
+  if Settings.VersionIncrement <> '' then
   begin
-    VersionStep := ParseIncrement(VersionIncrement, 'version_increment', 2, MaxVersionIncrement);
+    VersionStep := ParseIncrement(Settings.VersionIncrement, 'version_increment', 2, MaxVersionIncrement);
     VersionValue := FormatFixed(VersionStep, 2);
   end;
-  if RevisionIncrement <> '' then
+  if Settings.RevisionIncrement <> '' then
   begin
-    NewRevisionStep := ParseIncrement(RevisionIncrement, 'revision_increment', 3, MaxDeckRevision);
+    NewRevisionStep := ParseIncrement(Settings.RevisionIncrement, 'revision_increment', 3, MaxDeckRevision);
     RevisionValue := FormatFixed(NewRevisionStep, 3);
   end;
-  if Assigned(NewEditor) then
-    ValidateEditor(NewEditor, 'Invalid value for --editor');
-  if ChangeBuild and (Pos(#0, NewBuildCommand) > 0) then
+  if Assigned(Settings.Editor) then
+    ValidateEditor(Settings.Editor, 'Invalid value for --editor');
+  if Settings.ChangeBuild and (Pos(#0, Settings.BuildCommand) > 0) then
     raise EScuError.Create('The build command cannot contain NUL bytes.');
-  if ChangePrefix and (Prefix <> Versions.CommentPrefix(Versions.Current)) then
+  if Settings.ChangePrefix and (Settings.Prefix <> Versions.CommentPrefix(Versions.Current)) then
   begin
-    Versions.SetCommentPrefix(Prefix, RevisionCount);
-    FSerialized.Strings['comment_prefix'] := Prefix;
+    Versions.SetCommentPrefix(Settings.Prefix, RevisionCount);
+    FSerialized.Strings['comment_prefix'] := Settings.Prefix;
     Result := True;
   end;
   if VersionValue <> FVersionIncrement then
@@ -287,20 +289,20 @@ begin
     FRevisionStep := NewRevisionStep;
     Result := True;
   end;
-  if Assigned(NewEditor) and (NewEditor.AsJSON <> Field(FSerialized, 'editor', jtArray).AsJSON) then
+  if Assigned(Settings.Editor) and (Settings.Editor.AsJSON <> Field(FSerialized, 'editor', jtArray).AsJSON) then
   begin
     // Replacing the editor historically moves its field to the end of the header.
     FSerialized.Delete('editor');
-    FSerialized.Add('editor', NewEditor.Clone);
-    SetLength(FEditor, NewEditor.Count);
-    for Index := 0 to NewEditor.Count - 1 do
-      FEditor[Index] := NewEditor.Strings[Index];
+    FSerialized.Add('editor', Settings.Editor.Clone);
+    SetLength(FEditor, Settings.Editor.Count);
+    for Index := 0 to Settings.Editor.Count - 1 do
+      FEditor[Index] := Settings.Editor.Strings[Index];
     Result := True;
   end;
-  if ChangeBuild and (NewBuildCommand <> FBuildCommand) then
+  if Settings.ChangeBuild and (Settings.BuildCommand <> FBuildCommand) then
   begin
-    FSerialized.Strings['build_command'] := NewBuildCommand;
-    FBuildCommand := NewBuildCommand;
+    FSerialized.Strings['build_command'] := Settings.BuildCommand;
+    FBuildCommand := Settings.BuildCommand;
     Result := True;
   end;
 end;

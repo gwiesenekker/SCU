@@ -5,21 +5,27 @@ unit ScuHistory;
 interface
 
 uses
-  FPJSON;
+  Classes;
 
-const
-  MaxHistoryEntries = 100;
-
-function CommandHistoryPath: string;
-function ReadCommandHistory(const Path: string): TJSONArray;
-procedure SaveHistoryCommand(const Path, Line: string);
+type
+  TCommandHistory = class
+  private
+    FEntries: TStringList;
+    FPath: string;
+  public
+    destructor Destroy; override;
+    procedure Load;
+    procedure Remember(const Line: string);
+    property Entries: TStringList read FEntries;
+  end;
 
 implementation
 
 uses
-  SysUtils, BaseUnix, ScuErrors, ScuFiles, ScuLocks, ScuJSON;
+  SysUtils, BaseUnix, FPJSON, JSONScanner, ScuErrors, ScuFiles, ScuLocks;
 
 const
+  MaxHistoryEntries = 100;
   MaxSavedCommandSize = 64 * 1024;
   MaxHistorySize = MaxHistoryEntries * (6 * MaxSavedCommandSize + 4) + 16;
 
@@ -60,59 +66,142 @@ begin
   Result := IncludeTrailingPathDelimiter(Directory) + 'history.json';
 end;
 
-function ReadCommandHistory(const Path: string): TJSONArray;
+procedure ReadHistoryFile(const Path: string; Entries: TStrings);
 var
-  Data: TJSONData;
+  Scanner: TJSONScanner;
+  Token: TJSONToken;
   Bytes: RawByteString;
-  Index: Integer;
-  PreviousCodePage: TSystemCodePage;
+  Line: string;
+
+  function NextToken: TJSONToken;
+  begin
+    repeat
+      Result := Scanner.FetchToken;
+    until Result <> tkWhitespace;
+  end;
+
+  procedure InvalidHistory;
+  begin
+    raise EScuError.CreateFmt('Invalid command history in "%s".', [Path]);
+  end;
+
 begin
   if not RegularFileExists(Path) then
-    Exit(TJSONArray.Create);
+    Exit;
   Bytes := ReadBytes(Path, MaxHistorySize);
-  // FPC 3.2.2 can transcode JSON strings through the default code page.
-  PreviousCodePage := DefaultSystemCodePage;
-  DefaultSystemCodePage := CP_UTF8;
+  if Pos(#0, Bytes) > 0 then
+    InvalidHistory;
+  // The scanner gives us UTF-8 bytes directly, even in a non-UTF-8 locale.
+  Scanner := TJSONScanner.Create(Bytes, [joUTF8, joStrict]);
   try
-    Data := ParseJSON(Bytes, 'Command history file "' + Path + '"');
+    if NextToken <> tkSquaredBraceOpen then
+      InvalidHistory;
+    Token := NextToken;
+    if Token <> tkSquaredBraceClose then
+      repeat
+        if (Token <> tkString) or (Entries.Count = MaxHistoryEntries) then
+          InvalidHistory;
+        Line := Scanner.CurTokenString;
+        if (Length(Line) > MaxSavedCommandSize) or (Pos(#0, Line) > 0) then
+          InvalidHistory;
+        Entries.Add(Line);
+        Token := NextToken;
+        if Token = tkSquaredBraceClose then
+          Break;
+        if Token <> tkComma then
+          InvalidHistory;
+        Token := NextToken;
+      until False;
+    if NextToken <> tkEOF then
+      InvalidHistory;
   finally
-    DefaultSystemCodePage := PreviousCodePage;
+    Scanner.Free;
   end;
-  try
-    if not (Data is TJSONArray) or (Data.Count > MaxHistoryEntries) then
-      raise EScuError.CreateFmt('Invalid command history in "%s".', [Path]);
-    for Index := 0 to Data.Count - 1 do
-      if (Data.Items[Index].JSONType <> jtString) or
-        (Length(Data.Items[Index].AsString) > MaxSavedCommandSize) or
-        (Pos(#0, Data.Items[Index].AsString) > 0) then
-        raise EScuError.CreateFmt('Invalid command history entry %d in "%s".', [Index + 1, Path]);
-    Result := TJSONArray(Data);
-  except
-    Data.Free;
-    raise;
-  end;
+end;
+
+procedure AddHistoryEntry(Entries: TStrings; const Line: string);
+begin
+  if Entries.Count = MaxHistoryEntries then
+    Entries.Delete(0);
+  Entries.Add(Line);
 end;
 
 procedure SaveHistoryCommand(const Path, Line: string);
 var
-  Lock: TLibraryLock;
-  History: TJSONArray;
+  Lock: TFileLock;
+  Entries: TStringList;
+  Document: TJSONArray;
+  Command: string;
+  Bytes: RawByteString;
 begin
   if Length(Line) > MaxSavedCommandSize then
     Exit;
-  Lock := TLibraryLock.Create(Path + '.lock');
+  Lock := TFileLock.Create(Path + '.lock');
   try
-    History := ReadCommandHistory(Path);
+    Entries := TStringList.Create;
     try
-      if History.Count = MaxHistoryEntries then
-        History.Delete(0);
-      History.Add(Line);
-      AtomicWrite(Path, History.AsJSON + #10);
+      ReadHistoryFile(Path, Entries);
+      AddHistoryEntry(Entries, Line);
+      Document := TJSONArray.Create;
+      try
+        for Command in Entries do
+        begin
+          Bytes := Command;
+          SetCodePage(Bytes, CP_UTF8, False);
+          Document.Add(UTF8String(Bytes));
+        end;
+        AtomicWrite(Path, Document.AsJSON + #10);
+      finally
+        Document.Free;
+      end;
     finally
-      History.Free;
+      Entries.Free;
     end;
   finally
     Lock.Free;
+  end;
+end;
+
+destructor TCommandHistory.Destroy;
+begin
+  FEntries.Free;
+  inherited Destroy;
+end;
+
+procedure TCommandHistory.Load;
+begin
+  if Assigned(FEntries) then
+    Exit;
+  FEntries := TStringList.Create;
+  try
+    FPath := CommandHistoryPath;
+    if FPath <> '' then
+      ReadHistoryFile(FPath, FEntries);
+  except
+    on E: Exception do
+    begin
+      FEntries.Clear;
+      WriteLn(StdErr, 'scu: Could not load command history. ', E.Message);
+      FPath := '';
+    end;
+  end;
+end;
+
+procedure TCommandHistory.Remember(const Line: string);
+begin
+  if not Assigned(FEntries) or (Trim(Line) = '') then
+    Exit;
+  AddHistoryEntry(FEntries, Line);
+  if FPath = '' then
+    Exit;
+  try
+    SaveHistoryCommand(FPath, Line);
+  except
+    on E: Exception do
+    begin
+      WriteLn(StdErr, 'scu: Could not save command history. ', E.Message);
+      FPath := '';
+    end;
   end;
 end;
 

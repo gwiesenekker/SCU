@@ -587,7 +587,7 @@
         }
       ],
       "options": [],
-      "help": "Show recent audited commands in chronological order, with their canonical names, arguments, and options."
+      "help": "Show recent audited commands in chronological order, with their canonical names, arguments, options, and outcomes."
     },
     {
       "name": "show_library",

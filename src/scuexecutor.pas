@@ -32,7 +32,7 @@ implementation
 
 uses
   Classes, SysUtils, BaseUnix, FPJSON, ScuAudit, ScuBuild, ScuCodec, ScuCommandRegistry,
-  ScuErrors, ScuFiles, ScuLocks, ScuOutputLock, ScuRecovery, ScuSignals, ScuSQLite;
+  ScuErrors, ScuFiles, ScuLibraryPaths, ScuLocks, ScuOutputLock, ScuRecovery, ScuSignals, ScuSQLite;
 
 constructor TScuExecutor.Create(const LibraryPath: string; Interactive: Boolean; Output: TScuOutput);
 begin
@@ -54,18 +54,18 @@ var
 
   procedure RecordOutcome(Cancelled: Boolean);
   var
-    Lock: TLibraryLock;
+    Lock: TFileLock;
     Audit: TAuditLog;
     Database: TSQLiteLibrary;
     Message: string;
   begin
     try
       // Record the build outcome even when the build was interrupted.
-      Lock := TLibraryLock.Create(FLibraryPath + '.lock', @SessionEnding);
+      Lock := TFileLock.Create(LibraryLockPath(FLibraryPath), @SessionEnding);
       try
         Database := TSQLiteLibrary.OpenWrite(FLibraryPath);
         try
-          Audit := TAuditLog.Create(Database, Expansion);
+          Audit := TAuditLog.Open(Database, Expansion);
           try
             if (Failure = '') and (Build.Checkpoint.Version <> '') then
               Database.Checkpoints.SaveExpansionCheckpoint(Build.Checkpoint.Version, Build.OutputPath,
@@ -120,7 +120,7 @@ begin
   Contents := nil;
   try
     if Assigned(Context.LibraryFile) then
-      Contents := Context.LibraryFile.SavedContents(Context.StagedSave);
+      Contents := Context.LibraryFile.CreateSavedContents(Context.StagedSave);
     Audit.EndCommand(True, Detail, Context.Snapshots, PendingSave, Contents);
   finally
     Contents.Free;
@@ -129,7 +129,7 @@ end;
 
 procedure TScuExecutor.RestoreLibrary(var Context: TCommandContext; const Handler: TCommandHandler);
 var
-  Lock: TLibraryLock;
+  Lock: TFileLock;
   TempDir, TempFile, Detail: string;
   Document: TJSONObject;
   Audit: TAuditLog;
@@ -138,7 +138,7 @@ begin
   if Assigned(FPendingLibrary) then
     raise EScuError.Create('Finish pending edits before recovering a library.');
   Context.LibraryPath := CanonicalFile(Context.LibraryPath);
-  Lock := TLibraryLock.Create(Context.LibraryPath + '.lock', @SessionEnding, @CheckSessionInterrupt);
+  Lock := TFileLock.Create(LibraryLockPath(Context.LibraryPath), @SessionEnding, @CheckSessionInterrupt);
   try
     if RegularFileExists(Context.LibraryPath) then
       raise EScuError.Create('Choose a new library path for recovery. The destination already exists.');
@@ -151,7 +151,7 @@ begin
         try
           Context.LibraryFile := TDeckLibrary.CreateRecovered(Document);
           try
-            Audit := TAuditLog.Create(Context.Database);
+            Audit := TAuditLog.Open(Context.Database);
             try
               Audit.BeginCommand(Context.Command);
               Detail := Handler.Run(Context);
@@ -169,7 +169,7 @@ begin
         CheckSessionInterrupt;
         Stream := TFileStream.Create(TempFile, fmOpenRead);
         try
-          AtomicWrite(Context.LibraryPath, Stream, False);
+          AtomicWrite(Context.LibraryPath, Stream, [awNoReplace]);
         finally
           Stream.Free;
         end;
@@ -219,7 +219,7 @@ end;
 procedure TScuExecutor.RunCommand(var Context: TCommandContext; const Handler: TCommandHandler;
   OutputLock: THandle);
 var
-  Lock: TLibraryLock;
+  Lock: TFileLock;
   Audit: TAuditLog;
   Command: TScuCommand;
   LibraryExists, Initializing, Committed, PendingSave: Boolean;
@@ -240,8 +240,10 @@ begin
   Initializing := Handler.Mode = cmInitialize;
   Audit := nil;
   Committed := False;
-  Lock := TLibraryLock.Create(FLibraryPath + '.lock', @SessionEnding, @CheckSessionInterrupt);
+  Lock := nil;
   try
+    if Handler.Mode <> cmHistory then
+      Lock := TFileLock.Create(LibraryLockPath(FLibraryPath), @SessionEnding, @CheckSessionInterrupt);
     Checkpoint := Command.Option('head');
     if Command.HasOption('head') and not IsHexDigest(Checkpoint, 64) then
       raise EScuError.Create('Expected a lowercase SHA-256 audit head.');
@@ -261,7 +263,10 @@ begin
       Handler.Run(Context);
       Exit;
     end;
-    Audit := TAuditLog.Create(Context.Database, Checkpoint, Handler.Mode = cmVerifyAudit);
+    if Handler.Mode = cmVerifyAudit then
+      Audit := TAuditLog.Verify(Context.Database, Checkpoint)
+    else
+      Audit := TAuditLog.Open(Context.Database, Checkpoint);
     if (LibraryExists or Assigned(FPendingLibrary)) and (Audit.Records = 0) then
       raise EScuError.Create('The audit log for the existing library is empty.');
     if Handler.Mode = cmVerifyAudit then
@@ -270,7 +275,7 @@ begin
       begin
         if not LibraryExists then
           RaiseMissingLibrary;
-        Context.LibraryFile := TDeckLibrary.Create(FLibraryPath, '', Context.Database);
+        Context.LibraryFile := TDeckLibrary.Load(FLibraryPath, Context.Database);
         Audit.VerifyContents(Context.LibraryFile);
       end;
       FOutput.WriteLine(Format('records=%d interrupted=%d head=%s', [Audit.Records, Audit.Interrupted, Audit.Head]));
@@ -284,7 +289,7 @@ begin
       Context.Database.Commit;
       Context.Database.BeginTransaction;
       FreeAndNil(Audit);
-      Audit := TAuditLog.Create(Context.Database, Checkpoint);
+      Audit := TAuditLog.Open(Context.Database, Checkpoint);
     end;
     Audit.BeginCommand(Command);
     Context.Database.Execute('SAVEPOINT scu_operation');
@@ -293,7 +298,7 @@ begin
       begin
         if LibraryExists or Audit.Initialized then
           raise EScuError.Create('A library already exists or was previously initialized here.');
-        Context.LibraryFile := TDeckLibrary.Create(FLibraryPath, '1.0', Context.Database);
+        Context.LibraryFile := TDeckLibrary.CreateNew(FLibraryPath, '1.0');
       end
       else
       begin
@@ -302,7 +307,7 @@ begin
         begin
           if not LibraryExists then
             RaiseMissingLibrary;
-          Context.LibraryFile := TDeckLibrary.Create(FLibraryPath, '', Context.Database);
+          Context.LibraryFile := TDeckLibrary.Load(FLibraryPath, Context.Database);
         end;
       end;
       if not Assigned(Handler.Run) then
@@ -322,7 +327,7 @@ begin
           raise;
         try
           Context.Database.Execute('ROLLBACK TO scu_operation');
-          Audit.EndCommand(False, E.Message, Context.Snapshots, Assigned(FPendingLibrary));
+          Audit.EndCommand(False, E.Message, Context.Snapshots, Assigned(FPendingLibrary), nil, E is ECommandCancelled);
           Context.Database.Commit;
         except
           on AuditError: ECommandCancelled do raise;
@@ -387,15 +392,15 @@ begin
   if not Assigned(FPendingLibrary) then
     Exit('');
   Data := FPendingLibrary.ExportRecoveryJSON;
-  Result := FLibraryPath + '.recovery-' + IntToStr(fpGetPid) + '.json';
+  Result := LibraryRecoveryPath(FLibraryPath, fpGetPid);
   try
-    AtomicWrite(Result, Data, False);
+    AtomicWrite(Result, Data, [awNoReplace]);
   except
     on E: ECommandCancelled do raise;
     on E: Exception do
     begin
       Result := IncludeTrailingPathDelimiter(MakeTempDirectory('scu-recovery')) + 'library.json';
-      AtomicWrite(Result, Data, False);
+      AtomicWrite(Result, Data, [awNoReplace]);
     end;
   end;
 end;

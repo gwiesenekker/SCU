@@ -32,10 +32,6 @@ type
     First, After: TPosition;
   end;
   TChanges = array of TChange;
-  TTraceStep = record
-    After: TPosition;
-    Deleted: Boolean;
-  end;
   TIndexedLine = record
     Ending: Integer;
     Hash: Cardinal;
@@ -103,11 +99,13 @@ end;
 function FindChanges(const OldSource, NewSource: RawByteString; out Changes: TChanges;
   out Prefix: TPosition): Boolean;
 var
-  Trace: array of array of TTraceStep;
-  Distance, Deletions, Back, Index, Count: Integer;
+  Frontier: array[0..1] of array of TPosition;
+  Trace: array of array of Boolean;
+  EditPath: array of Boolean;
+  Distance, Deletions, Back, Index, Count, Current, Previous: Integer;
   Budget: Int64;
-  Step: TTraceStep;
-  CanDelete, CanInsert, Indexed: Boolean;
+  Position: TPosition;
+  CanDelete, CanInsert, Deleted, Indexed: Boolean;
   OldLines, NewLines: TLineIndex;
 
   procedure MatchLines(var Position: TPosition);
@@ -182,50 +180,63 @@ begin
   Prefix := Default(TPosition);
   MatchLines(Prefix);
   SetLength(Trace, MaxEditDistance + 1);
-  SetLength(Trace[0], 1);
-  Trace[0][0].After := Prefix;
+  SetLength(Frontier[0], MaxEditDistance + 1);
+  SetLength(Frontier[1], MaxEditDistance + 1);
+  Frontier[0][0] := Prefix;
 
-  // Myers search. Row d stores the furthest position on each reachable
-  // diagonal after d edits. The row index counts deletions.
+  // Myers search only needs the previous frontier. Keep the edit decisions
+  // for backtracking and replay the winning path to recover byte offsets.
   for Distance := 1 to MaxEditDistance do
   begin
     CheckSessionInterrupt;
+    Current := Distance mod 2;
+    Previous := 1 - Current;
     SetLength(Trace[Distance], Distance + 1);
     for Deletions := 0 to Distance do
     begin
       if Budget <= 0 then
         Exit(False);
       CanDelete := (Deletions > 0) and
-        (Trace[Distance - 1][Deletions - 1].After.OldLine.Offset >= 0) and
-        (Trace[Distance - 1][Deletions - 1].After.OldLine.Offset < Length(OldSource));
+        (Frontier[Previous][Deletions - 1].OldLine.Offset >= 0) and
+        (Frontier[Previous][Deletions - 1].OldLine.Offset < Length(OldSource));
       CanInsert := (Deletions < Distance) and
-        (Trace[Distance - 1][Deletions].After.OldLine.Offset >= 0) and
-        (Trace[Distance - 1][Deletions].After.NewLine.Offset < Length(NewSource));
+        (Frontier[Previous][Deletions].OldLine.Offset >= 0) and
+        (Frontier[Previous][Deletions].NewLine.Offset < Length(NewSource));
       if not (CanDelete or CanInsert) then
       begin
-        Trace[Distance][Deletions].After.OldLine.Offset := -1;
+        Frontier[Current][Deletions].OldLine.Offset := -1;
         Continue;
       end;
-      Step.Deleted := CanDelete and (not CanInsert or
-        (Trace[Distance - 1][Deletions - 1].After.OldLine.Offset >=
-         Trace[Distance - 1][Deletions].After.OldLine.Offset));
-      Step.After := Trace[Distance - 1][Deletions - Ord(Step.Deleted)].After;
-      ApplyEdit(Step.After, Step.Deleted);
-      MatchLines(Step.After);
-      Trace[Distance][Deletions] := Step;
-      if (Step.After.OldLine.Offset <> Length(OldSource)) or
-        (Step.After.NewLine.Offset <> Length(NewSource)) then
+      Deleted := CanDelete and (not CanInsert or
+        (Frontier[Previous][Deletions - 1].OldLine.Offset >=
+         Frontier[Previous][Deletions].OldLine.Offset));
+      Position := Frontier[Previous][Deletions - Ord(Deleted)];
+      ApplyEdit(Position, Deleted);
+      MatchLines(Position);
+      Frontier[Current][Deletions] := Position;
+      Trace[Distance][Deletions] := Deleted;
+      if (Position.OldLine.Offset <> Length(OldSource)) or
+        (Position.NewLine.Offset <> Length(NewSource)) then
         Continue;
 
-      SetLength(Changes, Distance);
+      SetLength(EditPath, Distance);
       Back := Deletions;
       for Index := Distance downto 1 do
       begin
-        Step := Trace[Index][Back];
-        Dec(Back, Ord(Step.Deleted));
-        Changes[Index - 1].First := Trace[Index - 1][Back].After;
-        Changes[Index - 1].After := Changes[Index - 1].First;
-        ApplyEdit(Changes[Index - 1].After, Step.Deleted);
+        Deleted := Trace[Index][Back];
+        EditPath[Index - 1] := Deleted;
+        Dec(Back, Ord(Deleted));
+      end;
+      SetLength(Changes, Distance);
+      Budget := MaxSearchBytes;
+      Position := Prefix;
+      for Index := 0 to High(EditPath) do
+      begin
+        CheckSessionInterrupt;
+        Changes[Index].First := Position;
+        ApplyEdit(Position, EditPath[Index]);
+        Changes[Index].After := Position;
+        MatchLines(Position);
       end;
       // Combine adjacent edits so each replacement lists removals first.
       Count := 1;

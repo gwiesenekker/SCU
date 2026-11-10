@@ -28,16 +28,18 @@ type
     procedure ValidateDeckNumbers;
     function ExportJSON(Database: TSQLiteLibrary): RawByteString;
   public
-    constructor Create(const Path, InitialVersion: string; Database: TSQLiteLibrary);
+    constructor CreateNew(const Path, InitialVersion: string);
+    constructor Load(const Path: string; Database: TSQLiteLibrary);
     constructor CreateRecovered(var Document: TJSONObject);
     destructor Destroy; override;
     procedure Append(var Payload: TJSONObject);
     procedure RemoveLast;
+    // The store owns the returned entry, including its lazily loaded payload.
     function PayloadAt(Index: Integer; Database: TSQLiteLibrary): TLibraryRevision;
     function RevisionDigest(Sequence: Integer; Database: TSQLiteLibrary): string;
     procedure StageSave(Database: TSQLiteLibrary; var Save: TLibrarySave);
     procedure AcceptSave(const Save: TLibrarySave);
-    function SavedContents(const Save: TLibrarySave): TJSONObject;
+    function CreateSavedContents(const Save: TLibrarySave): TJSONObject;
     function ExportRecoveryJSON: RawByteString;
     property Header: TLibraryHeader read FHeader;
     property Count: Integer read GetCount;
@@ -52,32 +54,24 @@ uses
 type
   TDeckRevisionMap = specialize TFPGMap<string, Integer>;
 
-constructor TLibraryStore.Create(const Path, InitialVersion: string; Database: TSQLiteLibrary);
-var
-  Reader: TSQLiteLibrary;
+constructor TLibraryStore.CreateNew(const Path, InitialVersion: string);
 begin
   inherited Create;
   FPath := Path;
   FEntries := TObjectList.Create(True);
-  if InitialVersion <> '' then
-    FMetadata := NewLibraryMetadata(InitialVersion)
-  else
-  begin
-    Reader := nil;
-    try
-      if not Assigned(Database) then
-      begin
-        Reader := TSQLiteLibrary.OpenRead(Path);
-        Database := Reader;
-      end;
-      FSavedState := Database.Revisions.StateKey;
-      FMetadata := Database.Revisions.ReadMetadata;
-      Database.Revisions.ReadRevisionIndex(@ReadIndexEntry);
-      FSavedRevisionCount := Count;
-    finally
-      Reader.Free;
-    end;
-  end;
+  FMetadata := NewLibraryMetadata(InitialVersion);
+  LoadHeader;
+end;
+
+constructor TLibraryStore.Load(const Path: string; Database: TSQLiteLibrary);
+begin
+  inherited Create;
+  FPath := Path;
+  FEntries := TObjectList.Create(True);
+  FSavedState := Database.Revisions.StateKey;
+  FMetadata := Database.Revisions.ReadMetadata;
+  Database.Revisions.ReadRevisionIndex(@ReadIndexEntry);
+  FSavedRevisionCount := Count;
   LoadHeader;
   ValidateDeckNumbers;
 end;
@@ -291,7 +285,7 @@ begin
   FSavedRevisionCount := Count;
 end;
 
-function TLibraryStore.SavedContents(const Save: TLibrarySave): TJSONObject;
+function TLibraryStore.CreateSavedContents(const Save: TLibrarySave): TJSONObject;
 var
   Index: Integer;
   Digests: TJSONArray;

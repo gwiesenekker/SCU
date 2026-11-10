@@ -12,17 +12,60 @@ type
     Deck, Version, Revision, FromSnapshot, ToSnapshot: string;
   end;
 
+  TCompletionLibrary = class
+  private
+    FPath, FState: string;
+    FSnapshot: TDeckLibrary;
+  public
+    destructor Destroy; override;
+    // The cache owns the snapshot. A later read can replace it.
+    function ReadSnapshot(const LibraryPath: string): TDeckLibrary;
+  end;
+
 function CompletionContext(Binder: TCommandBinder): TCompletionContext;
 procedure CompleteLine(Commands: TCommandDefinitions; const LibraryPath, Before, Prefix, After: string;
-  Candidates: TStrings; out AppendCharacter: Char; PendingLibrary: TDeckLibrary = nil);
+  Candidates: TStrings; out AppendCharacter: Char; LibraryCache: TCompletionLibrary;
+  PendingLibrary: TDeckLibrary);
 procedure CompleteValue(Commands: TCommandDefinitions; Parameter: TParameterDefinition;
   const Context: TCompletionContext; const LibraryPath, Value, Prefix: string; Quote: Char; RawValue: Boolean;
-  Candidates: TStrings; out AppendCharacter: Char; PendingLibrary: TDeckLibrary = nil);
+  Candidates: TStrings; out AppendCharacter: Char; LibraryCache: TCompletionLibrary;
+  PendingLibrary: TDeckLibrary);
 
 implementation
 
 uses
-  SysUtils, ScuErrors, ScuFiles, ScuTokenizer;
+  SysUtils, ScuErrors, ScuFiles, ScuSQLite, ScuTokenizer;
+
+destructor TCompletionLibrary.Destroy;
+begin
+  FSnapshot.Free;
+  inherited Destroy;
+end;
+
+function TCompletionLibrary.ReadSnapshot(const LibraryPath: string): TDeckLibrary;
+var
+  Reader: TSQLiteLibrary;
+  State: string;
+  Snapshot: TDeckLibrary;
+begin
+  if not RegularFileExists(LibraryPath) then
+    Exit(nil);
+  Reader := TSQLiteLibrary.OpenRead(LibraryPath);
+  try
+    State := Reader.Revisions.StateKey;
+    if not Assigned(FSnapshot) or (FPath <> LibraryPath) or (FState <> State) then
+    begin
+      Snapshot := TDeckLibrary.Load(LibraryPath, Reader);
+      FSnapshot.Free;
+      FSnapshot := Snapshot;
+      FPath := LibraryPath;
+      FState := State;
+    end;
+    Result := FSnapshot;
+  finally
+    Reader.Free;
+  end;
+end;
 
 procedure RecordCompletionValue(var Context: TCompletionContext; const Name, Value: string);
 begin
@@ -89,7 +132,8 @@ end;
 
 procedure CompleteValue(Commands: TCommandDefinitions; Parameter: TParameterDefinition;
   const Context: TCompletionContext; const LibraryPath, Value, Prefix: string; Quote: Char; RawValue: Boolean;
-  Candidates: TStrings; out AppendCharacter: Char; PendingLibrary: TDeckLibrary);
+  Candidates: TStrings; out AppendCharacter: Char; LibraryCache: TCompletionLibrary;
+  PendingLibrary: TDeckLibrary);
 var
   Kind: TCompletionKind;
   Directory, SearchDirectory, Leaf, Name, Suffix, Deck, DeckVersion: string;
@@ -181,66 +225,59 @@ begin
         begin
           LibraryFile := PendingLibrary;
           if not Assigned(LibraryFile) then
+            LibraryFile := LibraryCache.ReadSnapshot(LibraryPath);
+          if not Assigned(LibraryFile) then
+            Exit;
+          if Kind = ckDeck then
           begin
-            if not RegularFileExists(LibraryPath) then
-              Exit;
-            LibraryFile := TDeckLibrary.Create(LibraryPath);
-          end;
-          try
-            if Kind = ckDeck then
+            Last := LibraryFile.Revision;
+            DeckVersion := Context.Version;
+            if (DeckVersion <> '') and (Pos('-', DeckVersion) <= 1) then
             begin
-              Last := LibraryFile.Revision;
-              DeckVersion := Context.Version;
-              if (DeckVersion <> '') and (Pos('-', DeckVersion) <= 1) then
-              begin
-                LibraryFile.VersionBounds(DeckVersion, Base, Last);
-                DeckVersion := '';
-              end
-              else if Context.Revision <> '' then
-                Last := LibraryFile.ParseRevision(Context.Revision);
-              LibraryFile.ChangedDecks(0, Last, Values);
-              if (DeckVersion <> '') or (Context.FromSnapshot <> '') or (Context.ToSnapshot <> '') then
-                for Index := Values.Count - 1 downto 0 do
-                  if not (MatchesDeckVersion(Values[Index], DeckVersion) and
-                    MatchesDeckVersion(Values[Index], Context.FromSnapshot) and
-                    MatchesDeckVersion(Values[Index], Context.ToSnapshot)) then
-                    Values.Delete(Index);
-              if SameText(Copy(Value, 1, 4), 'scu$') and
-                (Values.IndexOf(LibraryFile.LastModifiedDeck) >= 0) then
-                AddLibraryValue(LastModifiedDeckSelector);
+              LibraryFile.VersionBounds(DeckVersion, Base, Last);
+              DeckVersion := '';
             end
-            else
+            else if Context.Revision <> '' then
+              Last := LibraryFile.ParseRevision(Context.Revision);
+            LibraryFile.ChangedDecks(0, Last, Values);
+            if (DeckVersion <> '') or (Context.FromSnapshot <> '') or (Context.ToSnapshot <> '') then
+              for Index := Values.Count - 1 downto 0 do
+                if not (MatchesDeckVersion(Values[Index], DeckVersion) and
+                  MatchesDeckVersion(Values[Index], Context.FromSnapshot) and
+                  MatchesDeckVersion(Values[Index], Context.ToSnapshot)) then
+                  Values.Delete(Index);
+            if SameText(Copy(Value, 1, 4), 'scu$') and
+              (Values.IndexOf(LibraryFile.LastModifiedDeck) >= 0) then
+              AddLibraryValue(LastModifiedDeckSelector);
+          end
+          else
+          begin
+            Deck := Context.Deck;
+            if (Kind = ckDeckVersion) and (Deck = '') then
+              Deck := LibraryFile.LastModifiedDeck;
+            if SameText(Deck, LastModifiedDeckSelector) then
             begin
-              Deck := Context.Deck;
-              if (Kind = ckDeckVersion) and (Deck = '') then
-                Deck := LibraryFile.LastModifiedDeck;
-              if SameText(Deck, LastModifiedDeckSelector) then
-              begin
-                Deck := LibraryFile.LastModifiedDeck;
-                if Deck = '' then
-                  Exit;
-              end;
-              if Kind = ckVersion then
-                LibraryFile.ListVersionNames(Values, Deck);
-              if Deck <> '' then
-              begin
-                DeckRevisionCount := LibraryFile.ListDeckRevisions(Deck, Values, Kind = ckRevision,
-                  (Kind = ckDeckVersion) or ((Kind = ckVersion) and ((Value = '') or (Pos('-', Value) > 1))));
-                if Kind = ckDeckVersion then
-                begin
-                  if DeckRevisionCount > 0 then
-                    AddLibraryValue(CurrentDeckVersionSelector);
-                  if DeckRevisionCount > 1 then
-                    AddLibraryValue(PreviousDeckVersionSelector);
-                end;
-              end
-              else if Kind = ckRevision then
-                for Index := 0 to LibraryFile.Revision do
-                  AddLibraryValue(IntToStr(Index));
+              Deck := LibraryFile.LastModifiedDeck;
+              if Deck = '' then
+                Exit;
             end;
-          finally
-            if not Assigned(PendingLibrary) then
-              LibraryFile.Free;
+            if Kind = ckVersion then
+              LibraryFile.ListVersionNames(Values, Deck);
+            if Deck <> '' then
+            begin
+              DeckRevisionCount := LibraryFile.ListDeckRevisions(Deck, Values, Kind = ckRevision,
+                (Kind = ckDeckVersion) or ((Kind = ckVersion) and ((Value = '') or (Pos('-', Value) > 1))));
+              if Kind = ckDeckVersion then
+              begin
+                if DeckRevisionCount > 0 then
+                  AddLibraryValue(CurrentDeckVersionSelector);
+                if DeckRevisionCount > 1 then
+                  AddLibraryValue(PreviousDeckVersionSelector);
+              end;
+            end
+            else if Kind = ckRevision then
+              for Index := 0 to LibraryFile.Revision do
+                AddLibraryValue(IntToStr(Index));
           end;
         end;
     end;
@@ -266,7 +303,8 @@ begin
 end;
 
 procedure CompleteLine(Commands: TCommandDefinitions; const LibraryPath, Before, Prefix, After: string;
-  Candidates: TStrings; out AppendCharacter: Char; PendingLibrary: TDeckLibrary);
+  Candidates: TStrings; out AppendCharacter: Char; LibraryCache: TCompletionLibrary;
+  PendingLibrary: TDeckLibrary);
 var
   Tokens, Names, OptionNames: TStringList;
   Spec: TCommandDefinition;
@@ -346,7 +384,7 @@ var
     Bindings := WithLaterBindings(Position);
     try
       CompleteValue(Commands, Bindings.ParameterAt(Position), CompletionContext(Bindings),
-        LibraryPath, Value, Prefix, Current.Quote, False, Candidates, AppendCharacter, PendingLibrary);
+        LibraryPath, Value, Prefix, Current.Quote, False, Candidates, AppendCharacter, LibraryCache, PendingLibrary);
     finally
       Bindings.Free;
     end;

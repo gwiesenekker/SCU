@@ -5,7 +5,7 @@ unit ScuLibrary;
 interface
 
 uses
-  Classes, FPJSON, ScuLibraryStore, ScuVersions, ScuSQLite;
+  Classes, FPJSON, ScuLibraryModel, ScuLibraryStore, ScuVersions, ScuSQLite;
 
 const
   CurrentDeckVersionSelector = 'scu$current_deck_version';
@@ -27,6 +27,7 @@ type
   end;
 
   TLibrarySave = ScuLibraryStore.TLibrarySave;
+  TLibrarySettingsChange = ScuLibraryModel.TLibrarySettingsChange;
 
   TDeckLibrary = class
   private
@@ -40,14 +41,17 @@ type
     function GetEditorArgument(Index: Integer): string;
     function GetBuildCommand: string;
     function GetLastModifiedDeck: string;
+    function DeckVersionAt(Revision: Integer): string;
+    function DeckRevisionAt(Revision: Integer): string;
   public
-    constructor Create(const Path: string; const InitialVersion: string = ''; Database: TSQLiteLibrary = nil);
+    constructor CreateNew(const Path, InitialVersion: string);
+    constructor Load(const Path: string; Database: TSQLiteLibrary);
     constructor CreateRecovered(var Document: TJSONObject);
     destructor Destroy; override;
     procedure Save(Database: TSQLiteLibrary; var Staged: TLibrarySave);
     procedure AcceptSave(const Staged: TLibrarySave);
     function ExportRecoveryJSON: RawByteString;
-    function SavedContents(const Staged: TLibrarySave): TJSONObject;
+    function CreateSavedContents(const Staged: TLibrarySave): TJSONObject;
     function HeaderDigest: string;
     function RevisionDigest(Sequence: Integer; Database: TSQLiteLibrary): string;
     function Store(Database: TSQLiteLibrary; const Deck: string; const Source: RawByteString;
@@ -65,8 +69,6 @@ type
     procedure ListVersionNames(Dest: TStrings; const Deck: string = '');
     function ParseRevision(const Value: string): Integer;
     function ParseDeckSnapshot(const Name, Selector: string): TLibrarySnapshot;
-    function DeckVersionAt(Revision: Integer): string;
-    function DeckRevisionAt(Revision: Integer): string;
     function CurrentSnapshot: TLibrarySnapshot;
     function TryPreviousSnapshot(out Snapshot: TLibrarySnapshot): Boolean;
     function PreviousDeckSnapshot(const Name: string; AtRevision: Integer): TLibrarySnapshot;
@@ -75,8 +77,7 @@ type
     function CurrentVersion: string;
     function VersionAt(Revision: Integer): string;
     function DefaultCommentPrefix(const Version: string): string;
-    procedure Configure(ChangePrefix: Boolean; const Prefix: string; NewEditor: TJSONArray;
-      const VersionIncrement, RevisionIncrement: string; ChangeBuild: Boolean; const NewBuildCommand: string);
+    procedure Configure(const Settings: TLibrarySettingsChange);
     property HeaderJSON: string read GetHeaderJSON;
     property EditorCount: Integer read GetEditorCount;
     property EditorArguments[Index: Integer]: string read GetEditorArgument;
@@ -93,18 +94,24 @@ function DeckName(const Name: string): string;
 implementation
 
 uses
-  SysUtils, ScuCodec, ScuErrors, ScuLibraryModel, ScuSignals, ScuVersionNumbers;
+  SysUtils, ScuCodec, ScuErrors, ScuSignals, ScuVersionNumbers;
 
 function DeckName(const Name: string): string;
 begin
   Result := ScuLibraryModel.DeckName(Name);
 end;
 
-constructor TDeckLibrary.Create(const Path: string; const InitialVersion: string; Database: TSQLiteLibrary);
+constructor TDeckLibrary.CreateNew(const Path, InitialVersion: string);
 begin
   inherited Create;
-  FStore := TLibraryStore.Create(Path, InitialVersion, Database);
-  FModified := InitialVersion <> '';
+  FStore := TLibraryStore.CreateNew(Path, InitialVersion);
+  FModified := True;
+end;
+
+constructor TDeckLibrary.Load(const Path: string; Database: TSQLiteLibrary);
+begin
+  inherited Create;
+  FStore := TLibraryStore.Load(Path, Database);
 end;
 
 constructor TDeckLibrary.CreateRecovered(var Document: TJSONObject);
@@ -153,9 +160,9 @@ begin
   end;
 end;
 
-function TDeckLibrary.SavedContents(const Staged: TLibrarySave): TJSONObject;
+function TDeckLibrary.CreateSavedContents(const Staged: TLibrarySave): TJSONObject;
 begin
-  Result := FStore.SavedContents(Staged);
+  Result := FStore.CreateSavedContents(Staged);
 end;
 
 function TDeckLibrary.HeaderDigest: string;
@@ -477,11 +484,9 @@ begin
   Result := FStore.Header.BuildCommand;
 end;
 
-procedure TDeckLibrary.Configure(ChangePrefix: Boolean; const Prefix: string; NewEditor: TJSONArray;
-  const VersionIncrement, RevisionIncrement: string; ChangeBuild: Boolean; const NewBuildCommand: string);
+procedure TDeckLibrary.Configure(const Settings: TLibrarySettingsChange);
 begin
-  if FStore.Header.Configure(ChangePrefix, Prefix, NewEditor, VersionIncrement, RevisionIncrement,
-    ChangeBuild, NewBuildCommand, Revision) then
+  if FStore.Header.Configure(Settings, Revision) then
     FModified := True;
 end;
 

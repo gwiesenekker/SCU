@@ -21,7 +21,8 @@ uses
 
 const
   CSI = #27'[';
-  EscapeDelay = 250;
+  CharacterDelay = 250;
+  EscapeDelay = 500;
   EscapeSequenceDelay = 1000;
 
 type
@@ -151,6 +152,12 @@ var
               Exit(True);
             end;
           #3: raise ECommandCancelled.Create('Command cancelled.');
+          #26:
+            begin
+              Suspend;
+              Write(StdErr, Hint);
+              Flush(StdErr);
+            end;
           'q', 'Q', #7: Break;
           #27:
             begin
@@ -293,7 +300,7 @@ begin
   Result := Lead;
   for Index := 2 to CharacterSize(Lead) do
   begin
-    if not ReadByte(Key, EscapeDelay) then
+    if not ReadByte(Key, CharacterDelay) then
       Break;
     if not (Key in [#$80..#$BF]) then
     begin

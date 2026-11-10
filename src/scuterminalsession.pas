@@ -58,7 +58,7 @@ begin
   if fpSigProcMask(SIG_BLOCK, @Signals, @FPreviousMask) <> 0 then
     RaiseSystemError('Could not block signals while reading the terminal', fpGetErrNo);
   FMaskBlocked := True;
-  if SessionSignal <> 0 then
+  if PendingSignal <> 0 then
     Exit;
   FSignalHandle := signalfd(-1, @Signals, O_CLOEXEC);
   if FSignalHandle < 0 then
@@ -145,7 +145,10 @@ begin
   fpSigEmptySet(Signals);
   fpSigAddSet(Signals, SIGTSTP);
   fpSigProcMask(SIG_UNBLOCK, @Signals, @Previous);
-  fpKill(fpGetPid, SIGTSTP);
+  if fpGetPGrp = fpGetPid then
+    fpKill(-fpGetPid, SIGTSTP)
+  else
+    fpKill(fpGetPid, SIGTSTP);
   fpSigProcMask(SIG_SETMASK, @Previous, nil);
   ResumeEditing;
 end;

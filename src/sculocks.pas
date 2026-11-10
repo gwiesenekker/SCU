@@ -11,7 +11,7 @@ type
   TStopLockWait = function: Boolean;
   TCheckLockInterrupt = procedure;
 
-  TLibraryLock = class
+  TFileLock = class
   private
     FHandle: THandle;
   public
@@ -25,7 +25,7 @@ implementation
 uses
   BaseUnix, Unix, Linux, ScuErrors;
 
-constructor TLibraryLock.Create(const Path: string; StopWaiting: TStopLockWait;
+constructor TFileLock.Create(const Path: string; StopWaiting: TStopLockWait;
   CheckInterrupt: TCheckLockInterrupt);
 var
   Flags, Error: cint;
@@ -60,7 +60,7 @@ begin
     CheckInterrupt();
 end;
 
-destructor TLibraryLock.Destroy;
+destructor TFileLock.Destroy;
 begin
   if FHandle >= 0 then
     fpClose(FHandle);

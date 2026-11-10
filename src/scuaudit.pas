@@ -11,6 +11,7 @@ type
   TAuditSnapshots = record
     Selected: TLibrarySnapshot;
     ResolvedDeck, FromDeckVersion, ToDeckVersion: string;
+    OutputPath, OutputDirectory: string;
   end;
 
   TAuditRevisionDigests = specialize TFPGMap<Integer, string>;
@@ -33,13 +34,14 @@ type
     procedure Accept(const Line: RawByteString);
     procedure AcceptContents(Event: TJSONObject);
     procedure Append(Event: TJSONObject);
+    procedure Load(Database: TSQLiteLibrary; const Checkpoint: string; VerifyData: Boolean);
   public
-    constructor Create(Database: TSQLiteLibrary; const Checkpoint: string = '';
-      VerifyData: Boolean = False);
+    constructor Open(Database: TSQLiteLibrary; const Checkpoint: string = '');
+    constructor Verify(Database: TSQLiteLibrary; const Checkpoint: string = '');
     destructor Destroy; override;
     procedure BeginCommand(Command: TScuCommand);
     procedure EndCommand(Success: Boolean; const Detail: string; const Snapshots: TAuditSnapshots;
-      PendingSave: Boolean = False; Contents: TJSONObject = nil);
+      PendingSave: Boolean = False; Contents: TJSONObject = nil; Cancelled: Boolean = False);
     procedure VerifyContents(LibraryFile: TDeckLibrary);
     procedure RecordBuild(const Expansion, Command, OutputPath: string; Success: Boolean; const Detail: string);
     property Head: string read FHead;
@@ -136,12 +138,23 @@ begin
   Result := True;
 end;
 
-constructor TAuditLog.Create(Database: TSQLiteLibrary; const Checkpoint: string; VerifyData: Boolean);
+constructor TAuditLog.Open(Database: TSQLiteLibrary; const Checkpoint: string);
+begin
+  inherited Create;
+  Load(Database, Checkpoint, False);
+end;
+
+constructor TAuditLog.Verify(Database: TSQLiteLibrary; const Checkpoint: string);
+begin
+  inherited Create;
+  Load(Database, Checkpoint, True);
+end;
+
+procedure TAuditLog.Load(Database: TSQLiteLibrary; const Checkpoint: string; VerifyData: Boolean);
 var
   State: TAuditState;
   HasState: Boolean;
 begin
-  inherited Create;
   FDatabase := Database;
   FHead := StringOfChar('0', HashLength);
   if VerifyData then
@@ -332,7 +345,7 @@ begin
 end;
 
 procedure TAuditLog.EndCommand(Success: Boolean; const Detail: string; const Snapshots: TAuditSnapshots;
-  PendingSave: Boolean; Contents: TJSONObject);
+  PendingSave: Boolean; Contents: TJSONObject; Cancelled: Boolean);
 var
   Event: TJSONObject;
 
@@ -354,6 +367,8 @@ begin
     Event.Add('phase', 'end');
     Event.Add('begin', FPending);
     Event.Add('success', Success);
+    if Cancelled then
+      Event.Add('cancelled', True);
     if PendingSave then
       Event.Add('pending_save', True);
     if Assigned(Contents) then
@@ -362,6 +377,10 @@ begin
       Event.Add('detail', Detail);
     if Snapshots.ResolvedDeck <> '' then
       Event.Add('resolved_deck', Snapshots.ResolvedDeck);
+    if Snapshots.OutputPath <> '' then
+      Event.Add('output_path', Snapshots.OutputPath);
+    if Snapshots.OutputDirectory <> '' then
+      Event.Add('output_directory', Snapshots.OutputDirectory);
     AddSnapshot('snapshot', Snapshots.Selected);
     if Snapshots.FromDeckVersion <> '' then
       Event.Add('from_deck_version', Snapshots.FromDeckVersion);

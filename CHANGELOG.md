@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Show audit history outcomes without taking the library lock and record resolved output destinations for extraction and expansion.
+- Support extensionless library paths, retain output file groups, remove dangling editor links, and report broken output pipes accurately.
+- Suspend and resume interactive builds and completion paging through shell job control.
+- Keep interactive history and completion snapshots session-local, and make storage constructors and file options explicit.
+- Use OpenSSL for deck checksums and avoid re-encoding decoded base64 payloads.
+- Reduce the memory used by the bounded diff search and test its fallback patch.
 - Manage the terminal signal mask, signal descriptor, and editing settings in one session object.
 - Separate build and editor process handling from session signal handling.
 - Separate shared errors, file operations, and locks into dedicated units.

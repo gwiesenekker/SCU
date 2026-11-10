@@ -9,6 +9,7 @@ uses
 
 type
   TAuditLineVisitor = procedure(const Line: RawByteString) of object;
+  TAuditHistoryVisitor = procedure(const Attempt, Outcome: RawByteString) of object;
   TAuditState = record
     RecordCount, Interrupted: Int64;
     Head, Pending, PendingCommand: string;
@@ -28,7 +29,7 @@ type
     function ReadAuditTail(out Sequence: Int64; out Line, PreviousDigest: RawByteString): Boolean;
     function HasAuditDigest(const Digest: string): Boolean;
     procedure ReadAudit(Visit: TAuditLineVisitor);
-    procedure ReadCommandHistory(Limit: Int64; Visit: TAuditLineVisitor);
+    procedure ReadCommandHistory(Limit: Int64; Visit: TAuditHistoryVisitor);
     procedure AppendAudit(Sequence: Int64; const Line: RawByteString);
   end;
 
@@ -151,18 +152,24 @@ begin
   end;
 end;
 
-procedure TSQLiteAuditStore.ReadCommandHistory(Limit: Int64; Visit: TAuditLineVisitor);
+procedure TSQLiteAuditStore.ReadCommandHistory(Limit: Int64; Visit: TAuditHistoryVisitor);
 var
   Statement: TSQLiteStatement;
 begin
-  Statement := FDatabase.Prepare('SELECT payload FROM (' +
-    'SELECT sequence, substr(line, 66) AS payload FROM audit_records ' +
+  // Commands write their outcome immediately after the attempt. Check the
+  // digest link too, so an interrupted attempt cannot pick up a later outcome.
+  Statement := FDatabase.Prepare('SELECT substr(attempt.line, 66), substr(outcome.line, 66) FROM (' +
+    'SELECT sequence, line FROM audit_records ' +
     'WHERE json_extract(substr(line, 66), ''$.phase'') = ''begin'' ' +
-    'ORDER BY sequence DESC LIMIT ?) ORDER BY sequence');
+    'ORDER BY sequence DESC LIMIT ?) AS attempt ' +
+    'LEFT JOIN audit_records AS outcome ON outcome.sequence = attempt.sequence + 1 ' +
+    'AND json_extract(substr(outcome.line, 66), ''$.phase'') = ''end'' ' +
+    'AND json_extract(substr(outcome.line, 66), ''$.begin'') = substr(attempt.line, 1, 64) ' +
+    'ORDER BY attempt.sequence');
   try
     Statement.Bind(1, Limit);
     while Statement.Step do
-      Visit(Statement.Text[0]);
+      Visit(Statement.Text[0], Statement.Text[1]);
   finally
     Statement.Free;
   end;

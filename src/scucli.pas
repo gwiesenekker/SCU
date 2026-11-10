@@ -5,14 +5,14 @@ unit ScuCLI;
 interface
 
 uses
-  Classes, ScuCommand, ScuCommands, ScuComplete, ScuExecutor, ScuOutput;
+  Classes, ScuCommand, ScuCommands, ScuComplete, ScuExecutor, ScuHistory, ScuOutput;
 
 type
   TScuCLI = class
   private
     FCatalog: TCommandCatalog;
-    FPromptParameter: TParameterDefinition;
-    FPromptContext: TCompletionContext;
+    FHistory: TCommandHistory;
+    FCompletionLibrary: TCompletionLibrary;
     FLibraryPath, FCatalogDirectory: string;
     FOutput: TScuOutput;
     FExecutor: TScuExecutor;
@@ -21,8 +21,6 @@ type
     function ParseCommand(Tokens: TStrings; CommandIndex: Integer; Spec: TCommandDefinition;
       Interactive: Boolean): TScuCommand;
     procedure CompleteInteractiveLine(const Before, Prefix, After: string; Candidates: TStrings;
-      out AppendCharacter: Char);
-    procedure CompletePromptValue(const Before, Prefix, After: string; Candidates: TStrings;
       out AppendCharacter: Char);
     procedure ExecuteCommand(Command: TScuCommand);
     procedure RunInteractive(Tokens: TStrings);
@@ -38,7 +36,7 @@ implementation
 
 uses
   SysUtils, BaseUnix, ScuBinder, ScuHelp, ScuInput, ScuErrors,
-  ScuSignals, ScuTerminal, ScuTokenizer, Termio;
+  ScuLibrary, ScuSignals, ScuTerminal, ScuTokenizer, Termio;
 
 function CommandFile: string;
 var
@@ -58,6 +56,8 @@ var
 begin
   inherited Create;
   FOutput := TTerminalOutput.Create;
+  FHistory := TCommandHistory.Create;
+  FCompletionLibrary := TCompletionLibrary.Create;
   CatalogPath := CommandFile;
   FCatalogDirectory := ExtractFileDir(CatalogPath);
   FCatalog := TCommandCatalog.Create(CatalogPath);
@@ -66,6 +66,8 @@ end;
 destructor TScuCLI.Destroy;
 begin
   FExecutor.Free;
+  FHistory.Free;
+  FCompletionLibrary.Free;
   FOutput.Free;
   FCatalog.Free;
   inherited Destroy;
@@ -117,7 +119,7 @@ begin
     else if (Copy(First, 1, 1) <> '-') and (FCatalog.Commands.FindIndex(First) < 0) then
     begin
       Name := LowerCase(ExtractFileExt(First));
-      if not FileExists(First) and (Name <> '.sqlite') and
+      if not FileExists(First) and (Pos(DirectorySeparator, First) = 0) and (Name <> '.sqlite') and
         (Name <> '.sqlite3') and (Name <> '.db') then
         Definition(First);
       FLibraryPath := First;
@@ -128,6 +130,29 @@ begin
     FCatalog.LibraryOption.Validate(FLibraryPath);
   if FLibraryPath = '' then
     raise EScuError.Create('Expected a library name.');
+end;
+
+type
+  TPromptCompleter = class
+  public
+    Commands: TCommandDefinitions;
+    Parameter: TParameterDefinition;
+    Context: TCompletionContext;
+    LibraryPath: string;
+    PendingLibrary: TDeckLibrary;
+    LibraryCache: TCompletionLibrary;
+    procedure Complete(const Before, Prefix, After: string; Candidates: TStrings;
+      out AppendCharacter: Char);
+  end;
+
+procedure TPromptCompleter.Complete(const Before, Prefix, After: string; Candidates: TStrings;
+  out AppendCharacter: Char);
+begin
+  AppendCharacter := #0;
+  if After <> '' then
+    Exit;
+  CompleteValue(Commands, Parameter, Context, LibraryPath, Before + Prefix, Prefix,
+    #0, True, Candidates, AppendCharacter, LibraryCache, PendingLibrary);
 end;
 
 function TScuCLI.ParseCommand(Tokens: TStrings; CommandIndex: Integer; Spec: TCommandDefinition;
@@ -142,6 +167,7 @@ var
     ParameterName, Description, Prompt, DefaultValue: string;
     Columns: SizeInt;
     HasDefault: Boolean;
+    Completer: TPromptCompleter;
   begin
     HasDefault := Entry.HasDefault;
     DefaultValue := Entry.DefaultValue;
@@ -166,32 +192,37 @@ var
     if HasDefault then
       Prompt := Prompt + FormatTerminalLines('Press Enter to accept the default.', Columns) + LineEnding;
     Prompt := Prompt + ParameterName + '= ';
-    FPromptContext := CompletionContext(Binder);
-    repeat
-      FPromptParameter := Entry;
-      try
-        if not ReadCommandLine(Prompt, Argument, @CompletePromptValue, False) then
+    Completer := TPromptCompleter.Create;
+    try
+      Completer.Commands := FCatalog.Commands;
+      Completer.Parameter := Entry;
+      Completer.Context := CompletionContext(Binder);
+      Completer.LibraryPath := FLibraryPath;
+      Completer.PendingLibrary := FExecutor.PendingLibrary;
+      Completer.LibraryCache := FCompletionLibrary;
+      repeat
+        if not ReadCommandLine(Prompt, Argument, @Completer.Complete) then
           raise ECommandCancelled.Create('Command cancelled.');
-      finally
-        FPromptParameter := nil;
-      end;
-      if Argument = '' then
-      begin
-        if HasDefault then
+        if Argument = '' then
         begin
-          Argument := DefaultValue;
-          Exit(True);
+          if HasDefault then
+          begin
+            Argument := DefaultValue;
+            Exit(True);
+          end;
+          Continue;
         end;
-        Continue;
-      end;
-      try
-        Entry.Validate(Argument);
-        Exit(True);
-      except
-        on E: EScuError do
-          FOutput.Report('scu: ' + E.Message);
-      end;
-    until False;
+        try
+          Entry.Validate(Argument);
+          Exit(True);
+        except
+          on E: EScuError do
+            FOutput.Report('scu: ' + E.Message);
+        end;
+      until False;
+    finally
+      Completer.Free;
+    end;
   end;
 
 begin
@@ -213,17 +244,8 @@ end;
 procedure TScuCLI.CompleteInteractiveLine(const Before, Prefix, After: string; Candidates: TStrings;
   out AppendCharacter: Char);
 begin
-  CompleteLine(FCatalog.Commands, FLibraryPath, Before, Prefix, After, Candidates, AppendCharacter, FExecutor.PendingLibrary);
-end;
-
-procedure TScuCLI.CompletePromptValue(const Before, Prefix, After: string; Candidates: TStrings;
-  out AppendCharacter: Char);
-begin
-  AppendCharacter := #0;
-  if After <> '' then
-    Exit;
-  CompleteValue(FCatalog.Commands, FPromptParameter, FPromptContext, FLibraryPath, Before + Prefix, Prefix,
-    #0, True, Candidates, AppendCharacter, FExecutor.PendingLibrary);
+  CompleteLine(FCatalog.Commands, FLibraryPath, Before, Prefix, After, Candidates, AppendCharacter,
+    FCompletionLibrary, FExecutor.PendingLibrary);
 end;
 
 procedure TScuCLI.ExecuteCommand(Command: TScuCommand);
@@ -253,8 +275,8 @@ begin
   try
     RunInteractiveSession(Tokens);
   finally
-    if SessionSignal in [SIGTERM, SIGQUIT] then
-      ExitCode := 128 + SessionSignal;
+    if PendingSignal in [SIGTERM, SIGQUIT] then
+      ExitCode := 128 + PendingSignal;
     RestoreSessionSignals(Previous);
   end;
 end;
@@ -291,12 +313,9 @@ begin
     repeat
       FreeAndNil(Command);
       try
-        if SessionSignal = SIGINT then
-        begin
-          SessionSignal := 0;
+        if ClearInterrupt then
           raise ECommandCancelled.Create('Command cancelled.');
-        end;
-        if OpeningLibrary and (SessionSignal = 0) then
+        if OpeningLibrary and (PendingSignal = 0) then
         begin
           OpeningLibrary := False;
           if (FCatalog.Commands.FindIndex('display_library') < 0) or
@@ -306,7 +325,7 @@ begin
           Tokens.Add('display_library');
           Command := ParseCommand(Tokens, 0, Definition(Tokens[0]), True);
         end
-        else if (SessionSignal = 0) and ReadCommandLine(Prompt, Line, @CompleteInteractiveLine) then
+        else if (PendingSignal = 0) and ReadCommandLine(Prompt, Line, @CompleteInteractiveLine, FHistory) then
         begin
           Spec := nil;
           try
@@ -318,15 +337,15 @@ begin
             Command := ParseCommand(Tokens, 0, Spec, Prompt <> '');
           finally
             if not Assigned(Spec) or not IsSessionExit(Spec.Name) then
-              RememberCommand(Line);
+              FHistory.Remember(Line);
           end;
         end
         else
         begin
-          if SessionSignal = SIGINT then
+          if PendingSignal = SIGINT then
             Continue;
           EndOfInput := (Prompt = '') or SessionEnding or (IsATTY(Input) <> 1);
-          if EndOfInput and (SessionSignal = 0) and not SawCommand and not FileExists(FLibraryPath) then
+          if EndOfInput and (PendingSignal = 0) and not SawCommand and not FileExists(FLibraryPath) then
             raise EScuError.CreateFmt('Library "%s" does not exist. Use initialize_library to create it.',
               [FLibraryPath]);
           Command := TScuCommand.CreateSessionExit;
@@ -339,8 +358,7 @@ begin
       except
         on E: ECommandCancelled do
         begin
-          if SessionSignal = SIGINT then
-            SessionSignal := 0;
+          ClearInterrupt;
           WriteDiagnostic(E.Message);
         end;
         on E: Exception do

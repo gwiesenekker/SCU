@@ -7,8 +7,10 @@ interface
 uses
   FPJSON;
 
+// The caller owns the parsed document.
 function ParseJSON(const Data: RawByteString; const Source: string = ''): TJSONData;
 function ParseObject(const Data: RawByteString; const Source: string = ''): TJSONObject;
+// The containing object owns the returned field.
 function Field(Obj: TJSONObject; const Name: string; Kind: TJSONType; const Source: string = ''): TJSONData;
 function IntegerField(Obj: TJSONObject; const Name: string; const Source: string = ''): Int64;
 

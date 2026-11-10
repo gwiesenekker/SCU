@@ -53,6 +53,7 @@ function RunBuildProcess(const Build: TBuildRequest; Interactive: Boolean; Outpu
 var
   Child: TProcess;
   Status: Integer;
+  Options: TChildProcessOptions;
 begin
   Result := '';
   try
@@ -63,8 +64,11 @@ begin
       Child.Parameters.Add('exec </dev/null' + LineEnding + Build.Command);
       Child.Parameters.Add('scu-build');
       Child.Parameters.Add(Build.OutputPath);
-      Status := WaitForChild(Child, Interactive);
-      if (SessionSignal <> 0) or (Status = 128 + SIGINT) then
+      Options := [];
+      if Interactive then
+        Include(Options, cpOwnProcessGroup);
+      Status := WaitForChild(Child, Options);
+      if (PendingSignal <> 0) or (Status = 128 + SIGINT) then
         raise EScuError.Create('Build command interrupted.');
       if Status <> 0 then
         raise EScuError.CreateFmt('Build command failed with exit status %d.', [Status]);

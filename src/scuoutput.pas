@@ -24,6 +24,9 @@ procedure WriteDiagnostic(const Message: string);
 
 implementation
 
+uses
+  SysUtils, BaseUnix, ScuErrors;
+
 procedure WriteDiagnostic(const Message: string);
 begin
   {$push}{$I-}
@@ -47,7 +50,16 @@ var
 begin
   Bytes := Data;
   SetCodePage(Bytes, TextRec(Output).CodePage, False);
-  System.Write(Output, Bytes);
+  try
+    System.Write(Output, Bytes);
+  except
+    on E: EInOutError do
+    begin
+      if fpGetErrNo = ESysEPIPE then
+        RaiseSystemError('Could not write command output', ESysEPIPE);
+      raise;
+    end;
+  end;
 end;
 
 procedure TTerminalOutput.Report(const Text: string);
@@ -57,7 +69,16 @@ end;
 
 procedure TTerminalOutput.Flush;
 begin
-  System.Flush(Output);
+  try
+    System.Flush(Output);
+  except
+    on E: EInOutError do
+    begin
+      if fpGetErrNo = ESysEPIPE then
+        RaiseSystemError('Could not write command output', ESysEPIPE);
+      raise;
+    end;
+  end;
 end;
 
 end.

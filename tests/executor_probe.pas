@@ -36,7 +36,7 @@ var
 begin
   Database := TSQLiteLibrary.OpenRead(Path);
   try
-    Store := TLibraryStore.Create(Path, '', Database);
+    Store := TLibraryStore.Load(Path, Database);
     try
       Entry := Store[0];
       if Entry.Loaded or (Entry.Name <> 'example.pas') or (Entry.Number <> 0) then

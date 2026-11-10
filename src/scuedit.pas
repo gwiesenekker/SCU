@@ -56,7 +56,10 @@ var
   Item: string;
   Info: Stat;
 begin
-  if FindFirst(Path + '/*', faAnyFile, Search) = 0 then
+  // On Unix the symlink flag includes dangling links in the listing.
+  {$push}{$warn SYMBOL_PLATFORM off}
+  if FindFirst(Path + '/*', faAnyFile or faSymLink, Search) = 0 then
+  {$pop}
   try
     repeat
       if (Search.Name = '.') or (Search.Name = '..') then
@@ -94,7 +97,7 @@ begin
       for Index := 1 to LibraryFile.EditorCount - 1 do
         Editor.Parameters.Add(LibraryFile.EditorArguments[Index]);
       Editor.Parameters.Add(Path);
-      Status := WaitForChild(Editor, False, True);
+      Status := WaitForChild(Editor, [cpHandlesInterrupt]);
       if SessionEnding then
         raise EScuError.Create('Editor interrupted.');
       if Status <> 0 then

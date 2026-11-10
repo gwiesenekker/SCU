@@ -21,7 +21,8 @@ function ResetExpansionCheckpoint(var Context: TCommandContext): string;
 implementation
 
 uses
-  Classes, SysUtils, FPJSON, ScuCommands, ScuExpand, ScuErrors, ScuFiles, ScuLibrary, ScuSignals, ScuSQLiteCheckpoint;
+  Classes, SysUtils, FPJSON, ScuCommands, ScuExpand, ScuErrors, ScuFiles, ScuLibrary,
+  ScuLibraryPaths, ScuSignals, ScuSQLiteCheckpoint;
 
 const
   CurrentLibraryVersionSelector = 'scu$current_library_version';
@@ -39,9 +40,7 @@ end;
 function OutputPath(const Context: TCommandContext; const Path: string): string;
 begin
   Result := CanonicalFile(Path);
-  if (Result = Context.LibraryPath) or (Result = Context.LibraryPath + '.lock') or
-    (Result = Context.LibraryPath + '-journal') or
-    (Result = Context.LibraryPath + '-wal') or (Result = Context.LibraryPath + '-shm') then
+  if IsLibraryStoragePath(Result, Context.LibraryPath) then
     raise EScuError.Create('The output path would overwrite a library or audit file.');
   RegularFileExists(Result);
 end;
@@ -111,6 +110,7 @@ begin
   else if SameText(Path, LastModifiedDeckSelector) then
     Path := ResolveLastModifiedDeck(Context.LibraryFile);
   Path := OutputPath(Context, Path);
+  Context.Snapshots.OutputPath := Path;
   if Expand then
   begin
     Expander := TDeckExpander.Create(Context.LibraryFile, Context.Database, Context.Snapshots.Selected.LibraryRevision,
@@ -127,7 +127,7 @@ begin
     Bytes := Source.Bytes;
   end;
   CheckSessionInterrupt;
-  AtomicWrite(Path, Bytes, True, True);
+  AtomicWrite(Path, Bytes, [awSourceOutput]);
   if Expand then
     ScheduleBuild(Context, Path);
   ReportSnapshot(Context);
@@ -170,6 +170,8 @@ begin
   LibraryFile.VersionBounds(Version, Base, Revision);
   if not DirectoryExists(Directory) then
     raise EScuError.Create('The output directory must already exist.');
+  Directory := CanonicalDirectory(Directory);
+  Context.Snapshots.OutputDirectory := Directory;
   Context.Snapshots.Selected.Version := Version;
   Context.Snapshots.Selected.LibraryRevision := Revision;
   BuildPending := False;
@@ -211,7 +213,7 @@ begin
         Bytes := Source.Bytes;
       end;
       CheckSessionInterrupt;
-      AtomicWrite(Destinations[Index], Bytes, True, True);
+      AtomicWrite(Destinations[Index], Bytes, [awSourceOutput]);
     end;
     if Expand and ((Names.Count > 0) or BuildPending) then
     begin
