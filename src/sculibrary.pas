@@ -21,6 +21,7 @@ type
   TDeckSource = record
     Bytes: RawByteString;
     ModifiedUTC: string;
+    DeckVersion: string;
     CommentPrefix: string;
   end;
 
@@ -30,8 +31,7 @@ type
     FDocument, FHeader: TJSONObject;
     FRevisions: TJSONArray;
     FVersions: TVersionHistory;
-    FDeferredSave, FModified: Boolean;
-    FSavedDigest: string;
+    FModified: Boolean;
     FDatabase: TSQLiteLibrary;
     FOwnedReader: TSQLiteLibrary;
     FIndexedRevisions, FSavedRevisionCount, FSaveFrom: Integer;
@@ -48,15 +48,13 @@ type
     function GetBuildCommand: string;
     function GetLastModifiedDeck: string;
     procedure WriteDatabase(Database: TSQLiteLibrary);
+    function ExportJSON: RawByteString;
   public
-    constructor Create(const Path: string; const InitialVersion: string = ''; DeferredSave: Boolean = False;
-      Database: TSQLiteLibrary = nil);
+    constructor Create(const Path: string; const InitialVersion: string = ''; Database: TSQLiteLibrary = nil);
     destructor Destroy; override;
     procedure Save;
     procedure AttachDatabase(Database: TSQLiteLibrary);
     procedure FinishDatabaseSave(Committed: Boolean);
-    procedure ImportInto(Database: TSQLiteLibrary);
-    function ExportJSON: RawByteString;
     function ExportRecoveryJSON: RawByteString;
     function SavedContents: TJSONObject;
     function HeaderDigest: string;
@@ -105,7 +103,6 @@ uses
   SysUtils, DateUtils, FGL, ScuIO, ScuJSON, ScuCodec, ScuVersionNumbers, ScuSignals;
 
 const
-  MaxLibrarySize = 256 * 1024 * 1024;
   MaxDeckRevision = 999;
   DefaultVersionIncrement = '0.01';
   DefaultRevisionIncrement = '0.001';
@@ -163,12 +160,10 @@ begin
       raise EScuError.Create('Editor arguments must be strings without NUL bytes.');
 end;
 
-constructor TDeckLibrary.Create(const Path: string; const InitialVersion: string; DeferredSave: Boolean;
-  Database: TSQLiteLibrary);
+constructor TDeckLibrary.Create(const Path: string; const InitialVersion: string; Database: TSQLiteLibrary);
 var
   Index: Integer;
   Name: string;
-  Data: RawByteString;
   Versions, DefaultEditor: TJSONArray;
 begin
   inherited Create;
@@ -200,32 +195,19 @@ begin
   end
   else
   begin
-    FDeferredSave := DeferredSave;
-    if Assigned(Database) then
-    begin
-      FSavedState := Database.StateKey;
-      FDocument := Database.ReadDocument;
-    end
-    else if IsSQLiteLibrary(Path) then
+    if not Assigned(FDatabase) then
     begin
       FOwnedReader := TSQLiteLibrary.Create(Path, False, True);
       FOwnedReader.BeginTransaction(True);
       FOwnedReader.EnsureSchema(False);
       FDatabase := FOwnedReader;
-      FDocument := FDatabase.ReadDocument;
-    end
-    else
-    begin
-      Data := ReadBytes(Path, MaxLibrarySize);
-      if FDeferredSave then
-        FSavedDigest := AuditSHA256(Data);
-      FDocument := ParseObject(Data);
     end;
+    FSavedState := FDatabase.StateKey;
+    FDocument := FDatabase.ReadDocument;
     if IntegerField(FDocument, 'format') <> 1 then
       raise EScuError.Create('Unsupported library format.');
     FRevisions := TJSONArray(Field(FDocument, 'revisions', jtArray));
-    if Assigned(FDatabase) then
-      FIndexedRevisions := Revision;
+    FIndexedRevisions := Revision;
     FHeader := TJSONObject(Field(FDocument, 'header', jtObject));
     Versions := TJSONArray(Field(FHeader, 'versions', jtArray));
     if Versions.Count = 0 then
@@ -366,8 +348,6 @@ end;
 procedure TDeckLibrary.MarkModified;
 begin
   FModified := True;
-  if not FDeferredSave and not Assigned(FDatabase) then
-    Save;
 end;
 
 procedure TDeckLibrary.AttachDatabase(Database: TSQLiteLibrary);
@@ -414,18 +394,6 @@ begin
     Database.AppendRevision(Index + 1, Field(Entry, 'deck', jtString).AsString,
       VersionAt(Index + 1), FormatFixed(FDeckNumbers[Index], 3), Entry.AsJSON);
   end;
-end;
-
-procedure TDeckLibrary.ImportInto(Database: TSQLiteLibrary);
-var
-  Index: Integer;
-begin
-  if Database.StateKey <> '' then
-    raise EScuError.Create('The destination library already exists.');
-  for Index := 0 to Revision - 1 do
-    Extract(Field(RevisionAt(Index), 'deck', jtString).AsString, Index + 1);
-  WriteDatabase(Database);
-  FSaveFrom := 0;
 end;
 
 function TDeckLibrary.HeaderDigest: string;
@@ -515,38 +483,17 @@ begin
 end;
 
 procedure TDeckLibrary.Save;
-var
-  Data, Saved: RawByteString;
 begin
   if not FModified then
     Exit;
   CheckSessionInterrupt;
-  if Assigned(FDatabase) then
-  begin
-    if FDatabase.StateKey <> FSavedState then
-      raise EScuError.Create('The saved library changed outside this session. Unsaved changes are still in this session.');
-    WriteDatabase(FDatabase);
-    FNextSavedState := FDatabase.StateKey;
-    FSaveFrom := FSavedRevisionCount;
-    Exit;
-  end;
-  Data := ExportJSON;
-  if Length(Data) > MaxLibrarySize then
-    raise EScuError.Create('The library would exceed the library size limit.');
-  if FDeferredSave then
-  begin
-    if not RegularFileExists(FPath) then
-      raise EScuError.Create('The saved library was removed. Unsaved changes are still in this session.');
-    Saved := ReadBytes(FPath, MaxLibrarySize);
-    // Accept identical contents when retrying after a write that reached disk.
-    if (Saved <> Data) and (AuditSHA256(Saved) <> FSavedDigest) then
-      raise EScuError.Create('The saved library changed outside this session. Unsaved changes are still in this session.');
-  end;
-  AtomicWrite(FPath, Data);
+  if not Assigned(FDatabase) then
+    raise EScuError.Create('Saving requires an open SQLite transaction.');
+  if FDatabase.StateKey <> FSavedState then
+    raise EScuError.Create('The saved library changed outside this session. Unsaved changes are still in this session.');
+  WriteDatabase(FDatabase);
+  FNextSavedState := FDatabase.StateKey;
   FSaveFrom := FSavedRevisionCount;
-  if FDeferredSave then
-    FSavedDigest := AuditSHA256(Data);
-  FModified := False;
 end;
 
 procedure TDeckLibrary.RequireOpenVersion;
@@ -642,6 +589,7 @@ begin
   Entry := RevisionPayloadAt(StoredRevision - 1);
   Result.CommentPrefix := StoredCommentPrefix(Entry);
   Result.ModifiedUTC := ModificationTime(Entry, Name);
+  Result.DeckVersion := DeckVersionAt(StoredRevision);
   Result.Bytes := DecodeDeck(Field(Entry, 'zstd_base64', jtString).AsString,
     Field(Entry, 'sha1', jtString).AsString, IntegerField(Entry, 'size'));
 end;

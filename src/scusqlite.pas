@@ -39,7 +39,6 @@ type
     function AuditCacheVersion: string;
     procedure ReadAudit(Visit: TAuditLineVisitor);
     procedure AppendAudit(const Line: RawByteString);
-    procedure ExportAudit(Dest: TStream; Limit: Int64);
     procedure ListExpansionCheckpoints(Dest: TStrings);
     function ReadExpansionCheckpoint(const Version, Directory: string; out Revision: Integer;
       out Refresh, BuildPending: Boolean): Boolean;
@@ -51,8 +50,6 @@ type
     property Path: string read FPath;
   end;
 
-function IsSQLiteLibrary(const Path: string): Boolean;
-
 implementation
 
 uses
@@ -60,30 +57,6 @@ uses
 
 const
   ApplicationID = '1396921650';
-  SQLiteSignature = 'SQLite format 3'#0;
-
-function IsSQLiteLibrary(const Path: string): Boolean;
-var
-  Input: TFileStream;
-  Signature: RawByteString;
-begin
-  if RegularFileExists(Path) then
-  begin
-    Input := TFileStream.Create(Path, fmOpenRead);
-    try
-      if Input.Size > 0 then
-      begin
-        SetLength(Signature, Length(SQLiteSignature));
-        Exit((Input.Read(Signature[1], Length(Signature)) = Length(Signature)) and
-          (Signature = SQLiteSignature));
-      end;
-    finally
-      Input.Free;
-    end;
-  end;
-  Result := SameText(ExtractFileExt(Path), '.sqlite') or SameText(ExtractFileExt(Path), '.sqlite3') or
-    SameText(ExtractFileExt(Path), '.db');
-end;
 
 function ColumnText(Statement: psqlite3_stmt; Index: Integer): RawByteString;
 var
@@ -516,24 +489,6 @@ begin
   try
     BindText(Statement, 1, Line);
     Next(Statement);
-  finally
-    sqlite3_finalize(Statement);
-  end;
-end;
-
-procedure TSQLiteLibrary.ExportAudit(Dest: TStream; Limit: Int64);
-var
-  Statement: psqlite3_stmt;
-  Line: RawByteString;
-begin
-  Statement := Prepare('SELECT line FROM audit_records WHERE sequence <= ? ORDER BY sequence');
-  try
-    Check(sqlite3_bind_int64(Statement, 1, Limit));
-    while Next(Statement) do
-    begin
-      Line := ColumnText(Statement, 0) + #10;
-      Dest.WriteBuffer(Line[1], Length(Line));
-    end;
   finally
     sqlite3_finalize(Statement);
   end;

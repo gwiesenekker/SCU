@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Separate command parsing from library execution and audit the same canonical command object that the executor receives.
+- Use SQLite for all live libraries and audit records. Remove the legacy JSON backend and its migration commands.
+- Add deck and library version macros and separate UTC modification and expansion macros.
 - Keep empty named arguments separate from following values to protect output files.
 - Save or recover pending changes on SIGTERM and SIGQUIT, give interactive builds the terminal, and retain successful editor saves after Ctrl+C.
 - Add `verify_audit_trail` as an alias for `verify_audit`.

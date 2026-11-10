@@ -13,7 +13,7 @@ type
     FLibrary: TDeckLibrary;
     FRevision: Integer;
     FPrefixOverride, FDefaultPrefix: string;
-    FVersion, FMissingDeckVersion: string;
+    FVersion, FMissingDeckVersion, FExpansionUTC: string;
     FVisits: Integer;
     FSourceBytes: Int64;
     FStack: TStringList;
@@ -22,7 +22,7 @@ type
     procedure Append(const Data: RawByteString);
     procedure AppendSlice(const Data: RawByteString; Index, Count: SizeInt);
     procedure ExpandInto(const Deck: string);
-    procedure ExpandMacros(const Line, ModifiedUTC: RawByteString);
+    procedure ExpandMacros(const Line: RawByteString; const Stored: TDeckSource);
   public
     constructor Create(ALibrary: TDeckLibrary; ARevision: Integer; const Version, Prefix: string;
       const MissingDeckVersion: string = '');
@@ -36,10 +36,22 @@ implementation
 uses
   SysUtils, ScuIO, ScuVersions, ScuSignals;
 
+type
+  TMacro = (NoMacro, ModifiedDate, ModifiedTime, LibraryVersion, DeckVersion,
+    ModifiedDateTime, ExpansionDate, ExpansionTime, ExpansionDateTime);
+
 const
   CopyDirective = 'SCU_COPY';
-  MacroNames: array[0..2, 0..1] of string =
-    (('SCU$DATE', '$SCU_DATE'), ('SCU$TIME', '$SCU_TIME'), ('SCU$VERSION', '$SCU_VERSION'));
+  MacroNames: array[ModifiedDate..ExpansionDateTime, 0..2] of string = (
+    ('SCU$LAST_MODIFIED_DATE', 'SCU$DATE', '$SCU_DATE'),
+    ('SCU$LAST_MODIFIED_TIME', 'SCU$TIME', '$SCU_TIME'),
+    ('SCU$LIBRARY_VERSION', 'SCU$VERSION', '$SCU_VERSION'),
+    ('SCU$DECK_VERSION', '', ''),
+    ('SCU$LAST_MODIFIED_DATE_TIME', '', ''),
+    ('SCU$EXPANSION_DATE', '', ''),
+    ('SCU$EXPANSION_TIME', '', ''),
+    ('SCU$EXPANSION_DATE_TIME', '', '')
+  );
   MaxExpansionSize = 64 * 1024 * 1024;
   MaxDepth = 64;
   MaxVisits = 10000;
@@ -58,21 +70,24 @@ begin
 end;
 
 function MacroAt(const Line: RawByteString; Index: SizeInt;
-  out TokenLength: SizeInt; AfterPrefix: Boolean = False): Integer;
+  out TokenLength: SizeInt; AfterPrefix: Boolean = False): TMacro;
 var
-  Candidate, Spelling: Integer;
+  Candidate: TMacro;
+  Spelling: string;
 begin
   if (Index > Length(Line)) or not (Line[Index] in ['S', '$']) or
     ((Index > 1) and not AfterPrefix and IsIdentifierChar(Line[Index - 1])) then
-    Exit(-1);
-  Spelling := Ord(Line[Index] = '$');
+    Exit(NoMacro);
+  if (Copy(Line, Index, 4) <> 'SCU$') and (Copy(Line, Index, 4) <> '$SCU') then
+    Exit(NoMacro);
   for Candidate := Low(MacroNames) to High(MacroNames) do
-    if HasToken(Line, Index, MacroNames[Candidate, Spelling]) then
-    begin
-      TokenLength := Length(MacroNames[Candidate, Spelling]);
-      Exit(Candidate);
-    end;
-  Result := -1;
+    for Spelling in MacroNames[Candidate] do
+      if (Spelling <> '') and HasToken(Line, Index, Spelling) then
+      begin
+        TokenLength := Length(Spelling);
+        Exit(Candidate);
+      end;
+  Result := NoMacro;
 end;
 
 procedure ReadSourceLine(const Source: RawByteString; var Index: SizeInt;
@@ -121,6 +136,7 @@ begin
   FLibrary := ALibrary;
   FRevision := ARevision;
   FVersion := Version;
+  FExpansionUTC := UtcTimestamp(UtcNow);
   FMissingDeckVersion := MissingDeckVersion;
   FPrefixOverride := Prefix;
   FDefaultPrefix := ALibrary.DefaultCommentPrefix(Version);
@@ -158,26 +174,31 @@ begin
     FOutput.WriteBuffer(Data[Index], Count);
 end;
 
-procedure TDeckExpander.ExpandMacros(const Line, ModifiedUTC: RawByteString);
+procedure TDeckExpander.ExpandMacros(const Line: RawByteString; const Stored: TDeckSource);
 var
   Index, FromIndex, TokenLength: SizeInt;
-  Macro: Integer;
+  Macro: TMacro;
 begin
   Index := 1;
   FromIndex := Index;
   while Index <= Length(Line) do
   begin
     Macro := MacroAt(Line, Index, TokenLength);
-    if Macro < 0 then
+    if Macro = NoMacro then
     begin
       Inc(Index);
       Continue;
     end;
     AppendSlice(Line, FromIndex, Index - FromIndex);
     case Macro of
-      0: AppendSlice(ModifiedUTC, 1, 10);
-      1: AppendSlice(ModifiedUTC, 12, 8);
-      2: Append(FVersion);
+      ModifiedDate: AppendSlice(Stored.ModifiedUTC, 1, 10);
+      ModifiedTime: AppendSlice(Stored.ModifiedUTC, 12, 8);
+      ModifiedDateTime: Append(Stored.ModifiedUTC);
+      LibraryVersion: Append(FVersion);
+      DeckVersion: Append(Stored.DeckVersion);
+      ExpansionDate: AppendSlice(FExpansionUTC, 1, 10);
+      ExpansionTime: AppendSlice(FExpansionUTC, 12, 8);
+      ExpansionDateTime: Append(FExpansionUTC);
     end;
     Inc(Index, TokenLength);
     FromIndex := Index;
@@ -237,10 +258,10 @@ begin
           end;
           Continue;
         end;
-        if MacroAt(Line, Directive, TokenLength, True) >= 0 then
+        if MacroAt(Line, Directive, TokenLength, True) <> NoMacro then
           Delete(Line, First, Length(Prefix));
       end;
-      ExpandMacros(Line, Stored.ModifiedUTC);
+      ExpandMacros(Line, Stored);
       Append(Ending);
     end;
   finally

@@ -4,7 +4,11 @@ unit ScuDiff;
 
 interface
 
-procedure WriteDeckDiff(const OldSource, NewSource: RawByteString; const OldLabel, NewLabel: string);
+uses
+  ScuOutput;
+
+procedure WriteDeckDiff(const OldSource, NewSource: RawByteString; const OldLabel, NewLabel: string;
+  Output: TScuOutput);
 
 implementation
 
@@ -274,28 +278,25 @@ begin
     Result := Result + ',' + IntToStr(After - First);
 end;
 
-procedure WriteLines(Marker: Char; const Source: RawByteString; First, After: Integer);
+procedure WriteLines(Output: TScuOutput; Marker: Char; const Source: RawByteString; First, After: Integer);
 var
   Ending: Integer;
-  Line: RawByteString;
 begin
   while First < After do
   begin
     Ending := LineEnd(Source, First);
-    Line := Copy(Source, First + 1, Ending - First);
-    // Emit the stored bytes without text output transcoding them.
-    SetCodePage(Line, TextRec(Output).CodePage, False);
-    Write(Marker, Line);
+    Output.Write(Marker);
+    Output.Write(Copy(Source, First + 1, Ending - First));
     if Source[Ending] <> #10 then
     begin
-      WriteLn;
-      WriteLn('\ No newline at end of file');
+      Output.WriteLine('');
+      Output.WriteLine('\ No newline at end of file');
     end;
     First := Ending;
   end;
 end;
 
-procedure WriteHunk(const OldSource, NewSource: RawByteString; const Changes: TChanges;
+procedure WriteHunk(Output: TScuOutput; const OldSource, NewSource: RawByteString; const Changes: TChanges;
   First, Last: Integer);
 var
   Start, Finish: TPosition;
@@ -316,20 +317,21 @@ begin
       Advance(NewSource, Finish.NewLine);
     end;
   end;
-  WriteLn('@@ -', HunkRange(Start.OldLine.Lines, Finish.OldLine.Lines),
-    ' +', HunkRange(Start.NewLine.Lines, Finish.NewLine.Lines), ' @@');
+  Output.WriteLine('@@ -' + HunkRange(Start.OldLine.Lines, Finish.OldLine.Lines) +
+    ' +' + HunkRange(Start.NewLine.Lines, Finish.NewLine.Lines) + ' @@');
   Previous := Start.OldLine.Offset;
   for Index := First to Last do
   begin
-    WriteLines(' ', OldSource, Previous, Changes[Index].First.OldLine.Offset);
-    WriteLines('-', OldSource, Changes[Index].First.OldLine.Offset, Changes[Index].After.OldLine.Offset);
-    WriteLines('+', NewSource, Changes[Index].First.NewLine.Offset, Changes[Index].After.NewLine.Offset);
+    WriteLines(Output, ' ', OldSource, Previous, Changes[Index].First.OldLine.Offset);
+    WriteLines(Output, '-', OldSource, Changes[Index].First.OldLine.Offset, Changes[Index].After.OldLine.Offset);
+    WriteLines(Output, '+', NewSource, Changes[Index].First.NewLine.Offset, Changes[Index].After.NewLine.Offset);
     Previous := Changes[Index].After.OldLine.Offset;
   end;
-  WriteLines(' ', OldSource, Previous, Finish.OldLine.Offset);
+  WriteLines(Output, ' ', OldSource, Previous, Finish.OldLine.Offset);
 end;
 
-procedure WriteDeckDiff(const OldSource, NewSource: RawByteString; const OldLabel, NewLabel: string);
+procedure WriteDeckDiff(const OldSource, NewSource: RawByteString; const OldLabel, NewLabel: string;
+  Output: TScuOutput);
 var
   Changes: TChanges;
   Prefix: TPosition;
@@ -339,7 +341,7 @@ begin
     Exit;
   if (Pos(#0, OldSource) > 0) or (Pos(#0, NewSource) > 0) then
   begin
-    WriteLn('Binary files ', OldLabel, ' and ', NewLabel, ' differ');
+    Output.WriteLine('Binary files ' + OldLabel + ' and ' + NewLabel + ' differ');
     Exit;
   end;
 
@@ -348,8 +350,8 @@ begin
     SetLength(Changes, 1);
     Changes[0] := Replacement(OldSource, NewSource, Prefix);
   end;
-  WriteLn('--- ', OldLabel);
-  WriteLn('+++ ', NewLabel);
+  Output.WriteLine('--- ' + OldLabel);
+  Output.WriteLine('+++ ' + NewLabel);
   First := 0;
   while First < Length(Changes) do
   begin
@@ -357,7 +359,7 @@ begin
     while (Last < High(Changes)) and
       (Changes[Last + 1].First.OldLine.Lines - Changes[Last].After.OldLine.Lines <= 2 * ContextLines) do
       Inc(Last);
-    WriteHunk(OldSource, NewSource, Changes, First, Last);
+    WriteHunk(Output, OldSource, NewSource, Changes, First, Last);
     First := Last + 1;
   end;
 end;

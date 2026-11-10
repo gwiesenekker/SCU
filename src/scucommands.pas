@@ -323,7 +323,7 @@ begin
         LibraryOption.Add('aliases', Aliases);
         Aliases.Add('library_name');
         Aliases.Add('ln');
-        LibraryOption.Add('default', 'library.json');
+        LibraryOption.Add('default', 'library.sqlite');
       end;
     else
       raise EScuError.Create('Unsupported commands.json format.');

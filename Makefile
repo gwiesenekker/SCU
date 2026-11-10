@@ -13,7 +13,10 @@ build/commands.json: commands.json | build
 build:
 	mkdir -p $@
 
-test: all
+build/executor_probe: tests/executor_probe.pas build/scu
+	$(FPC) $(FPCFLAGS) -Fu./src -FU./build -FE./build tests/executor_probe.pas
+
+test: all build/executor_probe
 	python3 tests/integration.py ./build/scu
 
 format-commands:

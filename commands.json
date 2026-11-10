@@ -5,7 +5,6 @@
     "type": "string",
     "aliases": ["library_name", "ln"],
     "default": "library.sqlite",
-    "legacy_default": "library.json",
     "description": "Path to the source library to open."
   },
   "commands": [
@@ -390,23 +389,6 @@
       "help": "Expand decks changed in the selected version into an existing directory. By default, use the current library version and the directory containing the library. SQLite expands changes since the checkpoint, including direct and indirect COPY dependents. A successful build advances the checkpoint. With no configured build command, a successful expansion advances it. Save pending SQLite edits before running the batch."
     },
     {
-      "name": "export_library",
-      "aliases": ["expl"],
-      "summary": "Export a saved SQLite library and its audit log as JSON.",
-      "arguments": [
-        {
-          "name": "output_file",
-          "type": "string",
-          "aliases": ["o", "output"],
-          "value": "scu$required",
-          "description": "Path for the new JSON library. SCU also writes a sibling .audit file.",
-          "completion": "file"
-        }
-      ],
-      "options": [],
-      "help": "Export the saved SQLite library and its audit chain to a new JSON library and audit file."
-    },
-    {
       "name": "extract_deck",
       "aliases": ["extd"],
       "summary": "Write the original source bytes to a file.",
@@ -491,23 +473,6 @@
       "help": "Write the original source of each deck changed in the selected version to an existing directory."
     },
     {
-      "name": "import_library",
-      "aliases": ["impl"],
-      "summary": "Import a JSON library into a new SQLite library.",
-      "arguments": [
-        {
-          "name": "source_file",
-          "type": "string",
-          "aliases": ["s", "source"],
-          "value": "scu$required",
-          "description": "Existing JSON library to import. SCU verifies and imports its .audit file if present.",
-          "completion": "file"
-        }
-      ],
-      "options": [],
-      "help": "Select a new SQLite library as the destination and supply the existing JSON library as source_file."
-    },
-    {
       "name": "initialize_library",
       "aliases": ["inil", "init"],
       "summary": "Create an empty source library.",
@@ -547,14 +512,6 @@
       ],
       "options": [],
       "help": "Exit the interactive session. Pending library changes are saved by default. Use quit save_library=no to discard them."
-    },
-    {
-      "name": "repair_audit",
-      "aliases": ["repa"],
-      "summary": "Remove an incomplete final record from a JSON library audit log.",
-      "arguments": [],
-      "options": [],
-      "help": "Verify every complete record, remove only an unterminated final record, and record the repair."
     },
     {
       "name": "reset_expansion_checkpoint",

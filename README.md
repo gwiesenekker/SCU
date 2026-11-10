@@ -27,31 +27,19 @@ help text.
 
 ## Work with a library
 
-The default library is `library.sqlite` in the current directory. If that file
-is absent and `library.json` exists, SCU opens the existing JSON library.
+Libraries use SQLite. The default library is `library.sqlite` in the current
+directory.
 To select another library, put its filename before the command, or use
 `library_name=PATH`, `ln=PATH`, or `--library PATH`. SCU uses the filename
 as supplied. The directory containing the library must already exist.
 
 ```sh
-scu project.json initialize_library
-scu ln=project.json display_deck_list
-scu ln="project library.json"
+scu project.sqlite initialize_library
+scu ln=project.sqlite display_deck_list
+scu ln="project library.sqlite"
 ```
 
-Use a `.sqlite`, `.sqlite3`, or `.db` filename when creating a SQLite
-library. To migrate an existing JSON library, import it into a new SQLite
-library. To export a portable copy, choose a new JSON filename.
-
-```sh
-scu new.sqlite initialize_library
-scu project.sqlite import_library project.json
-scu project.sqlite export_library project-copy.json
-```
-
-Import verifies the deck contents and brings along the source's `.audit`
-file if present. Export writes the saved library and a sibling `.audit`
-file containing the audit records that preceded the export command.
+Use a `.sqlite`, `.sqlite3`, or `.db` filename when creating a library.
 
 If you omit the command, SCU starts an interactive session for the selected
 library. At a terminal, SCU runs `display_library` before the first prompt if
@@ -433,15 +421,23 @@ scu expand_deck main.c compiled-main.c build=no
 Use `modify_library build_command=` to clear the command. If the build fails,
 the expanded output remains available and SCU records the build outcome.
 
-- `SCU$DATE` expands to the stored deck revision's last modification date in
-  UTC, formatted as `YYYY-MM-DD`.
-- `SCU$TIME` expands to that same timestamp's UTC time, formatted as
-  `HH:MM:SS`. Included decks use their own timestamps.
-- `SCU$VERSION` expands to the version selected for export. With a numeric
-  revision, it uses the version that owns that revision.
-- `$SCU_DATE`, `$SCU_TIME`, and `$SCU_VERSION` are aliases. A line that
-  starts with the comment prefix immediately followed by a macro, such as
-  `//SCU$DATE`, has that prefix removed during expansion. Inline macros are
+- `SCU$DECK_VERSION` is the combined version and revision of the deck being
+  expanded, such as `1.1-0.003`. Included decks use their own stored versions.
+- `SCU$LIBRARY_VERSION` is the selected library snapshot's version. With a
+  numeric revision, it is the version that owns that revision.
+- `SCU$LAST_MODIFIED_DATE`, `SCU$LAST_MODIFIED_TIME`, and
+  `SCU$LAST_MODIFIED_DATE_TIME` use the stored modification time of the deck
+  being expanded, including each copied deck.
+- `SCU$EXPANSION_DATE`, `SCU$EXPANSION_TIME`, and `SCU$EXPANSION_DATE_TIME` use
+  one timestamp for the whole expansion command, including its COPY and bulk
+  outputs. A file skipped by incremental expansion retains its earlier timestamp.
+- Dates use `YYYY-MM-DD`, times use `HH:MM:SS`, and combined timestamps use
+  `YYYY-MM-DDTHH:MM:SS.sssZ`. All values are in UTC.
+- `SCU$DATE` and `$SCU_DATE` are aliases for `SCU$LAST_MODIFIED_DATE`.
+  `SCU$TIME` and `$SCU_TIME` are aliases for `SCU$LAST_MODIFIED_TIME`.
+  `SCU$VERSION` and `$SCU_VERSION` are aliases for `SCU$LIBRARY_VERSION`.
+  A line that starts with the comment prefix immediately followed by a macro,
+  such as `//SCU$DECK_VERSION`, has that prefix removed. Inline macros are
   replaced in place, with quoting supplied by the surrounding source.
 
 SCU records a deck's modification timestamp when its revision is stored.
@@ -450,21 +446,19 @@ the same bytes.
 
 ## Storage and audit
 
-Both backends store each deck revision as JSON with a base64-encoded zstd
+SQLite stores each deck revision as JSON with a base64-encoded zstd
 frame, a SHA-1 checksum, and a byte count for the original source. SCU verifies
 the checksum and byte count on read. Decks and expanded output are limited to
-64 MiB each, and JSON library files are limited to 256 MiB. New source output
+64 MiB each. New source output
 files respect the process's umask and replacements retain existing permission
-bits. Libraries, audit logs, and lock files are created with private permissions. Expansion also
+bits. Libraries and lock files are created with private permissions. Expansion also
 caps nesting and total source processed.
 
 SCU serializes library commands with a sibling `PATH.lock` file. The file stays
 on disk so concurrent commands use the same lock. SCU releases the lock when
-the command finishes. JSON libraries
-record command attempts and outcomes in `PATH.audit`. SQLite libraries store
-each revision in a separate row and keep audit records in the database. A
-SQLite save commits library changes and the command's audit records in one
-transaction. If writing the successful outcome fails, SQLite rolls back
+the command finishes. SQLite stores each revision in a separate row and keeps
+audit records in the database. A save commits library changes and the command's
+audit records in one transaction. If writing the successful outcome fails, SQLite rolls back
 the save and its audit attempt. An interactive `save_library` keeps the
 pending edits available for retry.
 
@@ -475,8 +469,10 @@ for missing or busy output directories,
 records. Outcomes against a working library with unsaved changes carry
 `pending_save`. Quitting with pending changes records whether SCU saved or
 discarded them. The log records arguments, the effective
-user ID, UTC timestamps, and outcomes. The audit event uses the full command
-name and canonical parameter names regardless of the abbreviations entered.
+user ID, UTC timestamps, and outcomes. The begin record uses the command
+object's full name, bound arguments, and options regardless of the abbreviations
+entered. `provided_arguments` identifies positional parameters supplied in the
+command, which lets the audit distinguish a supplied value from the same default.
 `display_deck_list`, `extract_deck`, and `expand_deck` also record the
 resolved `snapshot` in their outcome, with its `version` and
 `library_revision`. This includes the default snapshot and attempts that
@@ -490,12 +486,8 @@ is counted as interrupted.
 Each audit line contains a lowercase SHA-256 digest, a space, and the JSON
 event. The chain uses no secret key. The digest covers the literal
 `SCU audit v1 ` prefix, the previous digest (64 zeros for the first line), a
-space, and the exact JSON bytes. The
-chain detects changed records and partial writes. For JSON audit logs,
-`verify_audit` reports the byte offset of an incomplete final record.
-`repair_audit` verifies every complete record before removing the incomplete
-tail and records the repair. Save a verified head
-somewhere independent of the library and audit file, then check it later.
+space, and the exact JSON bytes. The chain detects changed records. Save a
+verified head somewhere independent of the library, then check it later.
 
 ```sh
 saved_head=$(scu verify_audit | sed 's/.*head=//')
@@ -514,6 +506,18 @@ Interactive sessions and scripts read from standard input reuse their verified
 audit state between commands when the audit storage matches the session's last
 write. SCU scans the chain again after another process changes the storage.
 `verify_audit` (also `verify_audit_trail`) always scans the full chain.
+
+## Frontend integration
+
+The CLI uses `commands.json` to resolve aliases, bind and validate arguments,
+and apply command defaults. It passes a read-only `TScuCommand` to
+`TScuExecutor.Execute`. Other Free Pascal frontends can construct the same
+object with canonical names, arguments in catalog order, and named options.
+They can implement `TScuOutput` to capture normal output and diagnostics.
+
+The executor handles library operations and gives that same command object
+to the audit logger. Selectors that depend on a library snapshot resolve
+inside the executor and are recorded in the audit outcome.
 
 ## Historical reference
 
