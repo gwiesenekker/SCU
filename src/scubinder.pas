@@ -5,7 +5,7 @@ unit ScuBinder;
 interface
 
 uses
-  FPJSON, ScuCommand;
+  ScuCommand, ScuCommands;
 
 type
   TBindingMode = (bmExecution, bmCompletion);
@@ -17,8 +17,8 @@ type
       Supplied, Provided: Boolean;
     end;
   private
-    FSpec: TJSONObject;
-    FArguments, FOptions: TJSONArray;
+    FSpec: TCommandDefinition;
+    FArguments, FOptions: TParameterDefinitions;
     FName, FPendingSpelling: string;
     FBindings: array of TBinding;
     FOptionOrder: array of Integer;
@@ -30,20 +30,20 @@ type
     function GetValue(Slot: Integer): string;
     procedure CheckDuplicate(Slot: Integer);
   public
-    constructor Create(Spec: TJSONObject; Mode: TBindingMode);
+    constructor Create(Spec: TCommandDefinition; Mode: TBindingMode);
     procedure Feed(const Token: string);
     procedure FinishTokens;
     procedure Bind(Slot: Integer; const Value: string; Provided: Boolean);
     function NextPositional: Integer;
     function NamedSlot(const Token: string; out EqualsAt: Integer): Integer;
     function PendingAccepts(const Token: string): Boolean;
-    function ParameterAt(Slot: Integer): TJSONObject;
+    function ParameterAt(Slot: Integer): TParameterDefinition;
     function WithReservedSlot(Slot: Integer): TCommandBinder;
     function CreateCommand: TScuCommand;
     property Count: Integer read GetCount;
     property Name: string read FName;
-    property Arguments: TJSONArray read FArguments;
-    property Options: TJSONArray read FOptions;
+    property Arguments: TParameterDefinitions read FArguments;
+    property Options: TParameterDefinitions read FOptions;
     property PendingSlot: Integer read FPendingSlot;
     property PositionalOnly: Boolean read FPositionalOnly;
     property Supplied[Slot: Integer]: Boolean read GetSupplied;
@@ -53,16 +53,16 @@ type
 implementation
 
 uses
-  Classes, ScuCommands, ScuIO, ScuJSON;
+  Classes, ScuIO;
 
-constructor TCommandBinder.Create(Spec: TJSONObject; Mode: TBindingMode);
+constructor TCommandBinder.Create(Spec: TCommandDefinition; Mode: TBindingMode);
 begin
   inherited Create;
   FSpec := Spec;
   FMode := Mode;
-  FName := DefinitionName(Spec);
-  FArguments := TJSONArray(Field(Spec, 'arguments', jtArray));
-  FOptions := TJSONArray(Field(Spec, 'options', jtArray));
+  FName := Spec.Name;
+  FArguments := Spec.Arguments;
+  FOptions := Spec.Options;
   FPendingSlot := -1;
   SetLength(FBindings, FArguments.Count + FOptions.Count);
 end;
@@ -82,12 +82,12 @@ begin
   Result := FBindings[Slot].Value;
 end;
 
-function TCommandBinder.ParameterAt(Slot: Integer): TJSONObject;
+function TCommandBinder.ParameterAt(Slot: Integer): TParameterDefinition;
 begin
   if Slot < FArguments.Count then
-    Result := DefinitionAt(FArguments, Slot)
+    Result := FArguments[Slot]
   else
-    Result := DefinitionAt(FOptions, Slot - FArguments.Count);
+    Result := FOptions[Slot - FArguments.Count];
 end;
 
 function TCommandBinder.NextPositional: Integer;
@@ -118,17 +118,15 @@ begin
       Key := Copy(Token, 3, EqualsAt - 3)
     else
       Key := Copy(Token, 3, MaxInt);
-    OptionSlot := FindDefinition(FOptions, Key);
+    OptionSlot := FOptions.FindIndex(Key);
   end
   else
   begin
     if EqualsAt <= 1 then
       Exit;
     Key := Copy(Token, 1, EqualsAt - 1);
-    Result := FindDefinition(FArguments, Key);
-    OptionSlot := FindDefinition(FOptions, Key);
-    if (Result >= 0) and (OptionSlot >= 0) then
-      raise EScuError.CreateFmt('Ambiguous argument or option "%s" for %s.', [Key, FName]);
+    Result := FArguments.FindIndex(Key);
+    OptionSlot := FOptions.FindIndex(Key);
   end;
   if OptionSlot >= 0 then
     Result := FArguments.Count + OptionSlot;
@@ -139,7 +137,7 @@ var
   EqualsAt: Integer;
 begin
   Result := (FPendingSlot >= 0) and
-    (not ParameterRequired(ParameterAt(FPendingSlot), False) or
+    (not ParameterAt(FPendingSlot).Required or
       ((Copy(Token, 1, 2) <> '--') and (NamedSlot(Token, EqualsAt) < 0)));
 end;
 
@@ -149,7 +147,7 @@ var
 begin
   if (FMode <> bmExecution) or not Supplied[Slot] then
     Exit;
-  Key := DefinitionName(ParameterAt(Slot));
+  Key := ParameterAt(Slot).Name;
   if Slot < FArguments.Count then
     raise EScuError.CreateFmt('Duplicate argument %s.', [Key]);
   raise EScuError.CreateFmt('Duplicate option --%s.', [Key]);
@@ -158,8 +156,9 @@ end;
 procedure TCommandBinder.Bind(Slot: Integer; const Value: string; Provided: Boolean);
 begin
   CheckDuplicate(Slot);
-  if FMode = bmExecution then
-    ValidateParameter(ParameterAt(Slot), Value);
+  // The catalog validates defaults, and the CLI validates answers at the prompt.
+  if (FMode = bmExecution) and Provided then
+    ParameterAt(Slot).Validate(Value);
   if (Slot >= FArguments.Count) and not Supplied[Slot] then
   begin
     SetLength(FOptionOrder, Length(FOptionOrder) + 1);
@@ -222,7 +221,7 @@ begin
     Exit;
   if FMode = bmExecution then
   begin
-    if not ParameterRequired(ParameterAt(FPendingSlot), False) then
+    if not ParameterAt(FPendingSlot).Required then
       raise EScuError.CreateFmt('Expected a value for %s.', [FPendingSpelling]);
     CheckDuplicate(FPendingSlot);
   end;
@@ -254,7 +253,7 @@ begin
   SetLength(BoundArguments, FArguments.Count);
   for Slot := 0 to High(BoundArguments) do
   begin
-    BoundArguments[Slot].Name := DefinitionName(ParameterAt(Slot));
+    BoundArguments[Slot].Name := ParameterAt(Slot).Name;
     BoundArguments[Slot].Value := Values[Slot];
     BoundArguments[Slot].Provided := FBindings[Slot].Provided;
   end;
@@ -262,7 +261,7 @@ begin
   try
     BoundOptions.CaseSensitive := True;
     for Slot in FOptionOrder do
-      BoundOptions.Add(DefinitionName(ParameterAt(Slot)) + '=' + Values[Slot]);
+      BoundOptions.Add(ParameterAt(Slot).Name + '=' + Values[Slot]);
     Result := TScuCommand.Create(FName, BoundArguments, BoundOptions);
   finally
     BoundOptions.Free;

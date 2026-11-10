@@ -5,7 +5,7 @@ unit ScuComplete;
 interface
 
 uses
-  Classes, FPJSON, ScuBinder, ScuLibrary;
+  Classes, ScuBinder, ScuCommands, ScuLibrary;
 
 type
   TCompletionContext = record
@@ -13,16 +13,16 @@ type
   end;
 
 function CompletionContext(Binder: TCommandBinder): TCompletionContext;
-procedure CompleteLine(Commands: TJSONArray; const LibraryPath, Before, Prefix, After: string;
+procedure CompleteLine(Commands: TCommandDefinitions; const LibraryPath, Before, Prefix, After: string;
   Candidates: TStrings; out AppendCharacter: Char; PendingLibrary: TDeckLibrary = nil);
-procedure CompleteValue(Commands: TJSONArray; Parameter: TJSONObject;
+procedure CompleteValue(Commands: TCommandDefinitions; Parameter: TParameterDefinition;
   const Context: TCompletionContext; const LibraryPath, Value, Prefix: string; Quote: Char; RawValue: Boolean;
   Candidates: TStrings; out AppendCharacter: Char; PendingLibrary: TDeckLibrary = nil);
 
 implementation
 
 uses
-  SysUtils, ScuCommands, ScuIO, ScuJSON, ScuTokenizer;
+  SysUtils, ScuIO, ScuTokenizer;
 
 procedure RecordCompletionValue(var Context: TCompletionContext; const Name, Value: string);
 begin
@@ -42,21 +42,20 @@ begin
   Result := Default(TCompletionContext);
   for Slot := Binder.Arguments.Count to Binder.Count - 1 do
     if Binder.Supplied[Slot] then
-      RecordCompletionValue(Result, DefinitionName(Binder.ParameterAt(Slot)), Binder.Values[Slot]);
+      RecordCompletionValue(Result, Binder.ParameterAt(Slot).Name, Binder.Values[Slot]);
   for Slot := 0 to Binder.Arguments.Count - 1 do
     if Binder.Supplied[Slot] then
-      RecordCompletionValue(Result, DefinitionName(Binder.ParameterAt(Slot)), Binder.Values[Slot]);
+      RecordCompletionValue(Result, Binder.ParameterAt(Slot).Name, Binder.Values[Slot]);
 end;
 
 type
   TParameterSlots = array of Boolean;
 
-procedure SuggestNames(Entries: TJSONArray; const Prefix, Leader: string; Candidates: TStrings;
+procedure SuggestNames(Entries: TDefinitionList; const Prefix, Leader: string; Candidates: TStrings;
   const Supplied: TParameterSlots = nil; Offset: Integer = 0; PreferExact: Boolean = True);
 var
   Index, AliasIndex: Integer;
-  Entry: TJSONObject;
-  Aliases: TJSONArray;
+  Entry: TNamedDefinition;
   Exact: string;
 
   procedure Suggest(const Name: string);
@@ -76,12 +75,10 @@ begin
   begin
     if Assigned(Supplied) and Supplied[Offset + Index] then
       Continue;
-    Entry := DefinitionAt(Entries, Index);
-    Suggest(DefinitionName(Entry));
-    Aliases := DefinitionAliases(Entry);
-    if Assigned(Aliases) then
-      for AliasIndex := 0 to Aliases.Count - 1 do
-        Suggest(Aliases.Strings[AliasIndex]);
+    Entry := Entries.Entries[Index];
+    Suggest(Entry.Name);
+    for AliasIndex := 0 to Entry.AliasCount - 1 do
+      Suggest(Entry.Aliases[AliasIndex]);
   end;
   if Exact <> '' then
   begin
@@ -90,12 +87,12 @@ begin
   end;
 end;
 
-procedure CompleteValue(Commands: TJSONArray; Parameter: TJSONObject;
+procedure CompleteValue(Commands: TCommandDefinitions; Parameter: TParameterDefinition;
   const Context: TCompletionContext; const LibraryPath, Value, Prefix: string; Quote: Char; RawValue: Boolean;
   Candidates: TStrings; out AppendCharacter: Char; PendingLibrary: TDeckLibrary);
 var
-  KindField: TJSONData;
-  Kind, Directory, SearchDirectory, Leaf, Name, Suffix, Deck, DeckVersion: string;
+  Kind: TCompletionKind;
+  Directory, SearchDirectory, Leaf, Name, Suffix, Deck, DeckVersion: string;
   Values: TStringList;
   LibraryFile: TDeckLibrary;
   Search: TSearchRec;
@@ -141,12 +138,8 @@ begin
     AppendCharacter := Quote;
   if not Assigned(Parameter) then
     Exit;
-  KindField := Parameter.Find('completion');
-  if Assigned(KindField) then
-    Kind := KindField.AsString
-  else if Field(Parameter, 'type', jtString).AsString = 'boolean' then
-    Kind := 'boolean'
-  else
+  Kind := Parameter.Completion;
+  if Kind = ckNone then
     Exit;
 
   Values := TStringList.Create;
@@ -155,13 +148,13 @@ begin
     Values.Sorted := True;
     Values.Duplicates := dupIgnore;
     case Kind of
-      'boolean':
+      ckBoolean:
         begin
           Values.Add('no');
           Values.Add('yes');
         end;
-      'command': SuggestNames(Commands, Value, '', Values, nil, 0, False);
-      'file', 'directory':
+      ckCommand: SuggestNames(Commands, Value, '', Values, nil, 0, False);
+      ckFile, ckDirectory:
         begin
           Directory := ExtractFilePath(Value);
           Leaf := ExtractFileName(Value);
@@ -177,14 +170,14 @@ begin
               IsDirectory := DirectoryExists(Name);
               if IsDirectory then
                 Values.Add(Directory + Search.Name + DirectorySeparator)
-              else if (Kind = 'file') and FileExists(Name) then
+              else if (Kind = ckFile) and FileExists(Name) then
                 Values.Add(Directory + Search.Name);
             until FindNext(Search) <> 0;
           finally
             FindClose(Search);
           end;
         end;
-      'deck', 'version', 'revision', 'deck_version':
+      ckDeck, ckVersion, ckRevision, ckDeckVersion:
         begin
           LibraryFile := PendingLibrary;
           if not Assigned(LibraryFile) then
@@ -194,7 +187,7 @@ begin
             LibraryFile := TDeckLibrary.Create(LibraryPath);
           end;
           try
-            if Kind = 'deck' then
+            if Kind = ckDeck then
             begin
               Last := LibraryFile.Revision;
               DeckVersion := Context.Version;
@@ -219,7 +212,7 @@ begin
             else
             begin
               Deck := Context.Deck;
-              if (Kind = 'deck_version') and (Deck = '') then
+              if (Kind = ckDeckVersion) and (Deck = '') then
                 Deck := LibraryFile.LastModifiedDeck;
               if SameText(Deck, LastModifiedDeckSelector) then
               begin
@@ -227,13 +220,13 @@ begin
                 if Deck = '' then
                   Exit;
               end;
-              if Kind = 'version' then
+              if Kind = ckVersion then
                 LibraryFile.ListVersionNames(Values, Deck);
               if Deck <> '' then
               begin
-                DeckRevisionCount := LibraryFile.ListDeckRevisions(Deck, Values, Kind = 'revision',
-                  (Kind = 'deck_version') or ((Kind = 'version') and ((Value = '') or (Pos('-', Value) > 1))));
-                if Kind = 'deck_version' then
+                DeckRevisionCount := LibraryFile.ListDeckRevisions(Deck, Values, Kind = ckRevision,
+                  (Kind = ckDeckVersion) or ((Kind = ckVersion) and ((Value = '') or (Pos('-', Value) > 1))));
+                if Kind = ckDeckVersion then
                 begin
                   if DeckRevisionCount > 0 then
                     AddLibraryValue(CurrentDeckVersionSelector);
@@ -241,7 +234,7 @@ begin
                     AddLibraryValue(PreviousDeckVersionSelector);
                 end;
               end
-              else if Kind = 'revision' then
+              else if Kind = ckRevision then
                 for Index := 0 to LibraryFile.Revision do
                   AddLibraryValue(IntToStr(Index));
             end;
@@ -261,7 +254,7 @@ begin
         Suffix := EscapeSuffix(Suffix, Quote);
       Candidates.Add(Prefix + Suffix);
     end;
-    if (Candidates.Count = 1) and ((Kind = 'file') or (Kind = 'directory')) then
+    if (Candidates.Count = 1) and ((Kind = ckFile) or (Kind = ckDirectory)) then
     begin
       Name := Values[0];
       if Name[Length(Name)] = DirectorySeparator then
@@ -272,11 +265,11 @@ begin
   end;
 end;
 
-procedure CompleteLine(Commands: TJSONArray; const LibraryPath, Before, Prefix, After: string;
+procedure CompleteLine(Commands: TCommandDefinitions; const LibraryPath, Before, Prefix, After: string;
   Candidates: TStrings; out AppendCharacter: Char; PendingLibrary: TDeckLibrary);
 var
   Tokens, Names, OptionNames: TStringList;
-  Spec: TJSONObject;
+  Spec: TCommandDefinition;
   Earlier: TCommandBinder;
   Hidden: TParameterSlots;
   Index, Slot, Separator: Integer;
@@ -312,7 +305,6 @@ var
   function HiddenNameSlots: TParameterSlots;
   var
     Bindings: TCommandBinder;
-    Groups, Group: TJSONArray;
     GroupIndex, MemberIndex, OptionSlot, Position, Offset: Integer;
     Selected: Boolean;
   begin
@@ -322,29 +314,24 @@ var
       SetLength(Result, Bindings.Count);
       for Position := 0 to High(Result) do
         Result[Position] := Bindings.Supplied[Position];
-      Groups := ExclusiveOptionGroups(Spec);
-      if not Assigned(Groups) then
-        Exit;
       Offset := Bindings.Arguments.Count;
-      for GroupIndex := 0 to Groups.Count - 1 do
+      for GroupIndex := 0 to Spec.ExclusiveGroupCount - 1 do
       begin
-        Group := TJSONArray(Groups.Items[GroupIndex]);
         Selected := False;
-        for MemberIndex := 0 to Group.Count - 1 do
+        for MemberIndex := 0 to Spec.ExclusiveGroupSize[GroupIndex] - 1 do
         begin
-          OptionSlot := FindDefinition(Bindings.Options, Group.Items[MemberIndex].AsString);
-          if (OptionSlot >= 0) and Bindings.Supplied[Offset + OptionSlot] then
+          OptionSlot := Spec.ExclusiveOptions[GroupIndex, MemberIndex].OptionIndex;
+          if Bindings.Supplied[Offset + OptionSlot] then
           begin
             Selected := True;
             Break;
           end;
         end;
         if Selected then
-          for MemberIndex := 0 to Group.Count - 1 do
+          for MemberIndex := 0 to Spec.ExclusiveGroupSize[GroupIndex] - 1 do
           begin
-            OptionSlot := FindDefinition(Bindings.Options, Group.Items[MemberIndex].AsString);
-            if OptionSlot >= 0 then
-              Result[Offset + OptionSlot] := True;
+            OptionSlot := Spec.ExclusiveOptions[GroupIndex, MemberIndex].OptionIndex;
+            Result[Offset + OptionSlot] := True;
           end;
       end;
     finally
@@ -377,10 +364,10 @@ begin
         SuggestNames(Commands, Prefix, '', Candidates, nil, 0, False);
       Exit;
     end;
-    Index := FindDefinition(Commands, Tokens[0]);
+    Index := Commands.FindIndex(Tokens[0]);
     if Index < 0 then
       Exit;
-    Spec := DefinitionAt(Commands, Index);
+    Spec := Commands[Index];
     Earlier := TCommandBinder.Create(Spec, bmCompletion);
     try
       for Index := 1 to Tokens.Count - 1 do

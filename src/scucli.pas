@@ -5,21 +5,20 @@ unit ScuCLI;
 interface
 
 uses
-  Classes, FPJSON, ScuCommand, ScuComplete, ScuExecutor, ScuOutput;
+  Classes, ScuCommand, ScuCommands, ScuComplete, ScuExecutor, ScuOutput;
 
 type
   TScuCLI = class
   private
-    FDefinitions: TJSONObject;
-    FCommands: TJSONArray;
-    FLibraryOption, FPromptParameter: TJSONObject;
+    FCatalog: TCommandCatalog;
+    FPromptParameter: TParameterDefinition;
     FPromptContext: TCompletionContext;
     FLibraryPath, FCatalogDirectory: string;
     FOutput: TScuOutput;
     FExecutor: TScuExecutor;
-    function Definition(const Name: string): TJSONObject;
+    function Definition(const Name: string): TCommandDefinition;
     function SelectLibrary(Tokens: TStrings): Integer;
-    function ParseCommand(Tokens: TStrings; CommandIndex: Integer; Spec: TJSONObject;
+    function ParseCommand(Tokens: TStrings; CommandIndex: Integer; Spec: TCommandDefinition;
       Interactive: Boolean): TScuCommand;
     procedure CompleteInteractiveLine(const Before, Prefix, After: string; Candidates: TStrings;
       out AppendCharacter: Char);
@@ -38,7 +37,7 @@ type
 implementation
 
 uses
-  SysUtils, BaseUnix, ScuBinder, ScuCommands, ScuHelp, ScuInput, ScuIO, ScuJSON,
+  SysUtils, BaseUnix, ScuBinder, ScuHelp, ScuInput, ScuIO,
   ScuSignals, ScuTerminal, ScuTokenizer, Termio;
 
 function CommandFile: string;
@@ -61,28 +60,25 @@ begin
   FOutput := TTerminalOutput.Create;
   CatalogPath := CommandFile;
   FCatalogDirectory := ExtractFileDir(CatalogPath);
-  FDefinitions := ParseObject(ReadBytes(CatalogPath, 1024 * 1024));
-  PrepareCommandDefinitions(FDefinitions);
-  FCommands := TJSONArray(Field(FDefinitions, 'commands', jtArray));
-  FLibraryOption := TJSONObject(Field(FDefinitions, 'library_option', jtObject));
+  FCatalog := TCommandCatalog.Create(CatalogPath);
 end;
 
 destructor TScuCLI.Destroy;
 begin
   FExecutor.Free;
   FOutput.Free;
-  FDefinitions.Free;
+  FCatalog.Free;
   inherited Destroy;
 end;
 
-function TScuCLI.Definition(const Name: string): TJSONObject;
+function TScuCLI.Definition(const Name: string): TCommandDefinition;
 var
   Index: Integer;
 begin
-  Index := FindDefinition(FCommands, Name);
+  Index := FCatalog.Commands.FindIndex(Name);
   if Index < 0 then
     raise EScuError.CreateFmt('Unknown command "%s". Run scu help.', [Name]);
-  Result := DefinitionAt(FCommands, Index);
+  Result := FCatalog.Commands[Index];
 end;
 
 function TScuCLI.SelectLibrary(Tokens: TStrings): Integer;
@@ -90,7 +86,7 @@ var
   First, Name: string;
   EqualsAt: SizeInt;
 begin
-  FLibraryPath := Field(FLibraryOption, 'default', jtString).AsString;
+  FLibraryPath := FCatalog.LibraryDefault;
   Result := 0;
   if Tokens.Count > 0 then
   begin
@@ -103,7 +99,7 @@ begin
     if Copy(Name, 1, 2) = '--' then
       Delete(Name, 1, 2);
     if ((EqualsAt > 0) or (Copy(First, 1, 2) = '--')) and
-      MatchesDefinition(FLibraryOption, Name) then
+      FCatalog.LibraryOption.Matches(Name) then
     begin
       Result := 1;
       if EqualsAt > 0 then
@@ -118,7 +114,7 @@ begin
       if FLibraryPath = '' then
         raise EScuError.CreateFmt('Expected a library name for %s.', [First]);
     end
-    else if (Copy(First, 1, 1) <> '-') and (FindDefinition(FCommands, First) < 0) then
+    else if (Copy(First, 1, 1) <> '-') and (FCatalog.Commands.FindIndex(First) < 0) then
     begin
       Name := LowerCase(ExtractFileExt(First));
       if not FileExists(First) and (Name <> '.sqlite') and
@@ -128,41 +124,43 @@ begin
       Result := 1;
     end;
   end;
-  ValidateParameter(FLibraryOption, FLibraryPath);
+  if Result > 0 then
+    FCatalog.LibraryOption.Validate(FLibraryPath);
   if FLibraryPath = '' then
     raise EScuError.Create('Expected a library name.');
 end;
 
-function TScuCLI.ParseCommand(Tokens: TStrings; CommandIndex: Integer; Spec: TJSONObject;
+function TScuCLI.ParseCommand(Tokens: TStrings; CommandIndex: Integer; Spec: TCommandDefinition;
   Interactive: Boolean): TScuCommand;
 var
   Binder: TCommandBinder;
   Index: Integer;
   Value: string;
 
-  function CompleteParameter(Entry: TJSONObject; Positional: Boolean; out Argument: string): Boolean;
+  function CompleteParameter(Entry: TParameterDefinition; Positional: Boolean; out Argument: string): Boolean;
   var
     ParameterName, Description, Prompt, DefaultValue: string;
     Columns: SizeInt;
     HasDefault: Boolean;
   begin
-    HasDefault := ParameterDefault(Spec, Entry, Positional, DefaultValue);
-    if HasDefault and (not Interactive or not Entry.Get('prompt_for_default', True)) then
+    HasDefault := Entry.HasDefault;
+    DefaultValue := Entry.DefaultValue;
+    if HasDefault and (not Interactive or not Entry.PromptForDefault) then
     begin
       Argument := DefaultValue;
       Exit(True);
     end;
-    if not HasDefault and not ParameterRequired(Entry, Positional) then
+    if not HasDefault and not Entry.Required then
       Exit(False);
 
-    ParameterName := DefinitionName(Entry);
+    ParameterName := Entry.Name;
     if not Interactive then
       raise EScuError.CreateFmt('Missing required argument %s for %s.', [ParameterName, Binder.Name]);
     Columns := TerminalColumns(TextRec(StdErr).Handle);
     if Columns > 0 then
       UseTerminalLocale;
-    Prompt := FormatTerminalLines(ParameterSyntax(Entry, Positional, HasDefault, DefaultValue), Columns) + LineEnding;
-    Description := ParameterDescription(Entry);
+    Prompt := FormatTerminalLines(ParameterSyntax(Entry, Positional), Columns) + LineEnding;
+    Description := Entry.Description;
     if Description <> '' then
       Prompt := Prompt + FormatTerminalLines(Description, Columns) + LineEnding;
     if HasDefault then
@@ -187,7 +185,7 @@ var
         Continue;
       end;
       try
-        ValidateParameter(Entry, Argument);
+        Entry.Validate(Argument);
         Exit(True);
       except
         on E: EScuError do
@@ -215,7 +213,7 @@ end;
 procedure TScuCLI.CompleteInteractiveLine(const Before, Prefix, After: string; Candidates: TStrings;
   out AppendCharacter: Char);
 begin
-  CompleteLine(FCommands, FLibraryPath, Before, Prefix, After, Candidates, AppendCharacter, FExecutor.PendingLibrary);
+  CompleteLine(FCatalog.Commands, FLibraryPath, Before, Prefix, After, Candidates, AppendCharacter, FExecutor.PendingLibrary);
 end;
 
 procedure TScuCLI.CompletePromptValue(const Before, Prefix, After: string; Candidates: TStrings;
@@ -224,7 +222,7 @@ begin
   AppendCharacter := #0;
   if After <> '' then
     Exit;
-  CompleteValue(FCommands, FPromptParameter, FPromptContext, FLibraryPath, Before + Prefix, Prefix,
+  CompleteValue(FCatalog.Commands, FPromptParameter, FPromptContext, FLibraryPath, Before + Prefix, Prefix,
     #0, True, Candidates, AppendCharacter, FExecutor.PendingLibrary);
 end;
 
@@ -241,7 +239,7 @@ begin
         if Command.Name = 'display_command' then
           RenderCommandHelp(Definition(Command['command_name']), FCatalogDirectory, FOutput, Columns)
         else
-          RenderCommandList(FCommands, FOutput, Columns);
+          RenderCommandList(FCatalog.Commands, FOutput, Columns);
       end;
     else FExecutor.Execute(Command);
   end;
@@ -280,7 +278,7 @@ var
   Line, Prompt: string;
   OpeningLibrary, EndOfInput, SawCommand: Boolean;
   Command: TScuCommand;
-  Spec: TJSONObject;
+  Spec: TCommandDefinition;
 begin
   Prompt := '';
   if IsATTY(Input) = 1 then
@@ -301,7 +299,7 @@ begin
         if OpeningLibrary and (SessionSignal = 0) then
         begin
           OpeningLibrary := False;
-          if (FindDefinition(FCommands, 'display_library') < 0) or
+          if (FCatalog.Commands.FindIndex('display_library') < 0) or
             not FileExists(FLibraryPath) then
             Continue;
           Tokens.Clear;
@@ -319,7 +317,7 @@ begin
             Spec := Definition(Tokens[0]);
             Command := ParseCommand(Tokens, 0, Spec, Prompt <> '');
           finally
-            if not Assigned(Spec) or not IsSessionExit(DefinitionName(Spec)) then
+            if not Assigned(Spec) or not IsSessionExit(Spec.Name) then
               RememberCommand(Line);
           end;
         end

@@ -5,65 +5,61 @@ unit ScuHelp;
 interface
 
 uses
-  FPJSON, ScuOutput;
+  ScuCommands, ScuOutput;
 
-function ParameterSyntax(Entry: TJSONObject; Positional, HasDefault: Boolean;
-  const DefaultValue: string): string;
-procedure RenderCommandList(Commands: TJSONArray; Output: TScuOutput; Columns: SizeInt);
-procedure RenderCommandHelp(Spec: TJSONObject; const CatalogDirectory: string;
+function ParameterSyntax(Entry: TParameterDefinition; Positional: Boolean): string;
+procedure RenderCommandList(Commands: TCommandDefinitions; Output: TScuOutput; Columns: SizeInt);
+procedure RenderCommandHelp(Spec: TCommandDefinition; const CatalogDirectory: string;
   Output: TScuOutput; Columns: SizeInt);
 
 implementation
 
 uses
-  Classes, SysUtils, ScuCommands, ScuIO, ScuJSON, ScuTerminal;
+  Classes, SysUtils, ScuIO, ScuTerminal;
 
-function AliasText(Entry: TJSONObject): string;
+function AliasText(Entry: TNamedDefinition): string;
 var
-  Aliases: TJSONArray;
   AliasIndex: Integer;
 begin
   Result := '';
-  Aliases := DefinitionAliases(Entry);
-  if Assigned(Aliases) then
-    for AliasIndex := 0 to Aliases.Count - 1 do
-    begin
-      if Result <> '' then
-        Result := Result + ', ';
-      Result := Result + Aliases.Strings[AliasIndex];
-    end;
+  for AliasIndex := 0 to Entry.AliasCount - 1 do
+  begin
+    if Result <> '' then
+      Result := Result + ', ';
+    Result := Result + Entry.Aliases[AliasIndex];
+  end;
 end;
 
-function CommandNames(Entry: TJSONObject): string;
+function CommandNames(Entry: TCommandDefinition): string;
 var
   Aliases: string;
 begin
-  Result := DefinitionName(Entry);
+  Result := Entry.Name;
   Aliases := AliasText(Entry);
   if Aliases <> '' then
     Result := Result + ', ' + Aliases;
 end;
 
-function ParameterSyntax(Entry: TJSONObject; Positional, HasDefault: Boolean; const DefaultValue: string): string;
+function ParameterSyntax(Entry: TParameterDefinition; Positional: Boolean): string;
 var
   Aliases, Value: string;
 begin
-  Result := DefinitionName(Entry);
+  Result := Entry.Name;
   if not Positional then
     Result := '--' + Result;
   Aliases := AliasText(Entry);
   if Aliases <> '' then
     Result := Result + ' (' + Aliases + ')';
-  if HasDefault then
-    Value := DefaultValue
-  else if ParameterRequired(Entry, Positional) then
+  if Entry.HasDefault then
+    Value := Entry.DefaultValue
+  else if Entry.Required then
     Value := 'scu$required'
   else
     Value := 'scu$optional';
-  Result := Result + ' : ' + Field(Entry, 'type', jtString).AsString + ' = ' + Value;
+  Result := Result + ' : ' + Entry.KindName + ' = ' + Value;
 end;
 
-procedure RenderCommandList(Commands: TJSONArray; Output: TScuOutput; Columns: SizeInt);
+procedure RenderCommandList(Commands: TCommandDefinitions; Output: TScuOutput; Columns: SizeInt);
 const
   MinDescriptionColumns = 20;
 var
@@ -71,7 +67,7 @@ var
   Width, LabelColumns: SizeInt;
   LabelText, Description, Indent: string;
   Names: TStringList;
-  Spec: TJSONObject;
+  Spec: TCommandDefinition;
   Stacked: Boolean;
 
   function LabelWidth(const Text: string): SizeInt;
@@ -88,8 +84,8 @@ begin
     Width := 0;
     for Index := 0 to Commands.Count - 1 do
     begin
-      Spec := DefinitionAt(Commands, Index);
-      Names.AddObject(DefinitionName(Spec), Spec);
+      Spec := Commands[Index];
+      Names.AddObject(Spec.Name, Spec);
       LabelColumns := LabelWidth(CommandNames(Spec));
       if LabelColumns > Width then
         Width := LabelColumns;
@@ -107,9 +103,9 @@ begin
     Names.Sort;
     for Index := 0 to Names.Count - 1 do
     begin
-      Spec := TJSONObject(Names.Objects[Index]);
+      Spec := TCommandDefinition(Names.Objects[Index]);
       LabelText := CommandNames(Spec);
-      Description := Field(Spec, 'summary', jtString).AsString;
+      Description := Spec.Summary;
       if Stacked then
       begin
         Output.WriteLine(WrapTerminalText(LabelText, LineEnding, Columns));
@@ -127,13 +123,11 @@ begin
   end;
 end;
 
-procedure RenderCommandHelp(Spec: TJSONObject; const CatalogDirectory: string;
+procedure RenderCommandHelp(Spec: TCommandDefinition; const CatalogDirectory: string;
   Output: TScuOutput; Columns: SizeInt);
 var
   Index, MemberIndex: Integer;
-  Example: TJSONObject;
-  Arguments, Options, Groups, Group, Examples: TJSONArray;
-  Help: TJSONData;
+  Example: TCommandExample;
   Body: RawByteString;
   GroupText: string;
 
@@ -142,73 +136,55 @@ var
     Output.WriteLine(FormatTerminalLines(Text, Columns, Indentation));
   end;
 
-  procedure ShowParameter(Entry: TJSONObject; Positional: Boolean);
-  var
-    DefaultValue, Description: string;
-    HasDefault: Boolean;
+  procedure ShowParameter(Entry: TParameterDefinition; Positional: Boolean);
   begin
-    HasDefault := ParameterDefault(Spec, Entry, Positional, DefaultValue);
-    ShowText(ParameterSyntax(Entry, Positional, HasDefault, DefaultValue), 2);
-    Description := ParameterDescription(Entry);
-    if Description <> '' then
-      ShowText(Description, 4);
+    ShowText(ParameterSyntax(Entry, Positional), 2);
+    if Entry.Description <> '' then
+      ShowText(Entry.Description, 4);
   end;
 
 begin
   ShowText(CommandNames(Spec));
-  ShowText(Field(Spec, 'summary', jtString).AsString);
-  Help := Spec.Find('help_file');
-  if Assigned(Help) then
+  ShowText(Spec.Summary);
+  if Spec.HasHelpFile then
   begin
-    Body := ReadBytes(IncludeTrailingPathDelimiter(CatalogDirectory) + Help.AsString, 1024 * 1024);
+    Body := ReadBytes(IncludeTrailingPathDelimiter(CatalogDirectory) + Spec.HelpFile, 1024 * 1024);
     ShowText(TrimRight(Body));
   end
-  else
-  begin
-    Help := Spec.Find('help');
-    if Assigned(Help) then
-      ShowText(Help.AsString);
-  end;
-  Arguments := TJSONArray(Field(Spec, 'arguments', jtArray));
-  Options := TJSONArray(Field(Spec, 'options', jtArray));
+  else if Spec.HasHelpText then
+    ShowText(Spec.HelpText);
   ShowText('Arguments');
-  if Arguments.Count = 0 then
+  if Spec.Arguments.Count = 0 then
     ShowText('None', 2);
-  for Index := 0 to Arguments.Count - 1 do
-    ShowParameter(DefinitionAt(Arguments, Index), True);
+  for Index := 0 to Spec.Arguments.Count - 1 do
+    ShowParameter(Spec.Arguments[Index], True);
   ShowText('Options');
-  if Options.Count = 0 then
+  if Spec.Options.Count = 0 then
     ShowText('None', 2);
-  for Index := 0 to Options.Count - 1 do
-    ShowParameter(DefinitionAt(Options, Index), False);
-  Groups := ExclusiveOptionGroups(Spec);
-  if Assigned(Groups) and (Groups.Count > 0) then
+  for Index := 0 to Spec.Options.Count - 1 do
+    ShowParameter(Spec.Options[Index], False);
+  if Spec.ExclusiveGroupCount > 0 then
   begin
     ShowText('Mutually exclusive options (choose at most one per group)');
-    for Index := 0 to Groups.Count - 1 do
+    for Index := 0 to Spec.ExclusiveGroupCount - 1 do
     begin
-      Group := TJSONArray(Groups.Items[Index]);
       GroupText := '';
-      for MemberIndex := 0 to Group.Count - 1 do
+      for MemberIndex := 0 to Spec.ExclusiveGroupSize[Index] - 1 do
       begin
         if MemberIndex > 0 then
           GroupText := GroupText + ', ';
-        GroupText := GroupText + '--' + Group.Strings[MemberIndex];
+        GroupText := GroupText + '--' + Spec.ExclusiveOptions[Index, MemberIndex].Spelling;
       end;
       ShowText(GroupText, 2);
     end;
   end;
-  if Assigned(Spec.Find('examples')) then
+  if Spec.ExampleCount > 0 then
+    ShowText('Examples');
+  for Index := 0 to Spec.ExampleCount - 1 do
   begin
-    Examples := TJSONArray(Field(Spec, 'examples', jtArray));
-    if Examples.Count > 0 then
-      ShowText('Examples');
-    for Index := 0 to Examples.Count - 1 do
-    begin
-      Example := DefinitionAt(Examples, Index);
-      Output.WriteLine('  ' + Field(Example, 'command', jtString).AsString);
-      ShowText(Field(Example, 'description', jtString).AsString, 4);
-    end;
+    Example := Spec.Examples[Index];
+    Output.WriteLine('  ' + Example.Command);
+    ShowText(Example.Description, 4);
   end;
 end;
 

@@ -539,11 +539,12 @@ as in `show_history 50` or `show_history number_of_lines=50`.
 
 ## Frontend integration
 
-The CLI uses `commands.json` to resolve aliases, bind and validate arguments,
-and apply command defaults. Command parsing and Tab completion share the
-tokenizer and argument binder. The CLI passes a read-only `TScuCommand` to
-`TScuExecutor.Execute`. Other Free Pascal frontends can construct the same
-object with canonical names, arguments in catalog order, and named options.
+At startup the CLI loads and validates `commands.json` once. Command parsing,
+Tab completion, and help use the same typed definitions. Parsing and completion
+also share the tokenizer and argument binder. The CLI passes a read-only
+`TScuCommand` to `TScuExecutor.Execute`. Other Free Pascal frontends can
+construct the same object with canonical names, arguments in catalog order,
+and named options.
 They can implement `TScuOutput` to capture normal output and diagnostics.
 
 The executor selects a command handler by canonical name and passes the same

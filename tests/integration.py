@@ -1826,6 +1826,60 @@ class ScuIntegration(unittest.TestCase):
                 names = list(last["options"]) if version == 1 else [item["name"] for item in last["options"]]
                 self.assertEqual(names, ["a_option", "z_option"])
 
+    def test_command_catalog_rejects_invalid_definitions_at_startup(self):
+        executable = self.root / "scu"
+        shutil.copy2(SCU, executable)
+        original = SCU.with_name("commands.json").read_bytes()
+        audit = self.audit_lines()
+        for section, name, field, value, message in (
+            ("options", "revision", "type", "int", 'Unknown argument type "int" for revision'),
+            ("options", "revision", "value", "one", "Expected integer value for revision"),
+            ("options", "revision", "completion", "revison", 'Unknown completion kind "revison"'),
+            ("options", "revision", "aliases", ["DN"], 'Ambiguous name or alias "DN"'),
+            ("options", "revision", "aliases", [1], 'Expected a nonempty alias string for "revision"'),
+            ("command", "", "aliases", ["DDL"], 'Ambiguous name or alias "DDL"'),
+            ("command", "", "exclusive_options", [["version", "missing"]], 'Unknown option "missing"'),
+            ("command", "", "default_values", {"versoin": "1.0"}, 'Unknown parameter "versoin"'),
+        ):
+            with self.subTest(field=field, value=value):
+                catalog = json.loads(original)
+                command = next(item for item in catalog["commands"] if item["name"] == "expand_deck")
+                target = command if section == "command" else next(
+                    item for item in command[section] if item["name"] == name
+                )
+                target[field] = value
+                path = self.root / "commands.json"
+                path.write_text(json.dumps(catalog))
+                self.run_scu("help", executable=executable,
+                             error=f'Could not load command catalog "{path}": {message}')
+        self.assertEqual(self.audit_lines(), audit)
+
+    def test_running_session_keeps_its_validated_catalog_for_help_and_completion(self):
+        self.store("main", b"source")
+        executable = self.root / "scu"
+        shutil.copy2(SCU, executable)
+        catalog = json.loads(SCU.with_name("commands.json").read_bytes())
+        command = next(item for item in catalog["commands"] if item["name"] == "expand_deck")
+        command["exclusive_options"] = [["v", "r"]]
+        path = self.root / "commands.json"
+        path.write_text(json.dumps(catalog))
+        with self.terminal_session(TERM="xterm", executable=executable) as (process, terminal, read_until):
+            read_until(b"scu> ")
+            path.write_text("invalid catalog")
+            os.write(terminal, b"display_command expd\n")
+            self.assertIn(b"--v, --r", read_until(b"scu> "))
+
+            prefix = b"expd main expanded v=1.0 --"
+            os.write(terminal, prefix + b"\t\t")
+            matches = read_until(b"scu> " + prefix)
+            self.assertIn(b"--build", matches)
+            self.assertNotIn(b"--revision", matches)
+            os.write(terminal, b"build no\n")
+            read_until(b"scu> ")
+            self.assertEqual((self.root / "expanded").read_bytes(), b"source")
+            os.write(terminal, b"quit\n")
+            self.assertEqual(process.wait(timeout=5), 0)
+
     def test_command_catalog_has_consistent_names_and_resolves_every_alias(self):
         definitions = json.loads(SCU.with_name("commands.json").read_bytes())
         commands = sorted(definitions["commands"], key=lambda command: command["name"])
