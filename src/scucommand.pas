@@ -19,7 +19,11 @@ type
     FName: string;
     FArguments: TScuArguments;
     FOptions: TStringList;
+    function FindArgument(const Key: string): Integer;
     function GetArgument(Index: Integer): TScuArgument;
+    function GetNamedArgument(const Key: string): TScuArgument;
+    function GetArgumentValue(const Key: string): string;
+    function GetArgumentProvided(const Key: string): Boolean;
     function GetArgumentCount: Integer;
     function GetOptionCount: Integer;
     function GetOptionName(Index: Integer): string;
@@ -29,11 +33,14 @@ type
     constructor Create(const AName: string; const Arguments: TScuArguments; Options: TStrings);
     constructor CreateSessionExit;
     destructor Destroy; override;
+    function HasArgument(const Key: string): Boolean;
     function HasOption(const Key: string): Boolean;
     function Option(const Key: string; const Default: string = ''): string;
     property Name: string read FName;
     property ArgumentCount: Integer read GetArgumentCount;
     property Arguments[Index: Integer]: TScuArgument read GetArgument;
+    property Values[const Key: string]: string read GetArgumentValue; default;
+    property Provided[const Key: string]: Boolean read GetArgumentProvided;
     property OptionCount: Integer read GetOptionCount;
     property OptionNames[Index: Integer]: string read GetOptionName;
     property OptionValues[Index: Integer]: string read GetOptionValue;
@@ -77,6 +84,41 @@ destructor TScuCommand.Destroy;
 begin
   FOptions.Free;
   inherited Destroy;
+end;
+
+function TScuCommand.FindArgument(const Key: string): Integer;
+var
+  Index: Integer;
+begin
+  for Index := 0 to High(FArguments) do
+    if FArguments[Index].Name = Key then
+      Exit(Index);
+  Result := -1;
+end;
+
+function TScuCommand.HasArgument(const Key: string): Boolean;
+begin
+  Result := FindArgument(Key) >= 0;
+end;
+
+function TScuCommand.GetNamedArgument(const Key: string): TScuArgument;
+var
+  Index: Integer;
+begin
+  Index := FindArgument(Key);
+  if Index < 0 then
+    raise EScuError.CreateFmt('Missing argument %s for %s.', [Key, FName]);
+  Result := FArguments[Index];
+end;
+
+function TScuCommand.GetArgumentValue(const Key: string): string;
+begin
+  Result := GetNamedArgument(Key).Value;
+end;
+
+function TScuCommand.GetArgumentProvided(const Key: string): Boolean;
+begin
+  Result := GetNamedArgument(Key).Provided;
 end;
 
 function TScuCommand.GetArgument(Index: Integer): TScuArgument;

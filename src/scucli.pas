@@ -584,7 +584,7 @@ procedure TScuCLI.ExecuteCommand(Command: TScuCommand);
 begin
   case Command.Name of
     'display_command_list', 'help': DisplayCommandList;
-    'display_command': DisplayCommand(Command.Arguments[0].Value);
+    'display_command': DisplayCommand(Command['command_name']);
     else FExecutor.Execute(Command);
   end;
 end;

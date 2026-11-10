@@ -22,6 +22,7 @@ type
     FPendingLibrary: TDeckLibrary;
     function ResolveSnapshot(Command: TScuCommand; LibraryFile: TDeckLibrary; const Deck: string): TLibrarySnapshot;
     function OutputPath(const Path: string): string;
+    function OutputFileArgument(Command: TScuCommand): string;
     function BulkOutputDirectory(Command: TScuCommand): string;
     function PrefixOption(Command: TScuCommand): string;
     function ExecuteLibrary(Command: TScuCommand; LibraryFile: TDeckLibrary; Database: TSQLiteLibrary;
@@ -105,9 +106,17 @@ begin
     ValidateCommentPrefix(Result);
 end;
 
+function TScuExecutor.OutputFileArgument(Command: TScuCommand): string;
+begin
+  // Older command catalogs use output as the argument name.
+  if not Command.HasArgument('output_file') and Command.HasArgument('output') then
+    Exit(Command['output']);
+  Result := Command['output_file'];
+end;
+
 function TScuExecutor.BulkOutputDirectory(Command: TScuCommand): string;
 begin
-  Result := Command.Arguments[1].Value;
+  Result := Command['output_directory'];
   if (Command.Name = 'expand_modified_decks') and SameText(Result, LibraryDirectorySelector) then
     Result := ExtractFileDir(CanonicalFile(FLibraryPath));
 end;
@@ -120,6 +129,7 @@ var
   Expander: TDeckExpander;
   Names, Destinations: TStringList;
   Deck, Name, Path, Version, VersionIncrement, RevisionIncrement, Prefix, Directory, MissingDeckVersion: string;
+  FromSelector: string;
   Revision, Base, Index, CheckpointRevision: Integer;
   Previous, FromSnapshot, ToSnapshot: TLibrarySnapshot;
   Editor: TJSONData;
@@ -130,6 +140,16 @@ var
     Result := LibraryFile.LastModifiedDeck;
     if Result = '' then
       raise EScuError.Create('No deck has been modified in this library.');
+  end;
+
+  function ResolveDeck: string;
+  begin
+    Result := Command['deck_name'];
+    if SameText(Result, LastModifiedDeckSelector) then
+    begin
+      Result := ResolveLastModifiedDeck;
+      SnapshotsUsed.ResolvedDeck := Result;
+    end;
   end;
 
   function DeckWriteReport(const Deck: string; StoredRevision: Integer): string;
@@ -163,22 +183,12 @@ var
 begin
   Result := '';
   Build := Default(TBuildRequest);
-  Deck := '';
-  if Command.ArgumentCount > 0 then
-  begin
-    Deck := Command.Arguments[0].Value;
-    if (Command.Arguments[0].Name = 'deck_name') and SameText(Deck, LastModifiedDeckSelector) then
-    begin
-      Deck := ResolveLastModifiedDeck;
-      SnapshotsUsed.ResolvedDeck := Deck;
-    end;
-  end;
   case Command.Name of
     'save_library', 'quit_session', 'quit':
       begin
         SaveRequested := True;
-        if Command.SessionExit and (Command.ArgumentCount > 0) and
-          not TryParseYesNo(Command.Arguments[0].Value, SaveRequested) then
+        if Command.SessionExit and Command.HasArgument('save_library') and
+          not TryParseYesNo(Command['save_library'], SaveRequested) then
           raise EScuError.Create('Expected yes/y or no/n for save_library.');
         if not SaveRequested then
           Result := 'Discarded unsaved library changes.'
@@ -211,7 +221,7 @@ begin
       end;
     'reset_expansion_checkpoint':
       begin
-        Version := Command.Arguments[0].Value;
+        Version := Command['version'];
         LibraryFile.VersionBounds(Version, Base, Revision);
         if Database.ResetExpansionCheckpoint(Version, OutputDirectory) then
           Result := Format('Reset expansion checkpoint for version %s in "%s".', [Version, OutputDirectory])
@@ -258,16 +268,21 @@ begin
       end;
     'edit_deck':
       begin
-        Name := DeckName(Deck);
+        Name := DeckName(ResolveDeck);
         Result := DeckWriteReport(Name, EditDeck(LibraryFile, Name));
       end;
     'create_deck', 'store_deck':
       begin
+        Deck := ResolveDeck;
         LibraryFile.RequireOpenVersion;
         Name := DeckName(Deck);
         Bytes := '';
-        if (Command.Name = 'store_deck') or (Command.Arguments[1].Value <> '') then
-          Bytes := ReadBytes(Command.Arguments[1].Value, MaxDeckSize);
+        if Command.Name = 'store_deck' then
+          Path := Command['source_file']
+        else
+          Path := Command['from_file'];
+        if (Command.Name = 'store_deck') or (Path <> '') then
+          Bytes := ReadBytes(Path, MaxDeckSize);
         Revision := LibraryFile.Store(Name, Bytes, Command.Name = 'create_deck', PrefixOption(Command));
         Result := DeckWriteReport(Name, Revision);
       end;
@@ -278,7 +293,7 @@ begin
       end;
     'start_version':
       begin
-        LibraryFile.StartVersion(Command.Arguments[0].Value);
+        LibraryFile.StartVersion(Command['version']);
         Result := 'Started version ' + LibraryFile.CurrentVersion;
       end;
     'display_deck_list', 'list_versions', 'display_deck':
@@ -288,10 +303,10 @@ begin
           if Command.Name = 'list_versions' then
             LibraryFile.ListVersions(Names)
           else if Command.Name = 'display_deck' then
-            LibraryFile.ListDeckHistory(Deck, Names)
+            LibraryFile.ListDeckHistory(ResolveDeck, Names)
           else
           begin
-            SnapshotsUsed.Selected := ResolveSnapshot(Command, LibraryFile, Deck);
+            SnapshotsUsed.Selected := ResolveSnapshot(Command, LibraryFile, '');
             LibraryFile.List(SnapshotsUsed.Selected.LibraryRevision, Names);
             Names.Sort;
           end;
@@ -305,15 +320,16 @@ begin
       end;
     'diff_deck':
       begin
-        Name := DeckName(Deck);
-        UsePriorDeckRevision := not Command.Arguments[1].Provided and
-          SameText(Command.Arguments[1].Value, PreviousDeckVersionSelector);
+        Name := DeckName(ResolveDeck);
+        FromSelector := Command['from_snapshot'];
+        UsePriorDeckRevision := not Command.Provided['from_snapshot'] and
+          SameText(FromSelector, PreviousDeckVersionSelector);
         if not UsePriorDeckRevision then
         begin
-          FromSnapshot := LibraryFile.ParseDeckSnapshot(Name, Command.Arguments[1].Value);
+          FromSnapshot := LibraryFile.ParseDeckSnapshot(Name, FromSelector);
           SnapshotsUsed.FromDeckVersion := LibraryFile.DeckVersion[FromSnapshot.LibraryRevision];
         end;
-        ToSnapshot := LibraryFile.ParseDeckSnapshot(Name, Command.Arguments[2].Value);
+        ToSnapshot := LibraryFile.ParseDeckSnapshot(Name, Command['to_snapshot']);
         SnapshotsUsed.ToDeckVersion := LibraryFile.DeckVersion[ToSnapshot.LibraryRevision];
         if UsePriorDeckRevision then
         begin
@@ -329,11 +345,12 @@ begin
       end;
     'extract_deck', 'expand_deck':
       begin
+        Deck := ResolveDeck;
         SnapshotsUsed.Selected := ResolveSnapshot(Command, LibraryFile, Deck);
         MissingDeckVersion := '';
         if not Command.HasOption('revision') then
           MissingDeckVersion := SnapshotsUsed.Selected.Version;
-        Path := Command.Arguments[1].Value;
+        Path := OutputFileArgument(Command);
         if SameText(Path, DeckNameSelector) then
           Path := DeckName(Deck)
         else if SameText(Path, LastModifiedDeckSelector) then
@@ -362,7 +379,7 @@ begin
       end;
     'extract_modified_decks', 'expand_modified_decks':
       begin
-        Version := Command.Arguments[0].Value;
+        Version := Command['version'];
         if (Command.Name = 'expand_modified_decks') and SameText(Version, CurrentLibraryVersionSelector) then
           Version := LibraryFile.CurrentVersion;
         Directory := OutputDirectory;
@@ -561,7 +578,7 @@ begin
   end;
   if Command.Name = 'expand_deck' then
   begin
-    Path := Command.Arguments[1].Value;
+    Path := OutputFileArgument(Command);
     if (Path = '') or SameText(Path, DeckNameSelector) or SameText(Path, LastModifiedDeckSelector) then
       Directory := GetCurrentDir
     else
@@ -642,7 +659,7 @@ begin
     begin
       if not LibraryExists then
         RaiseMissingLibrary;
-      if not TryStrToInt64(Command.Arguments[0].Value, HistoryLimit) or (HistoryLimit < 1) then
+      if not TryStrToInt64(Command['number_of_lines'], HistoryLimit) or (HistoryLimit < 1) then
         raise EScuError.Create('Expected a positive number_of_lines.');
       Database.ReadCommandHistory(HistoryLimit, @WriteHistoryLine);
       Exit;
@@ -665,7 +682,7 @@ begin
     if (Command.Name = 'expand_modified_decks') and (OutputDirectory <> '') and LibraryExists and
       not Assigned(FPendingLibrary) then
     begin
-      ExpansionVersion := Command.Arguments[0].Value;
+      ExpansionVersion := Command['version'];
       if SameText(ExpansionVersion, CurrentLibraryVersionSelector) then
         ExpansionVersion := Database.CurrentVersion;
       if Database.InvalidateExpansionOutput(ExpansionVersion, OutputDirectory, PrefixOption(Command)) then

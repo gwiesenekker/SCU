@@ -1550,6 +1550,26 @@ class ScuIntegration(unittest.TestCase):
         self.assertEqual(extracts[-1]["parameters"], {"deck_name": "1.25", "output_file": "old-alias"})
         self.assertEqual(extracts[0]["options"], {"revision": "1"})
 
+    def test_executor_uses_argument_names_when_catalog_order_changes(self):
+        self.store("main.pas", b"//SCU$VERSION\n")
+        executable = self.root / "scu"
+        shutil.copy2(SCU, executable)
+        definitions = json.loads(SCU.with_name("commands.json").read_bytes())
+        expand = next(command for command in definitions["commands"] if command["name"] == "expand_deck")
+        expand["arguments"].reverse()
+        (self.root / "commands.json").write_text(json.dumps(definitions))
+        directory = self.root / "build output"
+        directory.mkdir()
+        path = directory / "generated.pas"
+
+        self.run_scu("expand_deck", path, "main.pas", "build=no", executable=executable)
+        self.assertEqual(path.read_bytes(), b"1.0\n")
+        events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
+        attempt = next(event for event in events if event.get("command") == "expand_deck")
+        self.assertEqual(attempt["arguments"], [str(path), "main.pas"])
+        self.assertEqual(attempt["parameters"], {"output_file": str(path), "deck_name": "main.pas"})
+        self.assertEqual(attempt["provided_arguments"], ["output_file", "deck_name"])
+
     def test_legacy_command_definitions_still_load(self):
         self.store("main.pas", b"source")
         executable = self.root / "scu"

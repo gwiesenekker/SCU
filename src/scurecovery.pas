@@ -137,7 +137,7 @@ begin
   try
     if RegularFileExists(Destination) then
       raise EScuError.Create('Choose a new library path for recovery. The destination already exists.');
-    Document := ReadRecovery(Command.Arguments[0].Value, Command.Option('base_library'));
+    Document := ReadRecovery(Command['recovery_file'], Command.Option('base_library'));
     try
       TempDir := MakeTempDirectory('scu-restore');
       TempFile := IncludeTrailingPathDelimiter(TempDir) + 'library.sqlite';
