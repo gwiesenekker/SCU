@@ -26,9 +26,9 @@ type
     function PrefixOption(Command: TScuCommand): string;
     function ExecuteLibrary(Command: TScuCommand; LibraryFile: TDeckLibrary; Database: TSQLiteLibrary;
       const OutputDirectory: string; out SnapshotsUsed: TAuditSnapshots; out Build: TBuildRequest): string;
-    procedure RunCommandInDirectory(Command: TScuCommand; const OutputDirectory: string);
-    procedure BuildProcessGroup(Sender: TObject);
-    procedure RunBuild(const Build: TBuildRequest; const Expansion: string);
+    procedure RunCommandInDirectory(Command: TScuCommand; const OutputDirectory: string;
+      OutputLock: THandle = -1);
+    procedure RunBuild(const Build: TBuildRequest; const Expansion: string; OutputLock: THandle);
     procedure WriteHistoryLine(const Payload: RawByteString);
   public
     constructor Create(const LibraryPath: string; Interactive: Boolean; Output: TScuOutput);
@@ -42,7 +42,7 @@ implementation
 
 uses
   Classes, SysUtils, BaseUnix, Process, FPJSON, ScuIO, ScuJSON, ScuCodec,
-  ScuExpand, ScuEdit, ScuDiff, ScuCommands, ScuVersions, ScuSignals, ScuRecovery;
+  ScuExpand, ScuEdit, ScuDiff, ScuCommands, ScuVersions, ScuSignals, ScuRecovery, ScuOutputLock;
 
 const
   CurrentLibraryVersionSelector = 'scu$current_library_version';
@@ -445,12 +445,42 @@ begin
   end;
 end;
 
-procedure TScuExecutor.BuildProcessGroup(Sender: TObject);
+type
+  TBuildProcess = class(TProcess)
+  private
+    FOutputLock: THandle;
+    FInteractive: Boolean;
+    procedure PrepareChild(Sender: TObject);
+  public
+    constructor Create(OutputLock: THandle; Interactive: Boolean); reintroduce;
+  end;
+
+constructor TBuildProcess.Create(OutputLock: THandle; Interactive: Boolean);
+var
+  Index: Integer;
 begin
-  StartBuildProcessGroup;
+  inherited Create(nil);
+  FOutputLock := OutputLock;
+  FInteractive := Interactive;
+  if OutputLock >= 0 then
+  begin
+    for Index := 1 to GetEnvironmentVariableCount do
+      Environment.Add(GetEnvironmentString(Index));
+    Environment.Values[BuildOutputLockVariable] := IntToStr(OutputLock);
+  end;
+  OnForkEvent := @PrepareChild;
 end;
 
-procedure TScuExecutor.RunBuild(const Build: TBuildRequest; const Expansion: string);
+procedure TBuildProcess.PrepareChild(Sender: TObject);
+begin
+  // Only the build child and its descendants inherit the directory descriptor.
+  if (FOutputLock >= 0) and (fpFcntl(FOutputLock, F_SETFD, 0) < 0) then
+    fpExit(126);
+  if FInteractive then
+    StartBuildProcessGroup;
+end;
+
+procedure TScuExecutor.RunBuild(const Build: TBuildRequest; const Expansion: string; OutputLock: THandle);
 var
   Child: TProcess;
   Lock: TLibraryLock;
@@ -461,15 +491,13 @@ var
 begin
   Failure := '';
   try
-    Child := TProcess.Create(nil);
+    Child := TBuildProcess.Create(OutputLock, FInteractive);
     try
       Child.Executable := '/bin/sh';
       Child.Parameters.Add('-c');
       Child.Parameters.Add('exec </dev/null' + LineEnding + Build.Command);
       Child.Parameters.Add('scu-build');
       Child.Parameters.Add(Build.OutputPath);
-      if FInteractive then
-        Child.OnForkEvent := @BuildProcessGroup;
       Status := WaitForChild(Child, FInteractive);
       if (SessionSignal <> 0) or (Status = 128 + SIGINT) then
         raise EScuError.Create('Build command interrupted.');
@@ -522,7 +550,7 @@ end;
 procedure TScuExecutor.Execute(Command: TScuCommand);
 var
   Directory, Path: string;
-  Lock: TLibraryLock;
+  Lock: TOutputDirectoryLock;
 begin
   if Command.Name = 'recover_library' then
   begin
@@ -549,12 +577,12 @@ begin
   if not DirectoryExists(Directory) then
     raise EScuError.Create('The output directory must already exist.');
   Directory := CanonicalDirectory(Directory);
-  Lock := TLibraryLock.CreateForDirectory(Directory);
+  Lock := TOutputDirectoryLock.Create(Directory, Command.Name = 'expand_deck');
   try
     if Command.Name <> 'expand_deck' then
-      RunCommandInDirectory(Command, Directory)
+      RunCommandInDirectory(Command, Directory, Lock.BuildHandle)
     else
-      RunCommandInDirectory(Command, '');
+      RunCommandInDirectory(Command, '', Lock.BuildHandle);
   finally
     Lock.Free;
   end;
@@ -565,7 +593,8 @@ begin
   FOutput.WriteLine(FormatAuditCommand(Payload));
 end;
 
-procedure TScuExecutor.RunCommandInDirectory(Command: TScuCommand; const OutputDirectory: string);
+procedure TScuExecutor.RunCommandInDirectory(Command: TScuCommand; const OutputDirectory: string;
+  OutputLock: THandle);
 var
   Lock: TLibraryLock;
   Audit: TAuditLog;
@@ -738,7 +767,7 @@ begin
   if Build.Command <> '' then
   begin
     FOutput.Flush;
-    RunBuild(Build, Expansion);
+    RunBuild(Build, Expansion, OutputLock);
   end;
 end;
 

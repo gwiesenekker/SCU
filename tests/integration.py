@@ -1,6 +1,6 @@
 """Exercise SCU through its command line in isolated libraries."""
 import concurrent.futures
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, suppress
 from datetime import datetime
 import fcntl
 import hashlib
@@ -1198,6 +1198,75 @@ class ScuIntegration(unittest.TestCase):
             self.assertIn("Wrote 1 deck(s)", self.run_scu(path, "expmd", "1.0", output))
             self.assertEqual((output / "main").read_bytes(), b"1.0\n")
             self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expmd", "1.0", output))
+
+    def test_parallel_expansions_wait_for_the_same_output_directory(self):
+        self.store("main", b"source\n")
+        output = self.root / "expanded"
+        output.mkdir()
+        ready = self.root / "build-ready"
+        release = self.root / "release-build"
+        self.run_scu("modify_library",
+                     "build_command=touch build-ready; while [ ! -e release-build ]; do sleep 0.02; done")
+        with subprocess.Popen([SCU, "expand_deck", "main", output / "first"], cwd=self.root,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE) as first:
+            try:
+                deadline = time.monotonic() + 5
+                while not ready.exists():
+                    self.assertIsNone(first.poll(), "First expansion exited before starting the build")
+                    self.assertLess(time.monotonic(), deadline, "First expansion did not start its build")
+                    time.sleep(0.01)
+                with subprocess.Popen([SCU, "expand_deck", "main", output / "second", "build=no"],
+                                      cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as second:
+                    try:
+                        descriptors = Path(f"/proc/{second.pid}/fd")
+                        deadline = time.monotonic() + 5
+                        while second.poll() is None:
+                            with suppress(FileNotFoundError, PermissionError):
+                                if any(fd.resolve() == output for fd in descriptors.iterdir()):
+                                    break
+                            self.assertLess(time.monotonic(), deadline,
+                                            "Second expansion did not open the output directory")
+                            time.sleep(0.01)
+                        if second.poll() is not None:
+                            self.fail(second.communicate()[1].decode())
+                        self.assertFalse((output / "second").exists())
+                        release.touch()
+                        _, error = second.communicate(timeout=5)
+                        self.assertEqual(second.returncode, 0, error)
+                    finally:
+                        if second.poll() is None:
+                            second.kill()
+            finally:
+                release.touch()
+                try:
+                    _, error = first.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    first.kill()
+                    raise
+            self.assertEqual(first.returncode, 0, error)
+        self.assertEqual((output / "first").read_bytes(), b"source\n")
+        self.assertEqual((output / "second").read_bytes(), b"source\n")
+        self.assertIn("interrupted=0", self.run_scu("verify_audit_trail"))
+
+    def test_single_and_bulk_builds_can_expand_another_deck_into_the_same_directory(self):
+        self.store("main", b"main source\n")
+        self.store("helper", b"helper source\n")
+        self.run_scu("modify_library",
+                     'build_command=if [ -d "$1" ]; then directory=$1; else directory=$(dirname "$1"); fi; '
+                     f'{shlex.quote(str(SCU))} expand_deck helper "$directory/generated" build=no')
+        for name, command in (("single", ("expand_deck", "main")),
+                              ("bulk", ("expand_modified_decks", "1.0"))):
+            with self.subTest(name=name):
+                directory = self.root / name
+                directory.mkdir()
+                self.run_scu(*command, directory / "main" if name == "single" else directory)
+                self.assertEqual((directory / "main").read_bytes(), b"main source\n")
+                self.assertEqual((directory / "generated").read_bytes(), b"helper source\n")
+                if name == "bulk":
+                    self.assertIn("Wrote 0 deck(s)", self.run_scu(*command, directory))
+        events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
+        self.assertEqual([event["success"] for event in events if event["phase"] == "build"], [True, True])
+        self.assertIn("interrupted=0", self.run_scu("verify_audit_trail"))
 
     def test_sqlite_expansion_build_checkpoints_the_snapshot_it_actually_expanded(self):
         path = self.root / "project.sqlite"

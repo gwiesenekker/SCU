@@ -1,0 +1,104 @@
+unit ScuOutputLock;
+
+{$mode objfpc}{$H+}
+
+interface
+
+uses
+  Classes;
+
+const
+  BuildOutputLockVariable = 'SCU_BUILD_OUTPUT_LOCK_FD';
+
+type
+  TOutputDirectoryLock = class
+  private
+    FHandle, FBorrowedHandle: THandle;
+    FOwnsLock: Boolean;
+    function GetBuildHandle: THandle;
+  public
+    constructor Create(const Directory: string; AllowBuildReuse: Boolean);
+    destructor Destroy; override;
+    property BuildHandle: THandle read GetBuildHandle;
+  end;
+
+implementation
+
+uses
+  BaseUnix, Unix, Linux, SysUtils, ScuIO, ScuSignals;
+
+function TryLock(Handle: THandle): Boolean;
+var
+  Status, Error: cint;
+begin
+  repeat
+    Status := fpFlock(Handle, LOCK_EX or LOCK_NB);
+    Error := fpGetErrNo;
+  until (Status = 0) or (Error <> ESysEINTR);
+  if (Status <> 0) and (Error <> ESysEWOULDBLOCK) then
+    RaiseLastOSError(Error);
+  Result := Status = 0;
+end;
+
+constructor TOutputDirectoryLock.Create(const Directory: string; AllowBuildReuse: Boolean);
+var
+  BuildLock: string;
+  InheritedHandle: Integer;
+  OutputInfo, BuildInfo: Stat;
+begin
+  inherited Create;
+  FBorrowedHandle := -1;
+  FHandle := fpOpen(Directory, O_RDONLY or O_DIRECTORY or O_CLOEXEC);
+  if FHandle < 0 then
+    RaiseLastOSError(fpGetErrNo);
+  CheckSessionInterrupt;
+  FOwnsLock := TryLock(FHandle);
+  if not FOwnsLock then
+  begin
+    BuildLock := GetEnvironmentVariable(BuildOutputLockVariable);
+    if BuildLock <> '' then
+    begin
+      // A synchronous build child can reuse only the lock on this directory.
+      // Trying flock on the inherited descriptor confirms it shares the lock.
+      if AllowBuildReuse and TryStrToInt(BuildLock, InheritedHandle) and
+        (InheritedHandle >= 3) and (InheritedHandle <> FHandle) and
+        (fpFStat(InheritedHandle, BuildInfo) = 0) and (fpFStat(FHandle, OutputInfo) = 0) and
+        (BuildInfo.st_dev = OutputInfo.st_dev) and (BuildInfo.st_ino = OutputInfo.st_ino) and
+        TryLock(InheritedHandle) then
+        FBorrowedHandle := InheritedHandle
+      else
+        // Waiting from inside a build can deadlock its parent or another build.
+        raise EScuError.CreateFmt('An expansion is already using output directory %s.', [Directory]);
+    end
+    else
+      repeat
+        if SessionEnding then
+          raise EScuError.CreateFmt('Output directory %s is busy during shutdown.', [Directory]);
+        Sleep(20);
+        CheckSessionInterrupt;
+        FOwnsLock := TryLock(FHandle);
+      until FOwnsLock;
+  end;
+  CheckSessionInterrupt;
+end;
+
+function TOutputDirectoryLock.GetBuildHandle: THandle;
+begin
+  if FBorrowedHandle >= 0 then
+    Exit(FBorrowedHandle);
+  Result := FHandle;
+end;
+
+destructor TOutputDirectoryLock.Destroy;
+begin
+  if FHandle >= 0 then
+  begin
+    // A background child can still have a descriptor after the build returns.
+    if FOwnsLock then
+      fpFlock(FHandle, LOCK_UN);
+    fpClose(FHandle);
+  end;
+  inherited Destroy;
+end;
+
+end.

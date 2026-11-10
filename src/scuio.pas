@@ -18,7 +18,6 @@ type
   public
     constructor Create(const Path: string; StopWaiting: TStopLockWait = nil;
       CheckInterrupt: TCheckLockInterrupt = nil);
-    constructor CreateForDirectory(const Path: string);
     destructor Destroy; override;
   end;
 
@@ -118,25 +117,6 @@ begin
   until False;
   if Assigned(CheckInterrupt) then
     CheckInterrupt();
-end;
-
-constructor TLibraryLock.CreateForDirectory(const Path: string);
-var
-  Status: cint;
-begin
-  inherited Create;
-  FHandle := fpOpen(Path, O_RDONLY or O_DIRECTORY or O_CLOEXEC);
-  if FHandle < 0 then
-    RaiseLastOSError(fpGetErrNo);
-  repeat
-    Status := fpFlock(FHandle, LOCK_EX or LOCK_NB);
-  until (Status = 0) or (fpGetErrNo <> ESysEINTR);
-  if Status <> 0 then
-  begin
-    if fpGetErrNo = ESysEWOULDBLOCK then
-      raise EScuError.CreateFmt('An expansion is already using output directory %s.', [Path]);
-    RaiseLastOSError(fpGetErrNo);
-  end;
 end;
 
 destructor TLibraryLock.Destroy;

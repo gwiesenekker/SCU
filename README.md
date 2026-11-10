@@ -438,6 +438,14 @@ scu expand_deck main.c compiled-main.c build=no
 Use `modify_library build_command=` to clear the command. If the build fails,
 the expanded output remains available and SCU records the build outcome.
 
+Independent expansions targeting the same directory wait for each other,
+including while a build runs. A build can run `expand_deck ... build=no` in
+its own output directory. Run the nested command synchronously and preserve
+the inherited directory lock descriptor. For Python's `subprocess` module,
+pass the descriptor named by `SCU_BUILD_OUTPUT_LOCK_FD` via `pass_fds`.
+A build that already holds a directory lock gets an error if it invokes
+`expand_modified_decks` or `reset_expansion_checkpoint` in that directory.
+
 - `SCU$DECK_VERSION` is the combined version and revision of the deck being
   expanded, such as `1.1-0.003`. Included decks use their own stored versions.
 - `SCU$LIBRARY_VERSION` is the selected library snapshot's version. With a
