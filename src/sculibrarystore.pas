@@ -354,6 +354,7 @@ begin
         Exit(ExportJSON(Reader));
     except
       // A removed or replaced database can leave only the in-memory edits available.
+      on E: ECommandCancelled do raise;
       on E: Exception do ;
     end;
   finally

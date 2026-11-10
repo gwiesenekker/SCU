@@ -19,8 +19,10 @@ type
   TSQLiteLibrary = class
   private
     FHandle: psqlite3;
+    FPath: string;
     FReadOnly: Boolean;
     FSchemaVersion: Integer;
+    procedure Check(Status: cint; const Operation: string);
     function Scalar(const SQL: RawByteString): RawByteString;
     function GetCurrentVersion: string;
     procedure CreateExpansionCheckpoints;
@@ -60,6 +62,7 @@ type
     function InvalidateExpansionOutput(const Version, Directory, Prefix: string): Boolean;
     procedure SaveExpansionCheckpoint(const Version, Directory, Prefix: string; Revision: Integer;
       BuildPending: Boolean);
+    property Path: string read FPath;
     property CurrentVersion: string read GetCurrentVersion;
   end;
 
@@ -74,13 +77,13 @@ const
 type
   TSQLiteStatement = class
   private
-    FDatabase: psqlite3;
+    FDatabase: TSQLiteLibrary;
     FHandle: psqlite3_stmt;
     function GetText(Index: Integer): RawByteString;
     function GetInteger(Index: Integer): Integer;
     function GetInt64(Index: Integer): Int64;
   public
-    constructor Create(Database: psqlite3; const SQL: RawByteString);
+    constructor Create(Database: TSQLiteLibrary; const SQL: RawByteString);
     destructor Destroy; override;
     procedure Bind(Index: Integer; const Value: RawByteString); overload;
     procedure Bind(Index: Integer; Value: Int64); overload;
@@ -92,17 +95,19 @@ type
     property Int64s[Index: Integer]: Int64 read GetInt64;
   end;
 
-procedure CheckSQLite(Database: psqlite3; Status: cint);
+procedure TSQLiteLibrary.Check(Status: cint; const Operation: string);
 begin
   if Status <> SQLITE_OK then
-    raise EScuError.CreateFmt('SQLite library error: %s', [StrPas(sqlite3_errmsg(Database))]);
+    raise EScuError.CreateFmt('SQLite library error while %s in "%s": %s',
+      [Operation, FPath, StrPas(sqlite3_errmsg(FHandle))]);
 end;
 
-constructor TSQLiteStatement.Create(Database: psqlite3; const SQL: RawByteString);
+constructor TSQLiteStatement.Create(Database: TSQLiteLibrary; const SQL: RawByteString);
 begin
   inherited Create;
   FDatabase := Database;
-  CheckSQLite(FDatabase, sqlite3_prepare_v2(FDatabase, PAnsiChar(SQL), Length(SQL), @FHandle, nil));
+  FDatabase.Check(sqlite3_prepare_v2(FDatabase.FHandle, PAnsiChar(SQL), Length(SQL), @FHandle, nil),
+    'preparing a statement');
 end;
 
 destructor TSQLiteStatement.Destroy;
@@ -114,18 +119,18 @@ end;
 
 procedure TSQLiteStatement.Bind(Index: Integer; const Value: RawByteString);
 begin
-  CheckSQLite(FDatabase, sqlite3_bind_text(FHandle, Index, PAnsiChar(Value), Length(Value),
-    sqlite3_destructor_type(SQLITE_TRANSIENT)));
+  FDatabase.Check(sqlite3_bind_text(FHandle, Index, PAnsiChar(Value), Length(Value),
+    sqlite3_destructor_type(SQLITE_TRANSIENT)), 'binding a statement parameter');
 end;
 
 procedure TSQLiteStatement.Bind(Index: Integer; Value: Int64);
 begin
-  CheckSQLite(FDatabase, sqlite3_bind_int64(FHandle, Index, Value));
+  FDatabase.Check(sqlite3_bind_int64(FHandle, Index, Value), 'binding a statement parameter');
 end;
 
 procedure TSQLiteStatement.BindNull(Index: Integer);
 begin
-  CheckSQLite(FDatabase, sqlite3_bind_null(FHandle, Index));
+  FDatabase.Check(sqlite3_bind_null(FHandle, Index), 'binding a statement parameter');
 end;
 
 function TSQLiteStatement.Step: Boolean;
@@ -137,7 +142,7 @@ begin
     SQLITE_ROW: Exit(True);
     SQLITE_DONE: Exit(False);
   end;
-  CheckSQLite(FDatabase, Status);
+  FDatabase.Check(Status, 'running a statement');
   Result := False;
 end;
 
@@ -169,6 +174,7 @@ var
   Flags, Handle, OpenStatus: cint;
 begin
   inherited Create;
+  FPath := Path;
   FReadOnly := ReadOnly;
   if ReadOnly then
     Flags := SQLITE_OPEN_READONLY
@@ -180,15 +186,15 @@ begin
     begin
       Handle := fpOpen(Path, O_WRONLY or O_CREAT or O_EXCL or O_CLOEXEC, &600);
       if Handle < 0 then
-        RaiseLastOSError(fpGetErrNo);
+        RaiseSystemError('Could not create SQLite library "' + Path + '"', fpGetErrNo);
       fpClose(Handle);
       SyncParent(Path);
     end;
     Flags := Flags or SQLITE_OPEN_CREATE;
   end;
   OpenStatus := sqlite3_open_v2(PAnsiChar(Path), @FHandle, Flags, nil);
-  CheckSQLite(FHandle, OpenStatus);
-  CheckSQLite(FHandle, sqlite3_busy_timeout(FHandle, 5000));
+  Check(OpenStatus, 'opening the database');
+  Check(sqlite3_busy_timeout(FHandle, 5000), 'setting the busy timeout');
   if not ReadOnly then
     Execute('PRAGMA synchronous = FULL');
 end;
@@ -202,7 +208,7 @@ end;
 
 procedure TSQLiteLibrary.Execute(const SQL: RawByteString);
 begin
-  CheckSQLite(FHandle, sqlite3_exec(FHandle, PAnsiChar(SQL), nil, nil, nil));
+  Check(sqlite3_exec(FHandle, PAnsiChar(SQL), nil, nil, nil), 'executing SQL');
 end;
 
 procedure TSQLiteLibrary.BeginTransaction(ReadOnly: Boolean);
@@ -223,7 +229,7 @@ var
   Statement: TSQLiteStatement;
 begin
   Result := '';
-  Statement := TSQLiteStatement.Create(FHandle, SQL);
+  Statement := TSQLiteStatement.Create(Self, SQL);
   try
     if Statement.Step then
       Result := Statement.Text[0];
@@ -316,7 +322,7 @@ var
   Status: string;
 begin
   // Follow each build's expansion outcome back to the command that produced it.
-  Statement := TSQLiteStatement.Create(FHandle,
+  Statement := TSQLiteStatement.Create(Self,
     'WITH events AS MATERIALIZED (' +
       'SELECT sequence, substr(line, 1, 64) AS digest, substr(line, 66) AS payload FROM audit_records' +
     '), successful_builds AS MATERIALIZED (' +
@@ -361,7 +367,7 @@ function TSQLiteLibrary.ReadExpansionCheckpoint(const Version, Directory: string
 var
   Statement: TSQLiteStatement;
 begin
-  Statement := TSQLiteStatement.Create(FHandle, 'SELECT revision, comment_prefix, build_pending FROM expansion_checkpoints ' +
+  Statement := TSQLiteStatement.Create(Self, 'SELECT revision, comment_prefix, build_pending FROM expansion_checkpoints ' +
     'WHERE version = ? AND output_directory = ?');
   try
     Statement.Bind(1, Version);
@@ -385,7 +391,7 @@ function TSQLiteLibrary.ResetExpansionCheckpoint(const Version, Directory: strin
 var
   Statement: TSQLiteStatement;
 begin
-  Statement := TSQLiteStatement.Create(FHandle, 'UPDATE expansion_checkpoints SET comment_prefix = NULL ' +
+  Statement := TSQLiteStatement.Create(Self, 'UPDATE expansion_checkpoints SET comment_prefix = NULL ' +
     'WHERE version = ? AND output_directory = ?');
   try
     Statement.Bind(1, Version);
@@ -403,7 +409,7 @@ var
 begin
   // NULL preserves the last successful revision while requiring a full refresh.
   // A batch with work can also replace files from a different version.
-  Statement := TSQLiteStatement.Create(FHandle, 'UPDATE expansion_checkpoints SET comment_prefix = NULL ' +
+  Statement := TSQLiteStatement.Create(Self, 'UPDATE expansion_checkpoints SET comment_prefix = NULL ' +
     'WHERE output_directory = ?2 AND comment_prefix IS NOT NULL AND (' +
     '(version = ?1 AND comment_prefix <> ?3) OR (version <> ?1 AND EXISTS (' +
     'SELECT 1 FROM deck_revisions WHERE library_version = ?1 AND sequence > COALESCE((' +
@@ -425,7 +431,7 @@ procedure TSQLiteLibrary.SaveExpansionCheckpoint(const Version, Directory, Prefi
 var
   Statement: TSQLiteStatement;
 begin
-  Statement := TSQLiteStatement.Create(FHandle, 'INSERT INTO expansion_checkpoints ' +
+  Statement := TSQLiteStatement.Create(Self, 'INSERT INTO expansion_checkpoints ' +
     '(version, output_directory, revision, comment_prefix, build_pending) VALUES (?, ?, ?, ?, ?) ' +
     'ON CONFLICT(version, output_directory) DO UPDATE SET ' +
     'revision = excluded.revision, comment_prefix = excluded.comment_prefix, build_pending = excluded.build_pending');
@@ -447,8 +453,21 @@ begin
 end;
 
 function TSQLiteLibrary.RevisionCount: Integer;
+var
+  Statement: TSQLiteStatement;
+  Count: Int64;
 begin
-  Result := StrToInt(Scalar('SELECT count(*) FROM deck_revisions'));
+  Statement := TSQLiteStatement.Create(Self, 'SELECT count(*) FROM deck_revisions');
+  try
+    if not Statement.Step then
+      raise EScuError.CreateFmt('Missing SQLite revision count in "%s".', [FPath]);
+    Count := Statement.Int64s[0];
+    if (Count < 0) or (Count > High(Integer)) then
+      raise EScuError.CreateFmt('SQLite revision count %d in "%s" is out of range.', [Count, FPath]);
+    Result := Count;
+  finally
+    Statement.Free;
+  end;
 end;
 
 function TSQLiteLibrary.ReadMetadata: TJSONObject;
@@ -458,7 +477,7 @@ begin
   Metadata := Scalar('SELECT payload FROM library WHERE id = 1');
   if Metadata = '' then
     raise EScuError.Create('The SQLite library has not been initialized.');
-  Result := ParseObject(Metadata);
+  Result := ParseObject(Metadata, 'SQLite library metadata in "' + FPath + '"');
 end;
 
 function TSQLiteLibrary.GetCurrentVersion: string;
@@ -479,7 +498,7 @@ var
   Sequence: Int64;
 begin
   Sequence := 0;
-  Statement := TSQLiteStatement.Create(FHandle,
+  Statement := TSQLiteStatement.Create(Self,
     'SELECT sequence, deck_name, deck_revision FROM deck_revisions ORDER BY sequence');
   try
     while Statement.Step do
@@ -501,14 +520,14 @@ var
   IndexMetadata: RawByteString;
 begin
   if FSchemaVersion >= 5 then
-    Statement := TSQLiteStatement.Create(FHandle, 'SELECT payload, copy_metadata FROM deck_revisions WHERE sequence = ?')
+    Statement := TSQLiteStatement.Create(Self, 'SELECT payload, copy_metadata FROM deck_revisions WHERE sequence = ?')
   else
-    Statement := TSQLiteStatement.Create(FHandle, 'SELECT payload FROM deck_revisions WHERE sequence = ?');
+    Statement := TSQLiteStatement.Create(Self, 'SELECT payload FROM deck_revisions WHERE sequence = ?');
   try
     Statement.Bind(1, Sequence);
     if not Statement.Step then
       raise EScuError.CreateFmt('SQLite library revision %d is missing.', [Sequence]);
-    Result := ParseObject(Statement.Text[0]);
+    Result := ParseObject(Statement.Text[0], Format('SQLite revision %d payload in "%s"', [Sequence, FPath]));
     if FSchemaVersion >= 5 then
     begin
       Metadata := Result.Find('copy_metadata');
@@ -531,7 +550,7 @@ begin
   Result := '';
   if FSchemaVersion < 5 then
     Exit;
-  Statement := TSQLiteStatement.Create(FHandle, 'SELECT copy_metadata FROM deck_revisions WHERE sequence = ?');
+  Statement := TSQLiteStatement.Create(Self, 'SELECT copy_metadata FROM deck_revisions WHERE sequence = ?');
   try
     Statement.Bind(1, Sequence);
     if Statement.Step then
@@ -545,7 +564,7 @@ procedure TSQLiteLibrary.CacheCopyMetadata(Sequence: Integer; const Metadata: Ra
 var
   Statement: TSQLiteStatement;
 begin
-  Statement := TSQLiteStatement.Create(FHandle, 'UPDATE deck_revisions SET copy_metadata = ? WHERE sequence = ? AND copy_metadata IS NULL');
+  Statement := TSQLiteStatement.Create(Self, 'UPDATE deck_revisions SET copy_metadata = ? WHERE sequence = ? AND copy_metadata IS NULL');
   try
     Statement.Bind(1, Metadata);
     Statement.Bind(2, Sequence);
@@ -560,7 +579,7 @@ var
   Statement: TSQLiteStatement;
   Name: string;
 begin
-  Statement := TSQLiteStatement.Create(FHandle, 'SELECT stored.deck_name, stored.copy_metadata FROM (' +
+  Statement := TSQLiteStatement.Create(Self, 'SELECT stored.deck_name, stored.copy_metadata FROM (' +
     'SELECT max(sequence) AS sequence FROM deck_revisions WHERE sequence <= ? GROUP BY deck_name' +
     ') AS visible JOIN deck_revisions AS stored ON stored.sequence = visible.sequence');
   try
@@ -573,7 +592,8 @@ begin
         if Statement.IsNull(1) then
           Result.Add(Name)
         else
-          Result.Add(Name, ParseObject(Statement.Text[1]));
+          Result.Add(Name, ParseObject(Statement.Text[1],
+            Format('SQLite COPY metadata for deck "%s" in "%s"', [Name, FPath])));
       end;
     except
       Result.Free;
@@ -588,7 +608,7 @@ procedure TSQLiteLibrary.SaveMetadata(const Payload: RawByteString);
 var
   Statement: TSQLiteStatement;
 begin
-  Statement := TSQLiteStatement.Create(FHandle, 'INSERT INTO library VALUES (1, lower(hex(randomblob(16))), 1, ?) ' +
+  Statement := TSQLiteStatement.Create(Self, 'INSERT INTO library VALUES (1, lower(hex(randomblob(16))), 1, ?) ' +
     'ON CONFLICT(id) DO UPDATE SET generation = generation + 1, payload = excluded.payload');
   try
     Statement.Bind(1, Payload);
@@ -603,7 +623,7 @@ procedure TSQLiteLibrary.AppendRevision(Sequence: Integer;
 var
   Statement: TSQLiteStatement;
 begin
-  Statement := TSQLiteStatement.Create(FHandle, 'INSERT INTO deck_revisions ' +
+  Statement := TSQLiteStatement.Create(Self, 'INSERT INTO deck_revisions ' +
     '(sequence, deck_name, library_version, deck_revision, payload, copy_metadata) VALUES (?, ?, ?, ?, ?, ?)');
   try
     Statement.Bind(1, Sequence);
@@ -636,7 +656,7 @@ begin
   State := Default(TAuditState);
   if FSchemaVersion < 4 then
     Exit(False);
-  Statement := TSQLiteStatement.Create(FHandle, 'SELECT record_count, head, pending, pending_command, interrupted, initialized ' +
+  Statement := TSQLiteStatement.Create(Self, 'SELECT record_count, head, pending, pending_command, interrupted, initialized ' +
     'FROM audit_state WHERE id = 1');
   try
     Result := Statement.Step;
@@ -657,7 +677,7 @@ procedure TSQLiteLibrary.SaveAuditState(const State: TAuditState);
 var
   Statement: TSQLiteStatement;
 begin
-  Statement := TSQLiteStatement.Create(FHandle, 'INSERT INTO audit_state VALUES (1, ?, ?, ?, ?, ?, ?)');
+  Statement := TSQLiteStatement.Create(Self, 'INSERT INTO audit_state VALUES (1, ?, ?, ?, ?, ?, ?)');
   try
     Statement.Bind(1, State.RecordCount);
     Statement.Bind(2, State.Head);
@@ -680,7 +700,7 @@ function TSQLiteLibrary.ReadAuditTail(out Sequence: Int64; out Line, PreviousDig
 var
   Statement: TSQLiteStatement;
 begin
-  Statement := TSQLiteStatement.Create(FHandle, 'SELECT tail.sequence, tail.line, ' +
+  Statement := TSQLiteStatement.Create(Self, 'SELECT tail.sequence, tail.line, ' +
     '(SELECT substr(line, 1, 64) FROM audit_records WHERE sequence = tail.sequence - 1) ' +
     'FROM audit_records AS tail ORDER BY tail.sequence DESC LIMIT 1');
   try
@@ -699,7 +719,7 @@ function TSQLiteLibrary.HasAuditDigest(const Digest: string): Boolean;
 var
   Statement: TSQLiteStatement;
 begin
-  Statement := TSQLiteStatement.Create(FHandle, 'SELECT 1 FROM audit_records WHERE substr(line, 1, 64) = ? LIMIT 1');
+  Statement := TSQLiteStatement.Create(Self, 'SELECT 1 FROM audit_records WHERE substr(line, 1, 64) = ? LIMIT 1');
   try
     Statement.Bind(1, Digest);
     Result := Statement.Step;
@@ -714,7 +734,7 @@ var
   Sequence: Int64;
 begin
   Sequence := 0;
-  Statement := TSQLiteStatement.Create(FHandle, 'SELECT sequence, line FROM audit_records ORDER BY sequence');
+  Statement := TSQLiteStatement.Create(Self, 'SELECT sequence, line FROM audit_records ORDER BY sequence');
   try
     while Statement.Step do
     begin
@@ -732,7 +752,7 @@ procedure TSQLiteLibrary.ReadCommandHistory(Limit: Int64; Visit: TAuditLineVisit
 var
   Statement: TSQLiteStatement;
 begin
-  Statement := TSQLiteStatement.Create(FHandle, 'SELECT payload FROM (' +
+  Statement := TSQLiteStatement.Create(Self, 'SELECT payload FROM (' +
     'SELECT sequence, substr(line, 66) AS payload FROM audit_records ' +
     'WHERE json_extract(substr(line, 66), ''$.phase'') = ''begin'' ' +
     'ORDER BY sequence DESC LIMIT ?) ORDER BY sequence');
@@ -749,7 +769,7 @@ procedure TSQLiteLibrary.AppendAudit(Sequence: Int64; const Line: RawByteString)
 var
   Statement: TSQLiteStatement;
 begin
-  Statement := TSQLiteStatement.Create(FHandle, 'INSERT INTO audit_records (sequence, line) VALUES (?, ?)');
+  Statement := TSQLiteStatement.Create(Self, 'INSERT INTO audit_records (sequence, line) VALUES (?, ?)');
   try
     Statement.Bind(1, Sequence);
     Statement.Bind(2, Line);

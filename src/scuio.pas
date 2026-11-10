@@ -32,6 +32,7 @@ procedure AtomicWrite(const Path: string; Data: TStream; ReplaceExisting: Boolea
 function MakeTempDirectory(const Prefix: string): string;
 procedure SyncFile(Handle: THandle; const Path: string);
 procedure SyncParent(const Path: string);
+procedure RaiseSystemError(const Action: string; ErrorCode: Integer);
 function UtcNow: TDateTime;
 function UtcTimestamp(Value: TDateTime): string;
 procedure WriteDiagnostic(const Message: string);
@@ -40,6 +41,14 @@ implementation
 
 uses
   BaseUnix, Unix, DateUtils, InitC, Linux;
+
+type
+  EScuSystemError = class(EScuError);
+
+procedure RaiseSystemError(const Action: string; ErrorCode: Integer);
+begin
+  raise EScuSystemError.CreateFmt('%s: %s', [Action, SysErrorMessage(ErrorCode)]);
+end;
 
 procedure WriteDiagnostic(const Message: string);
 begin
@@ -63,7 +72,7 @@ begin
   Result := IncludeTrailingPathDelimiter(ExpandFileName(GetTempDir(False))) + Prefix + '-XXXXXX';
   UniqueString(Result);
   if mkdtemp(PChar(Result)) = nil then
-    raise EScuError.CreateFmt('Could not create temporary directory: %s', [SysErrorMessage(cerrno)]);
+    RaiseSystemError('Could not create temporary directory "' + Result + '"', cerrno);
 end;
 
 function CanonicalFile(const Path: string): string;
@@ -95,9 +104,11 @@ begin
   inherited Create;
   FHandle := fpOpen(Path, O_RDWR or O_CREAT or O_NOFOLLOW or O_CLOEXEC, &600);
   if FHandle < 0 then
-    RaiseLastOSError(fpGetErrNo);
-  if (fpFStat(FHandle, Info) <> 0) or not FPS_ISREG(Info.st_mode) then
-    raise EScuError.Create('Expected a regular library lock file.');
+    RaiseSystemError('Could not open lock file "' + Path + '"', fpGetErrNo);
+  if fpFStat(FHandle, Info) <> 0 then
+    RaiseSystemError('Could not inspect lock file "' + Path + '"', fpGetErrNo);
+  if not FPS_ISREG(Info.st_mode) then
+    raise EScuError.CreateFmt('Expected a regular lock file at "%s".', [Path]);
   Flags := LOCK_EX;
   if Assigned(StopWaiting) or Assigned(CheckInterrupt) then
     Flags := Flags or LOCK_NB;
@@ -110,7 +121,7 @@ begin
     if Error = ESysEINTR then
       Continue;
     if (Flags = LOCK_EX) or (Error <> ESysEWOULDBLOCK) then
-      RaiseLastOSError(Error);
+      RaiseSystemError('Could not acquire lock "' + Path + '"', Error);
     if Assigned(StopWaiting) and StopWaiting() then
       raise EScuError.CreateFmt('Library lock %s is busy during shutdown.', [Path]);
     Sleep(20);
@@ -139,7 +150,7 @@ begin
   end;
   Error := fpGetErrNo;
   if Error <> ESysENOENT then
-    RaiseLastOSError(Error);
+    RaiseSystemError('Could not inspect "' + Path + '"', Error);
   Result := False;
 end;
 
@@ -153,7 +164,9 @@ begin
   if Handle < 0 then
     raise EScuError.CreateFmt('Could not open %s: %s', [Path, SysErrorMessage(fpGetErrNo)]);
   try
-    if (fpFStat(Handle, Info) <> 0) or not FPS_ISREG(Info.st_mode) then
+    if fpFStat(Handle, Info) <> 0 then
+      RaiseSystemError('Could not inspect opened file "' + Path + '"', fpGetErrNo);
+    if not FPS_ISREG(Info.st_mode) then
       raise EScuError.CreateFmt('Expected a regular file: %s', [Path]);
     if (Info.st_size < 0) or (Info.st_size > Limit) then
       raise EScuError.CreateFmt('File exceeds the %d-byte limit: %s', [Limit, Path]);
@@ -162,7 +175,12 @@ begin
     begin
       Stream := THandleStream.Create(Handle);
       try
-        Stream.ReadBuffer(Result[1], Length(Result));
+        try
+          Stream.ReadBuffer(Result[1], Length(Result));
+        except
+          on E: EStreamError do
+            raise EScuError.CreateFmt('Could not read "%s": %s', [Path, E.Message]);
+        end;
       finally
         Stream.Free;
       end;
@@ -175,7 +193,7 @@ end;
 procedure SyncFile(Handle: THandle; const Path: string);
 begin
   if fpFsync(Handle) <> 0 then
-    raise EScuError.CreateFmt('Could not sync %s: %s', [Path, SysErrorMessage(fpGetErrNo)]);
+    RaiseSystemError('Could not sync "' + Path + '"', fpGetErrNo);
 end;
 
 procedure SyncParent(const Path: string);
@@ -186,7 +204,7 @@ begin
   Parent := ExtractFileDir(Path);
   Handle := fpOpen(Parent, O_RDONLY or O_DIRECTORY);
   if Handle < 0 then
-    RaiseLastOSError(fpGetErrNo);
+    RaiseSystemError('Could not open parent directory "' + Parent + '" for "' + Path + '"', fpGetErrNo);
   try
     SyncFile(Handle, Parent);
   finally
@@ -212,8 +230,13 @@ begin
     try
       Stream := THandleStream.Create(Handle);
       try
-        if Data.Size > Data.Position then
-          Stream.CopyFrom(Data, Data.Size - Data.Position);
+        try
+          if Data.Size > Data.Position then
+            Stream.CopyFrom(Data, Data.Size - Data.Position);
+        except
+          on E: EStreamError do
+            raise EScuError.CreateFmt('Could not write "%s": %s', [Path, E.Message]);
+        end;
         if SourceOutput then
         begin
           if (fpLStat(Path, Info) = 0) and FPS_ISREG(Info.st_mode) then
@@ -225,7 +248,7 @@ begin
             Mode := &666 and not Mask;
           end;
           if fchmod(Handle, Mode) <> 0 then
-            RaiseLastOSError(cerrno);
+            RaiseSystemError('Could not set permissions for "' + Path + '"', cerrno);
         end;
         SyncFile(Handle, TempPath);
       finally
@@ -245,7 +268,7 @@ begin
     try
       SyncParent(Path);
     except
-      on E: Exception do
+      on E: EScuSystemError do
         raise EScuError.CreateFmt('%s was replaced but its directory could not be synced: %s',
           [Path, E.Message]);
     end;
@@ -272,7 +295,7 @@ var
   Time: TTimeVal;
 begin
   if fpGetTimeOfDay(@Time, nil) <> 0 then
-    RaiseLastOSError(fpGetErrNo);
+    RaiseSystemError('Could not read the system clock', fpGetErrNo);
   Result := UnixToDateTime(Time.tv_sec) + Time.tv_usec / 86400000000.0;
 end;
 

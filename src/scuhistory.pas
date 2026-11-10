@@ -51,9 +51,9 @@ begin
     raise EScuError.CreateFmt('Could not create state directory %s.', [StateDir]);
   Directory := IncludeTrailingPathDelimiter(StateDir) + 'scu';
   if (fpMkDir(Directory, &700) <> 0) and (fpGetErrNo <> ESysEEXIST) then
-    RaiseLastOSError(fpGetErrNo);
+    RaiseSystemError('Could not create SCU state directory "' + Directory + '"', fpGetErrNo);
   if fpLStat(Directory, Info) <> 0 then
-    RaiseLastOSError(fpGetErrNo);
+    RaiseSystemError('Could not inspect SCU state directory "' + Directory + '"', fpGetErrNo);
   if not FPS_ISDIR(Info.st_mode) or (Info.st_uid <> fpGetEUID) or
     ((Info.st_mode and &022) <> 0) then
     raise EScuError.CreateFmt('Expected a user-owned SCU state directory at %s.', [Directory]);
@@ -74,18 +74,18 @@ begin
   PreviousCodePage := DefaultSystemCodePage;
   DefaultSystemCodePage := CP_UTF8;
   try
-    Data := ParseJSON(Bytes);
+    Data := ParseJSON(Bytes, 'Command history file "' + Path + '"');
   finally
     DefaultSystemCodePage := PreviousCodePage;
   end;
   try
     if not (Data is TJSONArray) or (Data.Count > MaxHistoryEntries) then
-      raise EScuError.Create('Invalid command history.');
+      raise EScuError.CreateFmt('Invalid command history in "%s".', [Path]);
     for Index := 0 to Data.Count - 1 do
       if (Data.Items[Index].JSONType <> jtString) or
         (Length(Data.Items[Index].AsString) > MaxSavedCommandSize) or
         (Pos(#0, Data.Items[Index].AsString) > 0) then
-        raise EScuError.Create('Invalid command history entry.');
+        raise EScuError.CreateFmt('Invalid command history entry %d in "%s".', [Index + 1, Path]);
     Result := TJSONArray(Data);
   except
     Data.Free;

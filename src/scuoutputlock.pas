@@ -27,7 +27,7 @@ implementation
 uses
   BaseUnix, Unix, Linux, SysUtils, ScuIO, ScuSignals;
 
-function TryLock(Handle: THandle): Boolean;
+function TryLock(Handle: THandle; const Directory: string): Boolean;
 var
   Status, Error: cint;
 begin
@@ -36,7 +36,7 @@ begin
     Error := fpGetErrNo;
   until (Status = 0) or (Error <> ESysEINTR);
   if (Status <> 0) and (Error <> ESysEWOULDBLOCK) then
-    RaiseLastOSError(Error);
+    RaiseSystemError('Could not lock output directory "' + Directory + '"', Error);
   Result := Status = 0;
 end;
 
@@ -50,9 +50,9 @@ begin
   FBorrowedHandle := -1;
   FHandle := fpOpen(Directory, O_RDONLY or O_DIRECTORY or O_CLOEXEC);
   if FHandle < 0 then
-    RaiseLastOSError(fpGetErrNo);
+    RaiseSystemError('Could not open output directory "' + Directory + '"', fpGetErrNo);
   CheckSessionInterrupt;
-  FOwnsLock := TryLock(FHandle);
+  FOwnsLock := TryLock(FHandle, Directory);
   if not FOwnsLock then
   begin
     BuildLock := GetEnvironmentVariable(BuildOutputLockVariable);
@@ -64,7 +64,7 @@ begin
         (InheritedHandle >= 3) and (InheritedHandle <> FHandle) and
         (fpFStat(InheritedHandle, BuildInfo) = 0) and (fpFStat(FHandle, OutputInfo) = 0) and
         (BuildInfo.st_dev = OutputInfo.st_dev) and (BuildInfo.st_ino = OutputInfo.st_ino) and
-        TryLock(InheritedHandle) then
+        TryLock(InheritedHandle, Directory) then
         FBorrowedHandle := InheritedHandle
       else
         // Waiting from inside a build can deadlock its parent or another build.
@@ -76,7 +76,7 @@ begin
           raise EScuError.CreateFmt('Output directory %s is busy during shutdown.', [Directory]);
         Sleep(20);
         CheckSessionInterrupt;
-        FOwnsLock := TryLock(FHandle);
+        FOwnsLock := TryLock(FHandle, Directory);
       until FOwnsLock;
   end;
   CheckSessionInterrupt;

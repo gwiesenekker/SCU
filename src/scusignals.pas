@@ -74,7 +74,7 @@ begin
     fpSigAddSet(Action.sa_mask, SessionSignals[Index]);
   for Index := Low(SessionSignals) to High(SessionSignals) do
     if fpSigAction(SessionSignals[Index], @Action, @Previous[Index]) <> 0 then
-      RaiseLastOSError(fpGetErrNo);
+      RaiseSystemError(Format('Could not install the handler for signal %d', [SessionSignals[Index]]), fpGetErrNo);
 end;
 
 procedure RestoreSessionSignals(const Previous: TSessionSignalHandlers);
@@ -143,14 +143,19 @@ begin
   Stopped := False;
   ChildOwnsInterrupt := ChildHandlesInterrupt;
   try
-    Child.Execute;
+    try
+      Child.Execute;
+    except
+      on E: EProcess do
+        raise EScuError.CreateFmt('Could not start "%s": %s', [Child.Executable, E.Message]);
+    end;
     Pid := Child.ProcessID;
     repeat
       repeat
         Waited := fpWaitPid(Pid, @Status, WaitOptions);
       until (Waited >= 0) or (fpGetErrNo <> ESysEINTR);
       if Waited < 0 then
-        RaiseLastOSError(fpGetErrNo);
+        RaiseSystemError('Could not wait for "' + Child.Executable + '"', fpGetErrNo);
       if Waited = Pid then
       begin
         if not WIfStopped(Status) then

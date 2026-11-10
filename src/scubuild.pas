@@ -72,6 +72,7 @@ begin
       Child.Free;
     end;
   except
+    on E: ECommandCancelled do raise;
     on E: Exception do Result := E.Message;
   end;
 end;

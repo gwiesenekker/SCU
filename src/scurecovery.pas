@@ -98,12 +98,13 @@ end;
 
 function ReadRecovery(Command: TScuCommand): TJSONObject;
 var
-  BasePath: string;
+  BasePath, Path: string;
   Recovery: TJSONObject;
   FormatValue: TJSONData;
 begin
   BasePath := Command.Option('base_library');
-  Recovery := ParseObject(ReadBytes(Command['recovery_file'], High(SizeInt)));
+  Path := Command['recovery_file'];
+  Recovery := ParseObject(ReadBytes(Path, High(SizeInt)), 'Recovery file "' + Path + '"');
   try
     FormatValue := Recovery.Find('format');
     if Assigned(FormatValue) and (FormatValue.JSONType = jtNumber) and

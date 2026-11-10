@@ -90,7 +90,7 @@ var
   end;
 
 begin
-  Event := ParseObject(Payload);
+  Event := ParseObject(Payload, 'Audit history entry');
   try
     Result := Field(Event, 'command', jtString).AsString;
     AddParameters('parameters');
@@ -236,7 +236,7 @@ begin
   if Digest <> AuditSHA256(AuditDomain + FHead + ' ' + Payload) then
     raise EScuError.CreateFmt('Audit digest mismatch at record %d.', [FRecords]);
 
-  Event := ParseObject(Payload);
+  Event := ParseObject(Payload, Format('Audit record %d in "%s"', [FRecords, FDatabase.Path]));
   try
     Phase := Field(Event, 'phase', jtString).AsString;
     if Phase = 'begin' then

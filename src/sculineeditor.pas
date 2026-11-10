@@ -83,13 +83,13 @@ begin
       Ready := fpPoll(@Handles[0], Length(Handles), Timeout);
     until (Ready >= 0) or (fpGetErrNo <> ESysEINTR);
     if Ready < 0 then
-      RaiseLastOSError(fpGetErrNo);
+      RaiseSystemError('Could not poll terminal input', fpGetErrNo);
     if Ready = 0 then
       Exit(0);
     if (Handles[1].revents and POLLIN) <> 0 then
     begin
       if fpRead(SignalHandle, SignalData, SizeOf(SignalData)) < 0 then
-        RaiseLastOSError(fpGetErrNo);
+        RaiseSystemError('Could not read terminal signals', fpGetErrNo);
       case PCardinal(@SignalData[0])^ of
         SIGINT: raise ECommandCancelled.Create('Command cancelled.');
         SIGTSTP: Exit(TerminalSuspended);
@@ -107,7 +107,7 @@ begin
     Exit(0);
   end;
   if Result < 0 then
-    RaiseLastOSError(fpGetErrNo);
+    RaiseSystemError('Could not read terminal input', fpGetErrNo);
 end;
 
 function PreviousCharacter(const Text: string; Offset: SizeInt): SizeInt;
@@ -620,6 +620,7 @@ begin
         Copy(FLine, FCursor + 1, MaxInt), Candidates, AppendCharacter);
     except
       // A partial command or inaccessible completion source must remain editable.
+      on E: ECommandCancelled do raise;
       on E: Exception do Exit;
     end;
     if Candidates.Count = 0 then
@@ -743,13 +744,13 @@ begin
     fpSigAddSet(Signals, SIGWINCH);
   end;
   if fpSigProcMask(SIG_BLOCK, @Signals, @Previous) <> 0 then
-    RaiseLastOSError(fpGetErrNo);
+    RaiseSystemError('Could not block signals while reading the terminal', fpGetErrNo);
   try
     if SessionSignal <> 0 then
       Exit(False);
     SignalHandle := signalfd(-1, @Signals, O_CLOEXEC);
     if SignalHandle < 0 then
-      RaiseLastOSError(cerrno);
+      RaiseSystemError('Could not open the terminal signal descriptor', cerrno);
     try
       if not RawMode then
       begin
@@ -764,14 +765,14 @@ begin
       end;
 
       if TCGetAttr(StdInputHandle, Original) <> 0 then
-        RaiseLastOSError(fpGetErrNo);
+        RaiseSystemError('Could not read terminal attributes', fpGetErrNo);
       Editing := Original;
       Editing.c_lflag := Editing.c_lflag and not (ICANON or ECHO or ISIG or IEXTEN);
       Editing.c_iflag := Editing.c_iflag and not (IXON or IXOFF);
       Editing.c_cc[VMIN] := 1;
       Editing.c_cc[VTIME] := 0;
       if TCSetAttr(StdInputHandle, TCSANOW, Editing) <> 0 then
-        RaiseLastOSError(fpGetErrNo);
+        RaiseSystemError('Could not enable terminal editing mode', fpGetErrNo);
       try
         UseTerminalLocale;
         Editor := TLineEditor.Create(Prompt, History, Completion, SignalHandle, Original, Editing);

@@ -106,15 +106,15 @@ begin
   Result := LowerCase(Name);
 end;
 
-procedure ValidateEditor(Args: TJSONArray);
+procedure ValidateEditor(Args: TJSONArray; const Source: string);
 var
   Index: Integer;
 begin
   if (Args.Count = 0) or (Args.Items[0].JSONType <> jtString) or (Args.Strings[0] = '') then
-    raise EScuError.Create('The editor must be a JSON array beginning with an executable.');
+    raise EScuError.CreateFmt('%s: The editor must be a JSON array beginning with an executable.', [Source]);
   for Index := 0 to Args.Count - 1 do
     if (Args.Items[Index].JSONType <> jtString) or (Pos(#0, Args.Strings[Index]) > 0) then
-      raise EScuError.Create('Editor arguments must be strings without NUL bytes.');
+      raise EScuError.CreateFmt('%s: Editor arguments must be strings without NUL bytes.', [Source]);
 end;
 
 function NewLibraryMetadata(const Version: string): TJSONObject;
@@ -166,7 +166,7 @@ begin
     (Field(Header, 'comment_prefix', jtString).AsString <> FVersions.CommentPrefix(FVersions.Current)) then
     raise EScuError.Create('The library header does not match the current version.');
   Editor := TJSONArray(Field(Header, 'editor', jtArray));
-  ValidateEditor(Editor);
+  ValidateEditor(Editor, 'Library header');
   SetLength(FEditor, Editor.Count);
   for Index := 0 to Editor.Count - 1 do
     FEditor[Index] := Editor.Strings[Index];
@@ -264,7 +264,7 @@ begin
     RevisionValue := FormatFixed(NewRevisionStep, 3);
   end;
   if Assigned(NewEditor) then
-    ValidateEditor(NewEditor);
+    ValidateEditor(NewEditor, 'Invalid value for --editor');
   if ChangeBuild and (Pos(#0, NewBuildCommand) > 0) then
     raise EScuError.Create('The build command cannot contain NUL bytes.');
   if ChangePrefix and (Prefix <> Versions.CommentPrefix(Versions.Current)) then
@@ -359,7 +359,7 @@ begin
     raise EScuError.CreateFmt('Invalid modification timestamp for deck "%s".', [Name]);
   FEncoded := Field(FPayload, 'zstd_base64', jtString).AsString;
   FSHA1 := Field(FPayload, 'sha1', jtString).AsString;
-  FSize := IntegerField(FPayload, 'size');
+  FSize := IntegerField(FPayload, 'size', 'Deck "' + Name + '" revision payload');
   FSourceFieldsRead := True;
 end;
 

@@ -95,9 +95,9 @@ begin
   try
     if Context.Command.HasOption('editor') then
     begin
-      Editor := ParseJSON(Context.Command.Option('editor'));
+      Editor := ParseJSON(Context.Command.Option('editor'), 'Invalid JSON for --editor');
       if not (Editor is TJSONArray) then
-        raise EScuError.Create('The editor must be a JSON array of strings.');
+        raise EScuError.Create('Invalid value for --editor: The editor must be a JSON array of strings.');
     end;
     if not ChangePrefix and not ChangeBuild and (Editor = nil) and
       (VersionIncrement = '') and (RevisionIncrement = '') then

@@ -792,6 +792,48 @@ class ScuIntegration(unittest.TestCase):
                              (json.dumps(json.loads(stored_revision), sort_keys=True),))
             self.run_scu(restored, "verify_audit_trail", error="Library revision 1 does not match the audit log")
 
+    def test_json_diagnostics_identify_the_option_file_and_revision(self):
+        original = self.read_library()["header"]
+        self.run_scu("configure_library", "editor=notjson", error="Invalid JSON for --editor:")
+        failure = json.loads(self.audit_lines()[-1].split(b" ", 1)[1])
+        self.assertFalse(failure["success"])
+        self.assertIn("Invalid JSON for --editor:", failure["detail"])
+        self.assertEqual(self.read_library()["header"], original)
+
+        recovery = self.root / "malformed recovery.json"
+        recovery.write_text("{ invalid")
+        restored = self.root / "restored.sqlite"
+        self.run_scu(restored, "recover_library", recovery, error=f'Recovery file "{recovery}":')
+        self.assertFalse(restored.exists())
+
+        self.store("main", b"source")
+        with closing(sqlite3.connect(self.library, isolation_level=None)) as database:
+            database.execute("UPDATE deck_revisions SET payload = '{ invalid' WHERE sequence = 1")
+        self.run_scu("extract_deck", "main", "output",
+                     error=f'SQLite revision 1 payload in "{self.library}":')
+        self.assertFalse((self.root / "output").exists())
+
+    def test_filesystem_and_sqlite_diagnostics_identify_the_affected_path(self):
+        invalid = self.root / "invalid database.sqlite"
+        invalid.write_bytes(b"This is not a SQLite database." * 100)
+        self.run_scu(invalid, "verify_audit_trail", error=f'in "{invalid}": file is not a database')
+
+        lock = self.library.with_suffix(".sqlite.lock")
+        lock.unlink()
+        lock.symlink_to(invalid)
+        before = self.audit_lines()
+        self.run_scu("lock_version", error=f'Could not open lock file "{lock}":')
+        self.assertEqual(self.audit_lines(), before)
+        self.assertTrue(lock.is_symlink())
+
+    def test_conversion_diagnostic_identifies_the_deck_and_field(self):
+        self.store("main", b"source")
+        with closing(sqlite3.connect(self.library, isolation_level=None)) as database:
+            database.execute("UPDATE deck_revisions SET payload = json_set(payload, '$.size', 1.5) WHERE sequence = 1")
+        self.run_scu("extract_deck", "main", "output",
+                     error='Deck "main" revision payload: Expected an integer in JSON field "size".')
+        self.assertFalse((self.root / "output").exists())
+
     def test_interactive_audit_detects_changes_from_other_processes(self):
         for mode in ("delete", "wal"):
             library = self.root / f"shared-{mode}.sqlite"
@@ -2268,25 +2310,41 @@ class ScuIntegration(unittest.TestCase):
         self.store("main", b"//SCU_COPY middle\n")
         destination = self.root / "expanded"
         destination.write_bytes(b"existing output")
-        with self.terminal_session(TERM="dumb", controlling=True) as (process, terminal, read_until):
-            read_until(b"scu> ")
-            scheduler_stats = Path(f"/proc/{process.pid}/schedstat")
-            cpu_before = int(scheduler_stats.read_text().split()[0])
-            os.write(terminal, b"expand_deck main expanded build=no\n")
-            # The wrappers contain only COPY. Let the process enter the large leaf
-            # before signalling it, even if the runner is busy scheduling other tasks.
-            deadline = time.monotonic() + 5
-            while int(scheduler_stats.read_text().split()[0]) - cpu_before < 40_000_000:
-                self.assertLess(time.monotonic(), deadline, "SCU did not reach the nested expansion")
-                time.sleep(0.005)
-            os.write(terminal, b"\x03")
-            response = read_until(b"scu> ")
-            self.assertEqual(response.count(b"Command cancelled."), 1, response)
-            self.assertIn(b"Command cancelled.", response.replace(b"^C", b"").splitlines())
-            os.write(terminal, b"list_versions\n")
-            self.assertIn(b"1.0\topen", read_until(b"scu> "))
-            os.write(terminal, b"quit\n")
-            self.assertEqual(process.wait(timeout=5), 0)
+        for reject_outcome in (False, True):
+            if reject_outcome:
+                with closing(sqlite3.connect(self.library, isolation_level=None)) as database:
+                    database.execute("""
+                        CREATE TRIGGER reject_cancelled_outcome BEFORE INSERT ON audit_records
+                        WHEN json_extract(substr(NEW.line, 66), '$.detail') = 'Command cancelled.'
+                        BEGIN
+                            SELECT RAISE(ABORT, 'injected cancelled outcome failure');
+                        END
+                    """)
+            with self.subTest(reject_outcome=reject_outcome):
+                with self.terminal_session(TERM="dumb", controlling=True) as (process, terminal, read_until):
+                    read_until(b"scu> ")
+                    before = self.audit_lines()
+                    scheduler_stats = Path(f"/proc/{process.pid}/schedstat")
+                    cpu_before = int(scheduler_stats.read_text().split()[0])
+                    os.write(terminal, b"expand_deck main expanded build=no\n")
+                    # The wrappers contain only COPY. Let the process enter the large leaf
+                    # before signalling it, even if the runner is busy scheduling other tasks.
+                    deadline = time.monotonic() + 5
+                    while int(scheduler_stats.read_text().split()[0]) - cpu_before < 40_000_000:
+                        self.assertLess(time.monotonic(), deadline, "SCU did not reach the nested expansion")
+                        time.sleep(0.005)
+                    os.write(terminal, b"\x03")
+                    response = read_until(b"scu> ")
+                    self.assertEqual(response.count(b"Command cancelled."), 1, response)
+                    self.assertIn(b"Command cancelled.", response.replace(b"^C", b"").splitlines())
+                    if reject_outcome:
+                        self.assertIn(b"Could not save the audit outcome:", response)
+                        self.assertIn(b"injected cancelled outcome failure", response)
+                        self.assertEqual(self.audit_lines(), before)
+                    os.write(terminal, b"list_versions\n")
+                    self.assertIn(b"1.0\topen", read_until(b"scu> "))
+                    os.write(terminal, b"quit\n")
+                    self.assertEqual(process.wait(timeout=5), 0)
         self.assertEqual(destination.read_bytes(), b"existing output")
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
         begin = next(i for i, event in enumerate(events) if event.get("command") == "expand_deck")

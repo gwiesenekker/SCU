@@ -50,46 +50,66 @@ end;
 
 procedure TScuExecutor.RunBuild(const Build: TBuildRequest; const Expansion: string; OutputLock: THandle);
 var
-  Lock: TLibraryLock;
-  Audit: TAuditLog;
-  Database: TSQLiteLibrary;
   Failure: string;
-begin
-  Failure := RunBuildProcess(Build, FInteractive, OutputLock);
 
-  try
-    // Record the build outcome even when the build was interrupted.
-    Lock := TLibraryLock.Create(FLibraryPath + '.lock', @SessionEnding);
+  procedure RecordOutcome(Cancelled: Boolean);
+  var
+    Lock: TLibraryLock;
+    Audit: TAuditLog;
+    Database: TSQLiteLibrary;
+    Message: string;
+  begin
     try
-      Database := nil;
+      // Record the build outcome even when the build was interrupted.
+      Lock := TLibraryLock.Create(FLibraryPath + '.lock', @SessionEnding);
       try
         Database := TSQLiteLibrary.Create(FLibraryPath, False, False);
-        Database.BeginTransaction(False);
-        Database.EnsureSchema(False);
-        Audit := TAuditLog.Create(Database, Expansion);
         try
-          if (Failure = '') and (Build.Checkpoint.Version <> '') then
-            Database.SaveExpansionCheckpoint(Build.Checkpoint.Version, Build.OutputPath,
-              Build.CommentPrefix, Build.Checkpoint.LibraryRevision, False);
-          Audit.RecordBuild(Expansion, Build.Command, Build.OutputPath, Failure = '', Failure);
-          Database.Commit;
+          Database.BeginTransaction(False);
+          Database.EnsureSchema(False);
+          Audit := TAuditLog.Create(Database, Expansion);
+          try
+            if (Failure = '') and (Build.Checkpoint.Version <> '') then
+              Database.SaveExpansionCheckpoint(Build.Checkpoint.Version, Build.OutputPath,
+                Build.CommentPrefix, Build.Checkpoint.LibraryRevision, False);
+            Audit.RecordBuild(Expansion, Build.Command, Build.OutputPath, Failure = '', Failure);
+            Database.Commit;
+          finally
+            Audit.Free;
+          end;
         finally
-          Audit.Free;
+          Database.Free;
         end;
       finally
-        Database.Free;
+        Lock.Free;
       end;
-    finally
-      Lock.Free;
-    end;
-  except
-    on E: Exception do
-    begin
-      if Failure <> '' then
-        Failure := Failure + ' ';
-      Failure := Failure + 'Could not record build outcome: ' + E.Message;
+    except
+      on E: ECommandCancelled do raise;
+      on E: Exception do
+      begin
+        Message := 'Could not record build outcome: ' + E.Message;
+        if Cancelled then
+          WriteDiagnostic('scu: ' + Message)
+        else if Failure = '' then
+          Failure := Message
+        else
+          Failure := Failure + ' ' + Message;
+      end;
     end;
   end;
+
+begin
+  try
+    Failure := RunBuildProcess(Build, FInteractive, OutputLock);
+  except
+    on E: ECommandCancelled do
+    begin
+      Failure := E.Message;
+      RecordOutcome(True);
+      raise;
+    end;
+  end;
+  RecordOutcome(False);
   if Failure <> '' then
     raise EScuError.Create(Failure);
 end;
@@ -307,9 +327,15 @@ begin
           Audit.EndCommand(False, E.Message, Context.Snapshots, Assigned(FPendingLibrary));
           Context.Database.Commit;
         except
+          on AuditError: ECommandCancelled do raise;
           on AuditError: Exception do
-            raise EScuError.CreateFmt('%s Also could not save the audit outcome: %s',
-              [E.Message, AuditError.Message]);
+          begin
+            if E is ECommandCancelled then
+              WriteDiagnostic('scu: Could not save the audit outcome: ' + AuditError.Message)
+            else
+              raise EScuError.CreateFmt('%s Also could not save the audit outcome: %s',
+                [E.Message, AuditError.Message]);
+          end;
         end;
         raise;
       end;
@@ -323,6 +349,7 @@ begin
       if Context.Build.Command <> '' then
         Expansion := Audit.Head;
     except
+      on E: ECommandCancelled do raise;
       on E: Exception do
         raise EScuError.Create('Could not commit the command outcome: ' + E.Message);
     end;
@@ -366,6 +393,7 @@ begin
   try
     AtomicWrite(Result, Data, False);
   except
+    on E: ECommandCancelled do raise;
     on E: Exception do
     begin
       Result := IncludeTrailingPathDelimiter(MakeTempDirectory('scu-recovery')) + 'library.json';
