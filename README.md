@@ -545,9 +545,10 @@ and apply command defaults. It passes a read-only `TScuCommand` to
 object with canonical names, arguments in catalog order, and named options.
 They can implement `TScuOutput` to capture normal output and diagnostics.
 
-The executor handles library operations and gives that same command object
-to the audit logger. Selectors that depend on a library snapshot resolve
-inside the executor and are recorded in the audit outcome.
+The executor selects a command handler by canonical name and passes the same
+command object to the audit logger. The executor owns locking and transaction
+boundaries. Handlers resolve snapshot selectors and supply the resolved values
+for the executor to record in the audit outcome.
 
 ## Historical reference
 

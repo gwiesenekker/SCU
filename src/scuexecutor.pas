@@ -5,14 +5,10 @@ unit ScuExecutor;
 interface
 
 uses
-  ScuCommand, ScuOutput, ScuLibrary, ScuAudit, ScuSQLite;
+  ScuCommand, ScuOutput, ScuLibrary, ScuCommandHandler;
 
 type
-  TBuildRequest = record
-    Command, OutputPath: string;
-    Checkpoint: TLibrarySnapshot;
-    CommentPrefix: string;
-  end;
+  TBuildRequest = ScuCommandHandler.TBuildRequest;
 
   TScuExecutor = class
   private
@@ -20,17 +16,10 @@ type
     FInteractive: Boolean;
     FOutput: TScuOutput;
     FPendingLibrary: TDeckLibrary;
-    function ResolveSnapshot(Command: TScuCommand; LibraryFile: TDeckLibrary; const Deck: string): TLibrarySnapshot;
-    function OutputPath(const Path: string): string;
-    function OutputFileArgument(Command: TScuCommand): string;
-    function BulkOutputDirectory(Command: TScuCommand): string;
-    function PrefixOption(Command: TScuCommand): string;
-    function ExecuteLibrary(Command: TScuCommand; LibraryFile: TDeckLibrary; Database: TSQLiteLibrary;
-      const OutputDirectory: string; out SnapshotsUsed: TAuditSnapshots; out Build: TBuildRequest): string;
-    procedure RunCommandInDirectory(Command: TScuCommand; const OutputDirectory: string;
+    procedure RunCommand(var Context: TCommandContext; const Handler: TCommandHandler;
       OutputLock: THandle = -1);
+    procedure RestoreLibrary(var Context: TCommandContext; const Handler: TCommandHandler);
     procedure RunBuild(const Build: TBuildRequest; const Expansion: string; OutputLock: THandle);
-    procedure WriteHistoryLine(const Payload: RawByteString);
   public
     constructor Create(const LibraryPath: string; Interactive: Boolean; Output: TScuOutput);
     destructor Destroy; override;
@@ -42,13 +31,8 @@ type
 implementation
 
 uses
-  Classes, SysUtils, BaseUnix, Process, FPJSON, ScuIO, ScuJSON, ScuCodec,
-  ScuExpand, ScuEdit, ScuDiff, ScuCommands, ScuVersions, ScuSignals, ScuRecovery, ScuOutputLock;
-
-const
-  CurrentLibraryVersionSelector = 'scu$current_library_version';
-  LibraryDirectorySelector = 'scu$library_directory';
-  DeckNameSelector = 'scu$deck_name';
+  Classes, SysUtils, BaseUnix, FPJSON, ScuAudit, ScuBuild, ScuCodec, ScuCommandRegistry,
+  ScuIO, ScuOutputLock, ScuRecovery, ScuSignals, ScuSQLite;
 
 constructor TScuExecutor.Create(const LibraryPath: string; Interactive: Boolean; Output: TScuOutput);
 begin
@@ -64,468 +48,14 @@ begin
   inherited Destroy;
 end;
 
-function TScuExecutor.ResolveSnapshot(Command: TScuCommand; LibraryFile: TDeckLibrary; const Deck: string): TLibrarySnapshot;
-var
-  Version: string;
-  Base, Revision: Integer;
-begin
-  if Command.HasOption('version') then
-  begin
-    if Command.HasOption('revision') then
-      raise EScuError.Create('Choose either --version or --revision.');
-    Version := Command.Option('version');
-    if ((Command.Name = 'extract_deck') or (Command.Name = 'expand_deck')) and (Pos('-', Version) > 0) then
-      Exit(LibraryFile.ParseDeckSnapshot(DeckName(Deck), Version));
-    LibraryFile.VersionBounds(Version, Base, Revision);
-  end
-  else if Command.HasOption('revision') then
-  begin
-    Revision := LibraryFile.ParseRevision(Command.Option('revision'));
-    Version := LibraryFile.VersionAt(Revision);
-  end
-  else
-    Exit(LibraryFile.CurrentSnapshot);
-  Result.Version := Version;
-  Result.LibraryRevision := Revision;
-end;
-
-function TScuExecutor.OutputPath(const Path: string): string;
-begin
-  Result := CanonicalFile(Path);
-  if (Result = FLibraryPath) or (Result = FLibraryPath + '.lock') or
-    (Result = FLibraryPath + '-journal') or
-    (Result = FLibraryPath + '-wal') or (Result = FLibraryPath + '-shm') then
-    raise EScuError.Create('The output path would overwrite a library or audit file.');
-  RegularFileExists(Result);
-end;
-
-function TScuExecutor.PrefixOption(Command: TScuCommand): string;
-begin
-  Result := Command.Option('comment-prefix');
-  if Command.HasOption('comment-prefix') then
-    ValidateCommentPrefix(Result);
-end;
-
-function TScuExecutor.OutputFileArgument(Command: TScuCommand): string;
-begin
-  // Older command catalogs use output as the argument name.
-  if not Command.HasArgument('output_file') and Command.HasArgument('output') then
-    Exit(Command['output']);
-  Result := Command['output_file'];
-end;
-
-function TScuExecutor.BulkOutputDirectory(Command: TScuCommand): string;
-begin
-  Result := Command['output_directory'];
-  if (Command.Name = 'expand_modified_decks') and SameText(Result, LibraryDirectorySelector) then
-    Result := ExtractFileDir(CanonicalFile(FLibraryPath));
-end;
-
-function TScuExecutor.ExecuteLibrary(Command: TScuCommand; LibraryFile: TDeckLibrary; Database: TSQLiteLibrary;
-  const OutputDirectory: string; out SnapshotsUsed: TAuditSnapshots; out Build: TBuildRequest): string;
-var
-  Source, OtherSource: TDeckSource;
-  Bytes: RawByteString;
-  Expander: TDeckExpander;
-  Names, Destinations: TStringList;
-  Deck, Name, Path, Version, VersionIncrement, RevisionIncrement, Prefix, Directory, MissingDeckVersion: string;
-  FromSelector: string;
-  Revision, Base, Index, CheckpointRevision: Integer;
-  Previous, FromSnapshot, ToSnapshot: TLibrarySnapshot;
-  Editor: TJSONData;
-  ChangePrefix, ChangeBuild, SaveRequested, UsePriorDeckRevision, Refresh, BuildPending: Boolean;
-
-  function ResolveLastModifiedDeck: string;
-  begin
-    Result := LibraryFile.LastModifiedDeck;
-    if Result = '' then
-      raise EScuError.Create('No deck has been modified in this library.');
-  end;
-
-  function ResolveDeck: string;
-  begin
-    Result := Command['deck_name'];
-    if SameText(Result, LastModifiedDeckSelector) then
-    begin
-      Result := ResolveLastModifiedDeck;
-      SnapshotsUsed.ResolvedDeck := Result;
-    end;
-  end;
-
-  function DeckWriteReport(const Deck: string; StoredRevision: Integer): string;
-  begin
-    if StoredRevision = 0 then
-      Exit('No changes to ' + Deck);
-    Result := Format('%s version %s revision %s, deck version %s',
-      [Deck, LibraryFile.VersionAt(StoredRevision), LibraryFile.DeckRevision[StoredRevision],
-        LibraryFile.DeckVersion[StoredRevision]]);
-  end;
-
-  procedure ReportSnapshot(const LabelText: string; const Snapshot: TLibrarySnapshot);
-  begin
-    FOutput.Report(Format('%s version %s, library revision %d.',
-      [LabelText, Snapshot.Version, Snapshot.LibraryRevision]));
-  end;
-
-  procedure ScheduleBuild(const Target: string);
-  var
-    Enabled: Boolean;
-  begin
-    if not TryParseYesNo(Command.Option('build', 'no'), Enabled) then
-      raise EScuError.Create('Expected yes/y or no/n for build.');
-    if Enabled and (LibraryFile.BuildCommand <> '') then
-    begin
-      Build.Command := LibraryFile.BuildCommand;
-      Build.OutputPath := Target;
-    end;
-  end;
-
-begin
-  Result := '';
-  Build := Default(TBuildRequest);
-  case Command.Name of
-    'save_library', 'quit_session', 'quit':
-      begin
-        SaveRequested := True;
-        if Command.SessionExit and Command.HasArgument('save_library') and
-          not TryParseYesNo(Command['save_library'], SaveRequested) then
-          raise EScuError.Create('Expected yes/y or no/n for save_library.');
-        if not SaveRequested then
-          Result := 'Discarded unsaved library changes.'
-        else if LibraryFile.Modified then
-        begin
-          LibraryFile.Save;
-          SnapshotsUsed.Selected := LibraryFile.CurrentSnapshot;
-          Result := 'Saved library.';
-        end
-        else
-          Result := 'No unsaved library changes.';
-      end;
-    'display_expansion_checkpoints':
-      begin
-        Names := TStringList.Create;
-        try
-          Database.ListExpansionCheckpoints(Names);
-          if Names.Count = 0 then
-            Result := 'No expansion checkpoints.'
-          else
-          begin
-            FOutput.WriteLine('Version'#9'Output directory'#9'Last built library revision'#9'Status'#9 +
-              'Last successful build (UTC)'#9'Checkpoint library revision');
-            for Name in Names do
-              FOutput.WriteLine(Name);
-          end;
-        finally
-          Names.Free;
-        end;
-      end;
-    'reset_expansion_checkpoint':
-      begin
-        Version := Command['version'];
-        LibraryFile.VersionBounds(Version, Base, Revision);
-        if Database.ResetExpansionCheckpoint(Version, OutputDirectory) then
-          Result := Format('Reset expansion checkpoint for version %s in "%s".', [Version, OutputDirectory])
-        else
-          Result := Format('No expansion checkpoint for version %s in "%s".', [Version, OutputDirectory]);
-      end;
-    'display_library':
-      begin
-        SnapshotsUsed.Selected := LibraryFile.CurrentSnapshot;
-        Version := 'none';
-        if LibraryFile.TryPreviousSnapshot(Previous) then
-          Version := Previous.Version;
-        Result := Format('Library "%s", current version %s, previous locked version %s.',
-          [FLibraryPath, SnapshotsUsed.Selected.Version, Version]);
-      end;
-    'show_library':
-      FOutput.WriteLine(LibraryFile.HeaderJSON);
-    'configure_library', 'configure':
-      begin
-        ChangePrefix := Command.HasOption('comment-prefix');
-        ChangeBuild := Command.HasOption('build_command');
-        VersionIncrement := Command.Option('version_increment');
-        RevisionIncrement := Command.Option('revision_increment');
-        if ((Command.HasOption('version_increment')) and (VersionIncrement = '')) or
-          ((Command.HasOption('revision_increment')) and (RevisionIncrement = '')) then
-          raise EScuError.Create('Expected a positive increment.');
-        Editor := nil;
-        try
-          if Command.HasOption('editor') then
-          begin
-            Editor := ParseJSON(Command.Option('editor'));
-            if not (Editor is TJSONArray) then
-              raise EScuError.Create('The editor must be a JSON array of strings.');
-          end;
-          if not ChangePrefix and not ChangeBuild and (Editor = nil) and
-            (VersionIncrement = '') and (RevisionIncrement = '') then
-            raise EScuError.Create('Specify at least one library setting.');
-          LibraryFile.Configure(ChangePrefix, PrefixOption(Command), TJSONArray(Editor), VersionIncrement,
-            RevisionIncrement, ChangeBuild, Command.Option('build_command'));
-          Result := 'Updated library header';
-        finally
-          Editor.Free;
-        end;
-      end;
-    'edit_deck':
-      begin
-        Name := DeckName(ResolveDeck);
-        Result := DeckWriteReport(Name, EditDeck(LibraryFile, Name));
-      end;
-    'create_deck', 'store_deck':
-      begin
-        Deck := ResolveDeck;
-        LibraryFile.RequireOpenVersion;
-        Name := DeckName(Deck);
-        Bytes := '';
-        if Command.Name = 'store_deck' then
-          Path := Command['source_file']
-        else
-          Path := Command['from_file'];
-        if (Command.Name = 'store_deck') or (Path <> '') then
-          Bytes := ReadBytes(Path, MaxDeckSize);
-        Revision := LibraryFile.Store(Name, Bytes, Command.Name = 'create_deck', PrefixOption(Command));
-        Result := DeckWriteReport(Name, Revision);
-      end;
-    'lock_version':
-      begin
-        LibraryFile.LockVersion;
-        Result := 'Locked version ' + LibraryFile.CurrentVersion;
-      end;
-    'start_version':
-      begin
-        LibraryFile.StartVersion(Command['version']);
-        Result := 'Started version ' + LibraryFile.CurrentVersion;
-      end;
-    'display_deck_list', 'list_versions', 'display_deck':
-      begin
-        Names := TStringList.Create;
-        try
-          if Command.Name = 'list_versions' then
-            LibraryFile.ListVersions(Names)
-          else if Command.Name = 'display_deck' then
-            LibraryFile.ListDeckHistory(ResolveDeck, Names)
-          else
-          begin
-            SnapshotsUsed.Selected := ResolveSnapshot(Command, LibraryFile, '');
-            LibraryFile.List(SnapshotsUsed.Selected.LibraryRevision, Names);
-            Names.Sort;
-          end;
-          for Name in Names do
-            FOutput.WriteLine(Name);
-          if Command.Name = 'display_deck_list' then
-            ReportSnapshot('Using', SnapshotsUsed.Selected);
-        finally
-          Names.Free;
-        end;
-      end;
-    'diff_deck':
-      begin
-        Name := DeckName(ResolveDeck);
-        FromSelector := Command['from_snapshot'];
-        UsePriorDeckRevision := not Command.Provided['from_snapshot'] and
-          SameText(FromSelector, PreviousDeckVersionSelector);
-        if not UsePriorDeckRevision then
-        begin
-          FromSnapshot := LibraryFile.ParseDeckSnapshot(Name, FromSelector);
-          SnapshotsUsed.FromDeckVersion := LibraryFile.DeckVersion[FromSnapshot.LibraryRevision];
-        end;
-        ToSnapshot := LibraryFile.ParseDeckSnapshot(Name, Command['to_snapshot']);
-        SnapshotsUsed.ToDeckVersion := LibraryFile.DeckVersion[ToSnapshot.LibraryRevision];
-        if UsePriorDeckRevision then
-        begin
-          FromSnapshot := LibraryFile.PreviousDeckSnapshot(Name, ToSnapshot.LibraryRevision);
-          SnapshotsUsed.FromDeckVersion := LibraryFile.DeckVersion[FromSnapshot.LibraryRevision];
-        end;
-        Source := LibraryFile.Extract(Name, FromSnapshot.LibraryRevision);
-        OtherSource := LibraryFile.Extract(Name, ToSnapshot.LibraryRevision);
-        WriteDeckDiff(Source.Bytes, OtherSource.Bytes,
-          Name + '@' + SnapshotsUsed.FromDeckVersion, Name + '@' + SnapshotsUsed.ToDeckVersion, FOutput);
-        FOutput.Report('From deck version ' + SnapshotsUsed.FromDeckVersion + '.');
-        FOutput.Report('To deck version ' + SnapshotsUsed.ToDeckVersion + '.');
-      end;
-    'extract_deck', 'expand_deck':
-      begin
-        Deck := ResolveDeck;
-        SnapshotsUsed.Selected := ResolveSnapshot(Command, LibraryFile, Deck);
-        MissingDeckVersion := '';
-        if not Command.HasOption('revision') then
-          MissingDeckVersion := SnapshotsUsed.Selected.Version;
-        Path := OutputFileArgument(Command);
-        if SameText(Path, DeckNameSelector) then
-          Path := DeckName(Deck)
-        else if SameText(Path, LastModifiedDeckSelector) then
-          Path := ResolveLastModifiedDeck;
-        Path := OutputPath(Path);
-        if Command.Name = 'expand_deck' then
-        begin
-          Expander := TDeckExpander.Create(LibraryFile, SnapshotsUsed.Selected.LibraryRevision,
-            SnapshotsUsed.Selected.Version, PrefixOption(Command), MissingDeckVersion);
-          try
-            Bytes := Expander.Expand(Deck);
-          finally
-            Expander.Free;
-          end;
-        end
-        else
-        begin
-          Source := LibraryFile.Extract(Deck, SnapshotsUsed.Selected.LibraryRevision, MissingDeckVersion);
-          Bytes := Source.Bytes;
-        end;
-        CheckSessionInterrupt;
-        AtomicWrite(Path, Bytes, True, True);
-        if Command.Name = 'expand_deck' then
-          ScheduleBuild(Path);
-        ReportSnapshot('Using', SnapshotsUsed.Selected);
-      end;
-    'extract_modified_decks', 'expand_modified_decks':
-      begin
-        Version := Command['version'];
-        if (Command.Name = 'expand_modified_decks') and SameText(Version, CurrentLibraryVersionSelector) then
-          Version := LibraryFile.CurrentVersion;
-        Directory := OutputDirectory;
-        if Directory = '' then
-          Directory := BulkOutputDirectory(Command)
-        else if LibraryFile.Modified then
-          raise EScuError.Create('Save the SQLite library before running expand_modified_decks.');
-        LibraryFile.VersionBounds(Version, Base, Revision);
-        if not DirectoryExists(Directory) then
-          raise EScuError.Create('The output directory must already exist.');
-        SnapshotsUsed.Selected.Version := Version;
-        SnapshotsUsed.Selected.LibraryRevision := Revision;
-        BuildPending := False;
-        if OutputDirectory <> '' then
-          if Database.ReadExpansionCheckpoint(Version, Directory, CheckpointRevision, Refresh, BuildPending) then
-          begin
-            if (CheckpointRevision < Base) or (CheckpointRevision > Revision) then
-              raise EScuError.Create('The expansion checkpoint is outside the selected version.');
-            if Refresh then
-              Base := 0
-            else
-              Base := CheckpointRevision;
-          end;
-        Names := nil;
-        Destinations := nil;
-        Expander := nil;
-        try
-          Names := TStringList.Create;
-          Names.CaseSensitive := True;
-          Names.Sorted := True;
-          Names.Duplicates := dupIgnore;
-          LibraryFile.ChangedDecks(Base, Revision, Names);
-          if Command.Name = 'expand_modified_decks' then
-          begin
-            Prefix := PrefixOption(Command);
-            Expander := TDeckExpander.Create(LibraryFile, Revision, Version, Prefix);
-            if OutputDirectory <> '' then
-              Expander.IncludeCopyDependents(Names);
-          end;
-          Destinations := TStringList.Create;
-          for Name in Names do
-            Destinations.Add(OutputPath(IncludeTrailingPathDelimiter(Directory) + Name));
-          for Index := 0 to Names.Count - 1 do
-          begin
-            if Assigned(Expander) then
-              Bytes := Expander.Expand(Names[Index])
-            else
-            begin
-              Source := LibraryFile.Extract(Names[Index], Revision);
-              Bytes := Source.Bytes;
-            end;
-            CheckSessionInterrupt;
-            AtomicWrite(Destinations[Index], Bytes, True, True);
-          end;
-          if Assigned(Expander) and ((Names.Count > 0) or BuildPending) then
-          begin
-            if OutputDirectory = '' then
-              ScheduleBuild(ExtractFileDir(Destinations[0]))
-            else
-            begin
-              ScheduleBuild(Directory);
-              if Build.Command <> '' then
-              begin
-                Build.Checkpoint := SnapshotsUsed.Selected;
-                Build.CommentPrefix := Prefix;
-              end
-              else if (Names.Count > 0) and (LibraryFile.BuildCommand = '') then
-                Database.SaveExpansionCheckpoint(Version, Directory, Prefix, Revision, True);
-            end;
-          end;
-          Result := Format('Wrote %d deck(s) for version %s', [Names.Count, Version]);
-        finally
-          Expander.Free;
-          Destinations.Free;
-          Names.Free;
-        end;
-      end;
-    else
-      raise EScuError.CreateFmt('No implementation for command "%s".', [Command.Name]);
-  end;
-end;
-
-type
-  TBuildProcess = class(TProcess)
-  private
-    FOutputLock: THandle;
-    FInteractive: Boolean;
-    procedure PrepareChild(Sender: TObject);
-  public
-    constructor Create(OutputLock: THandle; Interactive: Boolean); reintroduce;
-  end;
-
-constructor TBuildProcess.Create(OutputLock: THandle; Interactive: Boolean);
-var
-  Index: Integer;
-begin
-  inherited Create(nil);
-  FOutputLock := OutputLock;
-  FInteractive := Interactive;
-  if OutputLock >= 0 then
-  begin
-    for Index := 1 to GetEnvironmentVariableCount do
-      Environment.Add(GetEnvironmentString(Index));
-    Environment.Values[BuildOutputLockVariable] := IntToStr(OutputLock);
-  end;
-  OnForkEvent := @PrepareChild;
-end;
-
-procedure TBuildProcess.PrepareChild(Sender: TObject);
-begin
-  // Only the build child and its descendants inherit the directory descriptor.
-  if (FOutputLock >= 0) and (fpFcntl(FOutputLock, F_SETFD, 0) < 0) then
-    fpExit(126);
-  if FInteractive then
-    StartBuildProcessGroup;
-end;
-
 procedure TScuExecutor.RunBuild(const Build: TBuildRequest; const Expansion: string; OutputLock: THandle);
 var
-  Child: TProcess;
   Lock: TLibraryLock;
   Audit: TAuditLog;
   Database: TSQLiteLibrary;
   Failure: string;
-  Status: Integer;
 begin
-  Failure := '';
-  try
-    Child := TBuildProcess.Create(OutputLock, FInteractive);
-    try
-      Child.Executable := '/bin/sh';
-      Child.Parameters.Add('-c');
-      Child.Parameters.Add('exec </dev/null' + LineEnding + Build.Command);
-      Child.Parameters.Add('scu-build');
-      Child.Parameters.Add(Build.OutputPath);
-      Status := WaitForChild(Child, FInteractive);
-      if (SessionSignal <> 0) or (Status = 128 + SIGINT) then
-        raise EScuError.Create('Build command interrupted.');
-      if Status <> 0 then
-        raise EScuError.CreateFmt('Build command failed with exit status %d.', [Status]);
-    finally
-      Child.Free;
-    end;
-  except
-    on E: Exception do Failure := E.Message;
-  end;
+  Failure := RunBuildProcess(Build, FInteractive, OutputLock);
 
   try
     // Record the build outcome even when the build was interrupted.
@@ -564,65 +94,120 @@ begin
     raise EScuError.Create(Failure);
 end;
 
-procedure TScuExecutor.Execute(Command: TScuCommand);
+procedure RecordSuccessfulCommand(Audit: TAuditLog; const Context: TCommandContext;
+  const Detail: string; PendingSave: Boolean);
 var
-  Directory, Path: string;
-  Lock: TOutputDirectoryLock;
+  Contents: TJSONObject;
 begin
-  if Command.Name = 'recover_library' then
-  begin
-    if Assigned(FPendingLibrary) then
-      raise EScuError.Create('Finish pending edits before recovering a library.');
-    FOutput.WriteLine(RestoreLibrary(CanonicalFile(FLibraryPath), Command));
-    Exit;
-  end;
-  if Command.Name = 'expand_deck' then
-  begin
-    Path := OutputFileArgument(Command);
-    if (Path = '') or SameText(Path, DeckNameSelector) or SameText(Path, LastModifiedDeckSelector) then
-      Directory := GetCurrentDir
-    else
-      Directory := ExtractFileDir(ExpandFileName(Path));
-  end
-  else if (Command.Name = 'expand_modified_decks') or (Command.Name = 'reset_expansion_checkpoint') then
-    Directory := BulkOutputDirectory(Command)
-  else
-  begin
-    RunCommandInDirectory(Command, '');
-    Exit;
-  end;
-  if not DirectoryExists(Directory) then
-    raise EScuError.Create('The output directory must already exist.');
-  Directory := CanonicalDirectory(Directory);
-  Lock := TOutputDirectoryLock.Create(Directory, Command.Name = 'expand_deck');
+  Contents := nil;
   try
-    if Command.Name <> 'expand_deck' then
-      RunCommandInDirectory(Command, Directory, Lock.BuildHandle)
-    else
-      RunCommandInDirectory(Command, '', Lock.BuildHandle);
+    if Assigned(Context.LibraryFile) then
+      Contents := Context.LibraryFile.SavedContents;
+    Audit.EndCommand(True, Detail, Context.Snapshots, PendingSave, Contents);
+  finally
+    Contents.Free;
+  end;
+end;
+
+procedure TScuExecutor.RestoreLibrary(var Context: TCommandContext; const Handler: TCommandHandler);
+var
+  Lock: TLibraryLock;
+  TempDir, TempFile, Detail: string;
+  Document: TJSONObject;
+  Audit: TAuditLog;
+  Stream: TFileStream;
+begin
+  if Assigned(FPendingLibrary) then
+    raise EScuError.Create('Finish pending edits before recovering a library.');
+  Context.LibraryPath := CanonicalFile(Context.LibraryPath);
+  Lock := TLibraryLock.Create(Context.LibraryPath + '.lock', @SessionEnding, @CheckSessionInterrupt);
+  try
+    if RegularFileExists(Context.LibraryPath) then
+      raise EScuError.Create('Choose a new library path for recovery. The destination already exists.');
+    Document := ReadRecovery(Context.Command);
+    try
+      TempDir := MakeTempDirectory('scu-restore');
+      TempFile := IncludeTrailingPathDelimiter(TempDir) + 'library.sqlite';
+      try
+        Context.Database := TSQLiteLibrary.Create(TempFile, True, False);
+        try
+          Context.Database.BeginTransaction(False);
+          Context.Database.EnsureSchema(True);
+          Context.LibraryFile := TDeckLibrary.CreateRecovered(Document, Context.Database);
+          try
+            Audit := TAuditLog.Create(Context.Database);
+            try
+              Audit.BeginCommand(Context.Command);
+              Detail := Handler.Run(Context);
+              RecordSuccessfulCommand(Audit, Context, Detail, False);
+              Context.Database.Commit;
+            finally
+              Audit.Free;
+            end;
+          finally
+            Context.LibraryFile.Free;
+          end;
+        finally
+          Context.Database.Free;
+        end;
+        CheckSessionInterrupt;
+        Stream := TFileStream.Create(TempFile, fmOpenRead);
+        try
+          AtomicWrite(Context.LibraryPath, Stream, False);
+        finally
+          Stream.Free;
+        end;
+      finally
+        DeleteFile(TempFile);
+        RemoveDir(TempDir);
+      end;
+    finally
+      Document.Free;
+    end;
   finally
     Lock.Free;
   end;
+  Context.Output.WriteLine(Detail);
 end;
 
-procedure TScuExecutor.WriteHistoryLine(const Payload: RawByteString);
+procedure TScuExecutor.Execute(Command: TScuCommand);
+var
+  Context: TCommandContext;
+  Handler: TCommandHandler;
+  Lock: TOutputDirectoryLock;
 begin
-  FOutput.WriteLine(FormatAuditCommand(Payload));
+  Context := Default(TCommandContext);
+  Context.Command := Command;
+  Context.LibraryPath := FLibraryPath;
+  Context.Output := FOutput;
+  Handler := CommandHandler(Command.Name);
+  if Handler.Mode = cmRecover then
+    RestoreLibrary(Context, Handler)
+  else if Assigned(Handler.ResolveOutputDirectory) then
+  begin
+    Context.OutputDirectory := Handler.ResolveOutputDirectory(Context);
+    if not DirectoryExists(Context.OutputDirectory) then
+      raise EScuError.Create('The output directory must already exist.');
+    Context.OutputDirectory := CanonicalDirectory(Context.OutputDirectory);
+    Lock := TOutputDirectoryLock.Create(Context.OutputDirectory, Handler.ReuseBuildLock);
+    try
+      RunCommand(Context, Handler, Lock.BuildHandle);
+    finally
+      Lock.Free;
+    end;
+  end
+  else
+    RunCommand(Context, Handler);
 end;
 
-procedure TScuExecutor.RunCommandInDirectory(Command: TScuCommand; const OutputDirectory: string;
+procedure TScuExecutor.RunCommand(var Context: TCommandContext; const Handler: TCommandHandler;
   OutputLock: THandle);
 var
   Lock: TLibraryLock;
   Audit: TAuditLog;
-  Database: TSQLiteLibrary;
-  LibraryFile: TDeckLibrary;
-  LibraryExists, Verifying, ListingHistory, Initializing, Committed, PendingSave: Boolean;
-  Checkpoint, Detail, Expansion, ExpansionVersion: string;
-  SnapshotsUsed: TAuditSnapshots;
-  Build: TBuildRequest;
-  Contents: TJSONObject;
-  HistoryLimit: Int64;
+  Command: TScuCommand;
+  LibraryExists, Initializing, ReadOnly, Committed, PendingSave: Boolean;
+  Checkpoint, Detail, Expansion: string;
 
   procedure RaiseMissingLibrary;
   begin
@@ -630,99 +215,89 @@ var
       [FLibraryPath]);
   end;
 
-
 begin
+  Command := Context.Command;
   if Command.SessionExit and not FInteractive then
     raise EScuError.CreateFmt('%s is only available in interactive mode.', [Command.Name]);
   FLibraryPath := CanonicalFile(FLibraryPath);
-  Verifying := Command.Name = 'verify_audit';
-  ListingHistory := Command.Name = 'show_history';
-  Initializing := (Command.Name = 'initialize_library') or (Command.Name = 'init');
-  Build := Default(TBuildRequest);
-  Lock := nil;
-  Database := nil;
+  Context.LibraryPath := FLibraryPath;
+  Initializing := Handler.Mode = cmInitialize;
+  ReadOnly := Handler.Mode in [cmHistory, cmVerifyAudit];
   Audit := nil;
-  LibraryFile := nil;
   Committed := False;
+  Lock := TLibraryLock.Create(FLibraryPath + '.lock', @SessionEnding, @CheckSessionInterrupt);
   try
-    Lock := TLibraryLock.Create(FLibraryPath + '.lock', @SessionEnding, @CheckSessionInterrupt);
     Checkpoint := Command.Option('head');
-    if (Command.HasOption('head')) and not IsHexDigest(Checkpoint, 64) then
+    if Command.HasOption('head') and not IsHexDigest(Checkpoint, 64) then
       raise EScuError.Create('Expected a lowercase SHA-256 audit head.');
     if not RegularFileExists(FLibraryPath) and not Initializing then
       RaiseMissingLibrary;
-    Database := TSQLiteLibrary.Create(FLibraryPath, Initializing, Verifying or ListingHistory);
-    Database.BeginTransaction(Verifying or ListingHistory);
-    Database.EnsureSchema(Initializing);
-    LibraryExists := Database.StateKey <> '';
-    if ListingHistory then
+    Context.Database := TSQLiteLibrary.Create(FLibraryPath, Initializing, ReadOnly);
+    Context.Database.BeginTransaction(ReadOnly);
+    Context.Database.EnsureSchema(Initializing);
+    LibraryExists := Context.Database.StateKey <> '';
+    if Handler.Mode = cmHistory then
     begin
       if not LibraryExists then
         RaiseMissingLibrary;
-      if not TryStrToInt64(Command['number_of_lines'], HistoryLimit) or (HistoryLimit < 1) then
-        raise EScuError.Create('Expected a positive number_of_lines.');
-      Database.ReadCommandHistory(HistoryLimit, @WriteHistoryLine);
+      Handler.Run(Context);
       Exit;
     end;
-    Audit := TAuditLog.Create(Database, Checkpoint, Verifying);
+    Audit := TAuditLog.Create(Context.Database, Checkpoint, Handler.Mode = cmVerifyAudit);
     if (LibraryExists or Assigned(FPendingLibrary)) and (Audit.Records = 0) then
       raise EScuError.Create('The audit log for the existing library is empty.');
-    if Verifying then
+    if Handler.Mode = cmVerifyAudit then
     begin
       if Audit.SavedHeaderDigest <> '' then
       begin
         if not LibraryExists then
           RaiseMissingLibrary;
-        LibraryFile := TDeckLibrary.Create(FLibraryPath, '', Database);
-        Audit.VerifyContents(LibraryFile);
+        Context.LibraryFile := TDeckLibrary.Create(FLibraryPath, '', Context.Database);
+        Audit.VerifyContents(Context.LibraryFile);
       end;
       FOutput.WriteLine(Format('records=%d interrupted=%d head=%s', [Audit.Records, Audit.Interrupted, Audit.Head]));
       Exit;
     end;
-    if (Command.Name = 'expand_modified_decks') and (OutputDirectory <> '') and LibraryExists and
-      not Assigned(FPendingLibrary) then
+    if Assigned(Handler.Prepare) and LibraryExists and not Assigned(FPendingLibrary) and
+      Handler.Prepare(Context) then
     begin
-      ExpansionVersion := Command['version'];
-      if SameText(ExpansionVersion, CurrentLibraryVersionSelector) then
-        ExpansionVersion := Database.CurrentVersion;
-      if Database.InvalidateExpansionOutput(ExpansionVersion, OutputDirectory, PrefixOption(Command)) then
-      begin
-        // Output files cannot roll back with SQLite. Invalidate before writing
-        // files for a different version or prefix, even if expansion fails.
-        Database.Commit;
-        Database.BeginTransaction(False);
-        FreeAndNil(Audit);
-        Audit := TAuditLog.Create(Database, Checkpoint);
-      end;
+      // Output files cannot roll back with SQLite. Commit checkpoint
+      // invalidation before the handler writes any files.
+      Context.Database.Commit;
+      Context.Database.BeginTransaction(False);
+      FreeAndNil(Audit);
+      Audit := TAuditLog.Create(Context.Database, Checkpoint);
     end;
     Audit.BeginCommand(Command);
-    Database.Execute('SAVEPOINT scu_operation');
-    SnapshotsUsed := Default(TAuditSnapshots);
+    Context.Database.Execute('SAVEPOINT scu_operation');
     try
       if Initializing then
       begin
         if LibraryExists or Audit.Initialized then
           raise EScuError.Create('A library already exists or was previously initialized here.');
-        LibraryFile := TDeckLibrary.Create(FLibraryPath, '1.0', Database);
-        LibraryFile.Save;
-        Detail := 'Initialized version ' + LibraryFile.CurrentVersion;
+        Context.LibraryFile := TDeckLibrary.Create(FLibraryPath, '1.0', Context.Database);
       end
       else
       begin
-        LibraryFile := FPendingLibrary;
-        if not Assigned(LibraryFile) then
+        Context.LibraryFile := FPendingLibrary;
+        if not Assigned(Context.LibraryFile) then
         begin
           if not LibraryExists then
             RaiseMissingLibrary;
-          LibraryFile := TDeckLibrary.Create(FLibraryPath, '', Database);
+          Context.LibraryFile := TDeckLibrary.Create(FLibraryPath, '', Context.Database);
         end
         else
-          LibraryFile.AttachDatabase(Database);
-        Detail := ExecuteLibrary(Command, LibraryFile, Database, OutputDirectory, SnapshotsUsed, Build);
+          Context.LibraryFile.AttachDatabase(Context.Database);
+      end;
+      if not Assigned(Handler.Run) then
+        raise EScuError.CreateFmt('No implementation for command "%s".', [Command.Name]);
+      Detail := Handler.Run(Context);
+      if not Initializing then
+      begin
         if not SessionEnding then
           FOutput.Flush;
         if not FInteractive then
-          LibraryFile.Save;
+          Context.LibraryFile.Save;
       end;
     except
       on E: Exception do
@@ -730,9 +305,9 @@ begin
         if Initializing and not LibraryExists then
           raise;
         try
-          Database.Execute('ROLLBACK TO scu_operation');
-          Audit.EndCommand(False, E.Message, SnapshotsUsed, Assigned(FPendingLibrary));
-          Database.Commit;
+          Context.Database.Execute('ROLLBACK TO scu_operation');
+          Audit.EndCommand(False, E.Message, Context.Snapshots, Assigned(FPendingLibrary));
+          Context.Database.Commit;
         except
           on AuditError: Exception do
             raise EScuError.CreateFmt('%s Also could not save the audit outcome: %s',
@@ -742,19 +317,12 @@ begin
       end;
     end;
     try
-      PendingSave := FInteractive and Assigned(LibraryFile) and LibraryFile.Modified and
-        not Initializing and not Command.SessionExit and (Command.Name <> 'save_library');
-      Contents := nil;
-      try
-        if Assigned(LibraryFile) then
-          Contents := LibraryFile.SavedContents;
-        Audit.EndCommand(True, Detail, SnapshotsUsed, PendingSave, Contents);
-      finally
-        Contents.Free;
-      end;
-      Database.Commit;
+      PendingSave := FInteractive and Context.LibraryFile.Modified and not Initializing and
+        not Handler.SavesLibrary;
+      RecordSuccessfulCommand(Audit, Context, Detail, PendingSave);
+      Context.Database.Commit;
       Committed := True;
-      if Build.Command <> '' then
+      if Context.Build.Command <> '' then
         Expansion := Audit.Head;
     except
       on E: Exception do
@@ -762,29 +330,29 @@ begin
     end;
     if (Detail <> '') and not SessionEnding then
       FOutput.WriteLine(Detail);
-    if Command.Name = 'display_library' then
-      FOutput.WriteLine(LibraryFile.HeaderJSON);
+    if Assigned(Handler.ReportCommitted) then
+      Handler.ReportCommitted(Context);
   finally
-    if Assigned(LibraryFile) then
+    if Assigned(Context.LibraryFile) then
     begin
-      LibraryFile.FinishDatabaseSave(Committed);
-      if FInteractive and LibraryFile.Modified and not Initializing then
-        FPendingLibrary := LibraryFile
+      Context.LibraryFile.FinishDatabaseSave(Committed);
+      if FInteractive and Context.LibraryFile.Modified and not Initializing then
+        FPendingLibrary := Context.LibraryFile
       else
       begin
-        if LibraryFile = FPendingLibrary then
+        if Context.LibraryFile = FPendingLibrary then
           FPendingLibrary := nil;
-        LibraryFile.Free;
+        Context.LibraryFile.Free;
       end;
     end;
     Audit.Free;
-    Database.Free;
+    Context.Database.Free;
     Lock.Free;
   end;
-  if Build.Command <> '' then
+  if Context.Build.Command <> '' then
   begin
     FOutput.Flush;
-    RunBuild(Build, Expansion, OutputLock);
+    RunBuild(Context.Build, Expansion, OutputLock);
   end;
 end;
 

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Split library commands into handlers while the executor manages locks, transactions, and the audit trail.
 - Serialize parallel expansions in the same directory and let builds invoke nested single-deck expansion there.
 - Cancel library lock waits on Ctrl+C before the command runs, and report nested COPY cancellation once.
 - Add `recover_library` to restore full or pending-only recovery files into a new SQLite library.

@@ -5,14 +5,14 @@ unit ScuRecovery;
 interface
 
 uses
-  ScuCommand;
+  FPJSON, ScuCommand;
 
-function RestoreLibrary(const Destination: string; Command: TScuCommand): string;
+function ReadRecovery(Command: TScuCommand): TJSONObject;
 
 implementation
 
 uses
-  Classes, SysUtils, FPJSON, ScuAudit, ScuIO, ScuJSON, ScuLibrary, ScuSignals, ScuSQLite;
+  SysUtils, ScuIO, ScuJSON, ScuSignals, ScuSQLite;
 
 procedure CheckBaseHistory(BaseHeader, RecoveryHeader: TJSONObject);
 var
@@ -96,12 +96,14 @@ begin
   end;
 end;
 
-function ReadRecovery(const Path, BasePath: string): TJSONObject;
+function ReadRecovery(Command: TScuCommand): TJSONObject;
 var
+  BasePath: string;
   Recovery: TJSONObject;
   FormatValue: TJSONData;
 begin
-  Recovery := ParseObject(ReadBytes(Path, High(SizeInt)));
+  BasePath := Command.Option('base_library');
+  Recovery := ParseObject(ReadBytes(Command['recovery_file'], High(SizeInt)));
   try
     FormatValue := Recovery.Find('format');
     if Assigned(FormatValue) and (FormatValue.JSONType = jtNumber) and
@@ -119,74 +121,6 @@ begin
       raise EScuError.Create('Unsupported SCU recovery file format.');
   finally
     Recovery.Free;
-  end;
-end;
-
-function RestoreLibrary(const Destination: string; Command: TScuCommand): string;
-var
-  Lock: TLibraryLock;
-  TempDir, TempFile: string;
-  Document, Contents: TJSONObject;
-  Database: TSQLiteLibrary;
-  LibraryFile: TDeckLibrary;
-  Audit: TAuditLog;
-  Snapshots: TAuditSnapshots;
-  Stream: TFileStream;
-begin
-  Lock := TLibraryLock.Create(Destination + '.lock', @SessionEnding, @CheckSessionInterrupt);
-  try
-    if RegularFileExists(Destination) then
-      raise EScuError.Create('Choose a new library path for recovery. The destination already exists.');
-    Document := ReadRecovery(Command['recovery_file'], Command.Option('base_library'));
-    try
-      TempDir := MakeTempDirectory('scu-restore');
-      TempFile := IncludeTrailingPathDelimiter(TempDir) + 'library.sqlite';
-      try
-        Database := TSQLiteLibrary.Create(TempFile, True, False);
-        try
-          Database.BeginTransaction(False);
-          Database.EnsureSchema(True);
-          LibraryFile := TDeckLibrary.CreateRecovered(Document, Database);
-          try
-            Audit := TAuditLog.Create(Database);
-            try
-              Audit.BeginCommand(Command);
-              LibraryFile.Save;
-              Snapshots := Default(TAuditSnapshots);
-              Snapshots.Selected := LibraryFile.CurrentSnapshot;
-              Result := Format('Restored %d revision(s) to "%s".', [LibraryFile.Revision, Destination]);
-              Contents := LibraryFile.SavedContents;
-              try
-                Audit.EndCommand(True, Result, Snapshots, False, Contents);
-              finally
-                Contents.Free;
-              end;
-              Database.Commit;
-            finally
-              Audit.Free;
-            end;
-          finally
-            LibraryFile.Free;
-          end;
-        finally
-          Database.Free;
-        end;
-        CheckSessionInterrupt;
-        Stream := TFileStream.Create(TempFile, fmOpenRead);
-        try
-          AtomicWrite(Destination, Stream, False);
-        finally
-          Stream.Free;
-        end;
-      finally
-        DeleteFile(TempFile);
-        RemoveDir(TempDir);
-      end;
-    finally
-      Document.Free;
-    end;
-  finally
-    Lock.Free;
   end;
 end;
 

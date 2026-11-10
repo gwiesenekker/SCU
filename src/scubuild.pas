@@ -1,0 +1,79 @@
+unit ScuBuild;
+
+{$mode objfpc}{$H+}
+
+interface
+
+uses
+  ScuCommandHandler;
+
+function RunBuildProcess(const Build: TBuildRequest; Interactive: Boolean; OutputLock: THandle): string;
+
+implementation
+
+uses
+  SysUtils, BaseUnix, Process, ScuIO, ScuOutputLock, ScuSignals;
+
+type
+  TBuildProcess = class(TProcess)
+  private
+    FOutputLock: THandle;
+    FInteractive: Boolean;
+    procedure PrepareChild(Sender: TObject);
+  public
+    constructor Create(OutputLock: THandle; Interactive: Boolean); reintroduce;
+  end;
+
+constructor TBuildProcess.Create(OutputLock: THandle; Interactive: Boolean);
+var
+  Index: Integer;
+begin
+  inherited Create(nil);
+  FOutputLock := OutputLock;
+  FInteractive := Interactive;
+  if OutputLock >= 0 then
+  begin
+    for Index := 1 to GetEnvironmentVariableCount do
+      Environment.Add(GetEnvironmentString(Index));
+    Environment.Values[BuildOutputLockVariable] := IntToStr(OutputLock);
+  end;
+  OnForkEvent := @PrepareChild;
+end;
+
+procedure TBuildProcess.PrepareChild(Sender: TObject);
+begin
+  // Only the build child and its descendants inherit the directory descriptor.
+  if (FOutputLock >= 0) and (fpFcntl(FOutputLock, F_SETFD, 0) < 0) then
+    fpExit(126);
+  if FInteractive then
+    StartBuildProcessGroup;
+end;
+
+function RunBuildProcess(const Build: TBuildRequest; Interactive: Boolean; OutputLock: THandle): string;
+var
+  Child: TProcess;
+  Status: Integer;
+begin
+  Result := '';
+  try
+    Child := TBuildProcess.Create(OutputLock, Interactive);
+    try
+      Child.Executable := '/bin/sh';
+      Child.Parameters.Add('-c');
+      Child.Parameters.Add('exec </dev/null' + LineEnding + Build.Command);
+      Child.Parameters.Add('scu-build');
+      Child.Parameters.Add(Build.OutputPath);
+      Status := WaitForChild(Child, Interactive);
+      if (SessionSignal <> 0) or (Status = 128 + SIGINT) then
+        raise EScuError.Create('Build command interrupted.');
+      if Status <> 0 then
+        raise EScuError.CreateFmt('Build command failed with exit status %d.', [Status]);
+    finally
+      Child.Free;
+    end;
+  except
+    on E: Exception do Result := E.Message;
+  end;
+end;
+
+end.
