@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `recover_library` to restore full or pending-only recovery files into a new SQLite library.
+- Scan past ordinary source bytes and compare macro tokens in place during expansion.
 - Persist the audit head and count in SQLite to keep routine audit appends fast as history grows.
 - Use per-revision COPY metadata to find incremental build dependencies without decoding unrelated decks.
 - Add `show_history` to display the latest 20 canonical audited commands or a supplied line count.

@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import pty
 import re
+import resource
 import select
 import shlex
 import shutil
@@ -452,6 +453,45 @@ class ScuIntegration(unittest.TestCase):
         self.assertEqual((output / "other").read_text().split()[-1], clock)
         self.run_scu("extract_deck", "main", "raw")
         self.assertEqual((self.root / "raw").read_bytes(), source)
+
+    def test_macro_scanner_preserves_boundaries_and_source_bytes(self):
+        ordinary = b"ordinary source with spaces \x00\xff " * 8192
+        unchanged = (b"XSCU$DATE x$SCU_TIME SCU$DATE_SUFFIX $SCU_TIME2 "
+                     b"SCU$Date SCU$ $SCU")
+        source = (
+            b"//SCU$LIBRARY_VERSION\r\n"
+            + ordinary + b"[$SCU_VERSION]\r"
+            + unchanged + b"\n"
+            + b"SCU$LAST_MODIFIED_DATE_TIME SCU$VERSION$SCU_VERSION\n"
+            + b"SCU$DECK_VERSION"
+        )
+        self.store("main", source)
+        modified = self.read_library()["revisions"][0]["modified_utc"].encode()
+
+        self.run_scu("expand_deck", "main", "expanded")
+        self.assertEqual(
+            (self.root / "expanded").read_bytes(),
+            b"1.0\r\n"
+            + ordinary + b"[1.0]\r"
+            + unchanged + b"\n"
+            + modified + b" 1.0$SCU_VERSION\n"
+            + b"1.0-0.000",
+        )
+
+    def test_macro_scanner_skips_long_plain_text_efficiently(self):
+        self.store("main", b"x" * (24 * 1024 * 1024) + b" SCU$VERSION\n")
+
+        def user_cpu_time(command, output):
+            before = resource.getrusage(resource.RUSAGE_CHILDREN).ru_utime
+            self.run_scu(command, "main", output)
+            return resource.getrusage(resource.RUSAGE_CHILDREN).ru_utime - before
+
+        # Extraction controls for decoding and checksum costs on the same host.
+        # Child user CPU time avoids counting waits for output writes.
+        extract = user_cpu_time("extract_deck", "raw")
+        expand = user_cpu_time("expand_deck", "expanded")
+        self.assertLess(expand, 4 * extract + 0.05,
+                        f"Expansion used {expand:.3f}s of CPU versus {extract:.3f}s for extraction")
 
     def test_snapshot_commands_report_and_audit_the_resolved_snapshot(self):
         source = b"'SCU$VERSION'\n"
@@ -2131,11 +2171,13 @@ class ScuIntegration(unittest.TestCase):
 
     def test_review_hangup_conflict_writes_a_recovery_library(self):
         path = self.root / "project.sqlite"
+        source = self.root / "pending-source"
+        source.write_bytes(b"pending source\r\n\xff")
         self.run_scu(path, "init")
         self.run_scu(path, "cred", "base")
         with self.terminal_session(path, TERM="xterm") as (process, terminal, read_until):
             read_until(b"scu> ")
-            os.write(terminal, b"cred pending\n")
+            os.write(terminal, b"cred pending from_file=pending-source\n")
             read_until(b"scu> ")
             self.run_scu(path, "cred", "concurrent")
             process.send_signal(signal.SIGHUP)
@@ -2145,6 +2187,82 @@ class ScuIntegration(unittest.TestCase):
         self.assertEqual([entry["deck"] for entry in document["revisions"]], ["base", "pending"])
         self.assertEqual(recovery.stat().st_mode & 0o777, 0o600)
         self.assertIn("concurrent\t", self.run_scu(path, "ddl"))
+        self.run_scu(path, "recover_library", recovery, error="destination already exists")
+        restored = self.root / "restored.sqlite"
+        self.assertIn("Restored 2 revision(s)", self.run_scu(restored, "recl", recovery))
+        self.assertEqual(restored.stat().st_mode & 0o777, 0o600)
+        self.assertIn("records=2 interrupted=0", self.run_scu(restored, "verify_audit_trail"))
+        history = self.run_scu(restored, "show_history")
+        self.assertIn("recover_library recovery_file=", history)
+        self.assertEqual(self.run_scu(restored, "ddl"), "base\t1.0-0.000\npending\t1.0-0.000")
+        self.run_scu(restored, "extd", "pending", "restored-source")
+        self.assertEqual((self.root / "restored-source").read_bytes(), source.read_bytes())
+        self.assertTrue(recovery.exists())
+
+        bad_file = self.root / "corrupt-recovery.json"
+        document["revisions"][-1]["sha1"] = "0" * 40
+        bad_file.write_text(json.dumps(document))
+        rejected = self.root / "rejected.sqlite"
+        self.run_scu(rejected, "recover_library", bad_file, error="SHA-1")
+        self.assertFalse(rejected.exists())
+
+    def test_pending_recovery_restores_only_with_the_matching_base(self):
+        self.store("main", b"saved\n")
+        base = self.root / "saved-base.sqlite"
+        (self.root / "pending-source").write_bytes(b"new version\n")
+        with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            for command in (b"lock_version", b"start_version 1.1", b"store_deck main pending-source"):
+                os.write(terminal, command + b"\n")
+                self.assertNotIn(b"scu: ", read_until(b"scu> "))
+            self.library.rename(base)
+            process.send_signal(signal.SIGHUP)
+            self.assertEqual(process.wait(timeout=5), 1)
+        recovery, = self.root.glob("library.sqlite.recovery-*.json")
+        document = json.loads(recovery.read_bytes())
+        self.assertEqual(document["format"], "scu-pending-recovery-v1")
+        self.assertEqual(document["base_library_revision"], 1)
+        self.assertEqual(recovery.stat().st_mode & 0o777, 0o600)
+        restored = self.root / "restored.sqlite"
+        self.run_scu(restored, "recover_library", recovery, error="requires base_library")
+        self.assertFalse(restored.exists())
+
+        wrong = self.root / "wrong-generation.sqlite"
+        shutil.copy2(base, wrong)
+        self.run_scu(wrong, "configure_library", "build_command=true")
+        self.run_scu(restored, "recover_library", recovery, f"base_library={wrong}",
+                     error="does not match the saved snapshot")
+        self.assertFalse(restored.exists())
+        self.assertIn("Restored 2 revision(s)",
+                      self.run_scu(restored, "recover_library", recovery, f"bl={base}"))
+        self.assertIn("records=2 interrupted=0", self.run_scu(restored, "verify_audit_trail"))
+        self.run_scu(restored, "extd", "main", "restored-source", "version=1.1")
+        self.assertEqual((self.root / "restored-source").read_bytes(), b"new version\n")
+        self.run_scu(restored, "extd", "main", "restored-base", "version=1.0")
+        self.assertEqual((self.root / "restored-base").read_bytes(), b"saved\n")
+        self.assertEqual(self.run_scu(base, "ddl"), "main\t1.0-0.000")
+
+        # Older pending-only files did not record the base identity and generation.
+        del document["base_library_state"]
+        legacy = self.root / "legacy-recovery.json"
+        legacy.write_text(json.dumps(document))
+        restored_legacy = self.root / "legacy.sqlite"
+        self.run_scu(restored_legacy, "recover_library", legacy, f"base_library={base}")
+        self.assertIn("records=2 interrupted=0", self.run_scu(restored_legacy, "verify_audit_trail"))
+
+    def test_pending_recovery_without_saved_revisions_needs_no_base(self):
+        with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"create_deck pending\n")
+            self.assertIn(b"pending version", read_until(b"scu> "))
+            self.library.unlink()
+            process.send_signal(signal.SIGHUP)
+            self.assertEqual(process.wait(timeout=5), 1)
+        recovery, = self.root.glob("library.sqlite.recovery-*.json")
+        self.assertEqual(json.loads(recovery.read_bytes())["base_library_revision"], 0)
+        self.run_scu("recover_library", recovery)
+        self.assertIn("records=2 interrupted=0", self.run_scu("verify_audit_trail"))
+        self.assertEqual(self.run_scu("ddl"), "pending\t1.0-0.000")
 
     def test_terminal_editor_handles_utf8_keys_and_ctrl_c_and_restores_terminal(self):
         (self.root / "café").write_bytes(b"source")

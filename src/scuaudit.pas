@@ -253,7 +253,7 @@ begin
         AcceptContents(Event);
       if Field(Event, 'success', jtBoolean).AsBoolean and
         ((FPendingCommand = 'initialize_library') or (FPendingCommand = 'init') or
-         (FPendingCommand = 'import_library')) then
+         (FPendingCommand = 'import_library') or (FPendingCommand = 'recover_library')) then
         FInitialized := True;
       FPending := '';
       FPendingCommand := '';

@@ -28,10 +28,14 @@ begin
 end;
 
 function HasToken(const Line: RawByteString; Index: SizeInt; const Token: string): Boolean;
+var
+  Last, TokenLength: SizeInt;
 begin
-  Result := (Copy(Line, Index, Length(Token)) = Token) and
-    ((Index + Length(Token) > Length(Line)) or
-      not IsIdentifierChar(Line[Index + Length(Token)]));
+  TokenLength := Length(Token);
+  Last := Index + TokenLength - 1;
+  Result := (Index >= 1) and (TokenLength > 0) and (Last <= Length(Line)) and
+    ((Last = Length(Line)) or not IsIdentifierChar(Line[Last + 1])) and
+    (CompareByte(Line[Index], Token[1], TokenLength) = 0);
 end;
 
 procedure ReadSourceLine(const Source: RawByteString; var Index: SizeInt;

@@ -514,6 +514,32 @@
       "help": "Exit the interactive session. Pending library changes are saved by default. Use quit save_library=no to discard them."
     },
     {
+      "name": "recover_library",
+      "aliases": ["recl"],
+      "summary": "Restore an SCU recovery file to a new SQLite library.",
+      "arguments": [
+        {
+          "name": "recovery_file",
+          "type": "string",
+          "aliases": ["rf"],
+          "value": "scu$required",
+          "description": "SCU recovery JSON file to restore.",
+          "completion": "file"
+        }
+      ],
+      "options": [
+        {
+          "name": "base_library",
+          "type": "string",
+          "aliases": ["bl"],
+          "value": "scu$optional",
+          "description": "Saved SQLite snapshot if the pending-only file references saved revisions.",
+          "completion": "file"
+        }
+      ],
+      "help": "Restore to a new library at the selected path. If a pending-only file references saved revisions, supply the matching saved snapshot as base_library."
+    },
+    {
       "name": "reset_expansion_checkpoint",
       "aliases": ["resec"],
       "summary": "Require a full rebuild for one SQLite version and output directory.",

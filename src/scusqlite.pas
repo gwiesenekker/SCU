@@ -568,7 +568,10 @@ begin
     BindText(Statement, 3, Version);
     BindText(Statement, 4, DeckRevision);
     BindText(Statement, 5, Payload);
-    BindText(Statement, 6, CopyMetadata);
+    if CopyMetadata = '' then
+      Check(sqlite3_bind_null(Statement, 6))
+    else
+      BindText(Statement, 6, CopyMetadata);
     Next(Statement);
   finally
     sqlite3_finalize(Statement);

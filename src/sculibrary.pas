@@ -42,7 +42,9 @@ type
     function RevisionAt(Index: Integer): TJSONObject;
     function RevisionPayloadAt(Index: Integer): TJSONObject;
     function FindDeckRevision(const Name: string; LastRevision: Integer): Integer;
+    procedure LoadDocument(Indexed: Boolean);
     procedure LoadDeckNumbers;
+    procedure ValidateRecoveryRevisions;
     procedure MarkModified;
     function GetHeaderJSON: string;
     function GetEditor: TJSONArray;
@@ -52,6 +54,7 @@ type
     function ExportJSON: RawByteString;
   public
     constructor Create(const Path: string; const InitialVersion: string = ''; Database: TSQLiteLibrary = nil);
+    constructor CreateRecovered(var Document: TJSONObject; Database: TSQLiteLibrary);
     destructor Destroy; override;
     procedure Save;
     procedure AttachDatabase(Database: TSQLiteLibrary);
@@ -199,8 +202,6 @@ end;
 
 constructor TDeckLibrary.Create(const Path: string; const InitialVersion: string; Database: TSQLiteLibrary);
 var
-  Index: Integer;
-  Name: string;
   Versions, DefaultEditor: TJSONArray;
 begin
   inherited Create;
@@ -241,44 +242,103 @@ begin
     end;
     FSavedState := FDatabase.StateKey;
     FDocument := FDatabase.ReadDocument;
-    if IntegerField(FDocument, 'format') <> 1 then
-      raise EScuError.Create('Unsupported library format.');
-    FRevisions := TJSONArray(Field(FDocument, 'revisions', jtArray));
-    FIndexedRevisions := Revision;
-    FHeader := TJSONObject(Field(FDocument, 'header', jtObject));
-    Versions := TJSONArray(Field(FHeader, 'versions', jtArray));
-    if Versions.Count = 0 then
-      raise EScuError.Create('Library has no versions.');
-    FVersions := TVersionHistory.Create(Versions, Revision);
-    if (Field(FHeader, 'current_version', jtString).AsString <> CurrentVersion) or
-      (Field(FHeader, 'comment_prefix', jtString).AsString <> DefaultCommentPrefix(CurrentVersion)) then
-      raise EScuError.Create('The library header does not match the current version.');
-    ValidateEditor(Editor);
-    if not Assigned(FHeader.Find('build_command')) then
-      FHeader.Add('build_command', '');
-    if Pos(#0, BuildCommand) > 0 then
-      raise EScuError.Create('The build command cannot contain NUL bytes.');
-    if not Assigned(FHeader.Find('version_increment')) then
-      FHeader.Add('version_increment', DefaultVersionIncrement);
-    if not Assigned(FHeader.Find('revision_increment')) then
-      FHeader.Add('revision_increment', DefaultRevisionIncrement);
-    ParseIncrement(Field(FHeader, 'version_increment', jtString).AsString,
-      'version_increment', 2, Int64(High(Integer)) * 100 + 99);
-    ParseIncrement(Field(FHeader, 'revision_increment', jtString).AsString,
-      'revision_increment', 3, MaxDeckRevision);
-    Name := '';
-    for Index := 0 to FRevisions.Count - 1 do
-    begin
-      Name := Field(RevisionAt(Index), 'deck', jtString).AsString;
-      if Name <> DeckName(Name) then
-        raise EScuError.CreateFmt('Invalid deck name in revision %d.', [Index + 1]);
-    end;
-    if not Assigned(FHeader.Find('last_modified_deck')) then
-      FHeader.Add('last_modified_deck', Name)
-    else if LastModifiedDeck <> Name then
-      raise EScuError.Create('The last_modified_deck header does not match the revision history.');
-    LoadDeckNumbers;
+    LoadDocument(True);
     FSavedRevisionCount := Revision;
+  end;
+end;
+
+constructor TDeckLibrary.CreateRecovered(var Document: TJSONObject; Database: TSQLiteLibrary);
+begin
+  inherited Create;
+  FSaveFrom := -1;
+  FDatabase := Database;
+  FDocument := Document;
+  Document := nil;
+  LoadDocument(False);
+  ValidateRecoveryRevisions;
+  MarkModified;
+end;
+
+procedure TDeckLibrary.LoadDocument(Indexed: Boolean);
+var
+  Index: Integer;
+  Name: string;
+  Versions: TJSONArray;
+begin
+  if IntegerField(FDocument, 'format') <> 1 then
+    raise EScuError.Create('Unsupported library format.');
+  FRevisions := TJSONArray(Field(FDocument, 'revisions', jtArray));
+  if Indexed then
+    FIndexedRevisions := Revision;
+  FHeader := TJSONObject(Field(FDocument, 'header', jtObject));
+  Versions := TJSONArray(Field(FHeader, 'versions', jtArray));
+  if Versions.Count = 0 then
+    raise EScuError.Create('Library has no versions.');
+  FVersions := TVersionHistory.Create(Versions, Revision);
+  if (Field(FHeader, 'current_version', jtString).AsString <> CurrentVersion) or
+    (Field(FHeader, 'comment_prefix', jtString).AsString <> DefaultCommentPrefix(CurrentVersion)) then
+    raise EScuError.Create('The library header does not match the current version.');
+  ValidateEditor(Editor);
+  if not Assigned(FHeader.Find('build_command')) then
+    FHeader.Add('build_command', '');
+  if Pos(#0, BuildCommand) > 0 then
+    raise EScuError.Create('The build command cannot contain NUL bytes.');
+  if not Assigned(FHeader.Find('version_increment')) then
+    FHeader.Add('version_increment', DefaultVersionIncrement);
+  if not Assigned(FHeader.Find('revision_increment')) then
+    FHeader.Add('revision_increment', DefaultRevisionIncrement);
+  ParseIncrement(Field(FHeader, 'version_increment', jtString).AsString,
+    'version_increment', 2, Int64(High(Integer)) * 100 + 99);
+  ParseIncrement(Field(FHeader, 'revision_increment', jtString).AsString,
+    'revision_increment', 3, MaxDeckRevision);
+  Name := '';
+  for Index := 0 to FRevisions.Count - 1 do
+  begin
+    Name := Field(RevisionAt(Index), 'deck', jtString).AsString;
+    if Name <> DeckName(Name) then
+      raise EScuError.CreateFmt('Invalid deck name in revision %d.', [Index + 1]);
+  end;
+  if not Assigned(FHeader.Find('last_modified_deck')) then
+    FHeader.Add('last_modified_deck', Name)
+  else if LastModifiedDeck <> Name then
+    raise EScuError.Create('The last_modified_deck header does not match the revision history.');
+  LoadDeckNumbers;
+end;
+
+procedure TDeckLibrary.ValidateRecoveryRevisions;
+var
+  Index: Integer;
+  Entry, Metadata: TJSONObject;
+  Name, Prefix: string;
+  Source: RawByteString;
+begin
+  for Index := 0 to FRevisions.Count - 1 do
+  begin
+    CheckSessionInterrupt;
+    Entry := RevisionAt(Index);
+    Name := Field(Entry, 'deck', jtString).AsString;
+    Prefix := StoredCommentPrefix(Entry);
+    ModificationTime(Entry, Name);
+    Source := DecodeDeck(Field(Entry, 'zstd_base64', jtString).AsString,
+      Field(Entry, 'sha1', jtString).AsString, IntegerField(Entry, 'size'));
+    if Prefix = '' then
+    begin
+      if Assigned(Entry.Find('copy_metadata')) then
+        raise EScuError.CreateFmt('COPY metadata for deck "%s" requires a stored comment prefix.', [Name]);
+      Continue;
+    end;
+    Metadata := ScanCopyMetadata(Source, Prefix);
+    try
+      if not Assigned(Entry.Find('copy_metadata')) then
+      begin
+        Entry.Add('copy_metadata', Metadata);
+        Metadata := nil;
+      end
+      else if Field(Entry, 'copy_metadata', jtObject).AsJSON <> Metadata.AsJSON then
+        raise EScuError.CreateFmt('COPY metadata does not match recovered revision %d.', [Index + 1]);
+    finally
+      Metadata.Free;
+    end;
   end;
 end;
 
@@ -411,6 +471,8 @@ end;
 procedure TDeckLibrary.WriteDatabase(Database: TSQLiteLibrary);
 var
   Metadata, Entry: TJSONObject;
+  CopyMetadata: TJSONData;
+  Indexed: RawByteString;
   Index, SavedCount: Integer;
 begin
   SavedCount := Database.RevisionCount;
@@ -428,9 +490,12 @@ begin
   for Index := SavedCount to Revision - 1 do
   begin
     Entry := RevisionAt(Index);
+    CopyMetadata := Entry.Find('copy_metadata');
+    Indexed := '';
+    if Assigned(CopyMetadata) then
+      Indexed := CopyMetadata.AsJSON;
     Database.AppendRevision(Index + 1, Field(Entry, 'deck', jtString).AsString,
-      VersionAt(Index + 1), FormatFixed(FDeckNumbers[Index], 3), Entry.AsJSON,
-      Field(Entry, 'copy_metadata', jtObject).AsJSON);
+      VersionAt(Index + 1), FormatFixed(FDeckNumbers[Index], 3), Entry.AsJSON, Indexed);
   end;
 end;
 
@@ -546,6 +611,7 @@ begin
   try
     Recovery.Add('format', 'scu-pending-recovery-v1');
     Recovery.Add('base_library_revision', FSavedRevisionCount);
+    Recovery.Add('base_library_state', FSavedState);
     Recovery.Add('header', FHeader.Clone);
     Pending := TJSONArray.Create;
     Recovery.Add('pending_revisions', Pending);

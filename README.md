@@ -67,6 +67,20 @@ reading redirected input, SCU omits the `scu>` prompt. Errors are reported and
 the session continues.
 The session exits with status 1 if any command failed.
 
+Use `recover_library` (`recl`) to restore a recovery file to a new SQLite
+library. For a pending-only file that references saved revisions, supply a
+copy of the saved SQLite snapshot from before the failed save.
+
+```sh
+./build/scu recovered.sqlite recover_library project.sqlite.recovery-TIMESTAMP.json
+./build/scu recovered.sqlite recover_library project.sqlite.recovery-TIMESTAMP.json base_library=backup.sqlite
+```
+
+SCU leaves the recovery file and the base snapshot available and starts a fresh
+audit trail in the restored library. New pending-only files identify the exact
+base snapshot. For older files, SCU checks the saved revision count and version
+history, so use a backup you know belongs to that recovery file.
+
 SCU's Pascal line editor uses Up and Down to recall commands. Use Left,
 Right, Home, End, Backspace, or Delete to edit before pressing Enter. Press
 Ctrl+R and type part of a command to search saved history from newest to

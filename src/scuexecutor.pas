@@ -42,7 +42,7 @@ implementation
 
 uses
   Classes, SysUtils, BaseUnix, Process, FPJSON, ScuIO, ScuJSON, ScuCodec,
-  ScuExpand, ScuEdit, ScuDiff, ScuCommands, ScuVersions, ScuSignals;
+  ScuExpand, ScuEdit, ScuDiff, ScuCommands, ScuVersions, ScuSignals, ScuRecovery;
 
 const
   CurrentLibraryVersionSelector = 'scu$current_library_version';
@@ -523,6 +523,13 @@ var
   Directory, Path: string;
   Lock: TLibraryLock;
 begin
+  if Command.Name = 'recover_library' then
+  begin
+    if Assigned(FPendingLibrary) then
+      raise EScuError.Create('Finish pending edits before recovering a library.');
+    FOutput.WriteLine(RestoreLibrary(CanonicalFile(FLibraryPath), Command));
+    Exit;
+  end;
   if Command.Name = 'expand_deck' then
   begin
     Path := Command.Arguments[1].Value;

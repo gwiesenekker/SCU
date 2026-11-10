@@ -60,18 +60,25 @@ function MacroAt(const Line: RawByteString; Index: SizeInt;
   out TokenLength: SizeInt; AfterPrefix: Boolean = False): TMacro;
 var
   Candidate: TMacro;
-  Spelling: string;
+  SpellingIndex: Integer;
 begin
-  if (Index > Length(Line)) or not (Line[Index] in ['S', '$']) or
+  if (Index + 3 > Length(Line)) or
     ((Index > 1) and not AfterPrefix and IsIdentifierChar(Line[Index - 1])) then
     Exit(NoMacro);
-  if (Copy(Line, Index, 4) <> 'SCU$') and (Copy(Line, Index, 4) <> '$SCU') then
-    Exit(NoMacro);
+  case Line[Index] of
+    'S':
+      if (Line[Index + 1] <> 'C') or (Line[Index + 2] <> 'U') or (Line[Index + 3] <> '$') then
+        Exit(NoMacro);
+    '$':
+      if (Line[Index + 1] <> 'S') or (Line[Index + 2] <> 'C') or (Line[Index + 3] <> 'U') then
+        Exit(NoMacro);
+    else Exit(NoMacro);
+  end;
   for Candidate := Low(MacroNames) to High(MacroNames) do
-    for Spelling in MacroNames[Candidate] do
-      if (Spelling <> '') and HasToken(Line, Index, Spelling) then
+    for SpellingIndex := Low(MacroNames[Candidate]) to High(MacroNames[Candidate]) do
+      if HasToken(Line, Index, MacroNames[Candidate, SpellingIndex]) then
       begin
-        TokenLength := Length(Spelling);
+        TokenLength := Length(MacroNames[Candidate, SpellingIndex]);
         Exit(Candidate);
       end;
   Result := NoMacro;
@@ -126,13 +133,18 @@ end;
 
 procedure TDeckExpander.ExpandMacros(const Line: RawByteString; const Stored: TDeckSource);
 var
-  Index, FromIndex, TokenLength: SizeInt;
+  Index, FromIndex, TokenLength, LineLength: SizeInt;
   Macro: TMacro;
 begin
   Index := 1;
   FromIndex := Index;
-  while Index <= Length(Line) do
+  LineLength := Length(Line);
+  while Index <= LineLength do
   begin
+    while (Index <= LineLength) and not (Line[Index] in ['S', '$']) do
+      Inc(Index);
+    if Index > LineLength then
+      Break;
     Macro := MacroAt(Line, Index, TokenLength);
     if Macro = NoMacro then
     begin
@@ -153,7 +165,7 @@ begin
     Inc(Index, TokenLength);
     FromIndex := Index;
   end;
-  AppendSlice(Line, FromIndex, Length(Line) - FromIndex + 1);
+  AppendSlice(Line, FromIndex, LineLength - FromIndex + 1);
 end;
 
 procedure TDeckExpander.ExpandInto(const Deck: string);
