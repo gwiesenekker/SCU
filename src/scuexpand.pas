@@ -258,7 +258,7 @@ var
 begin
   if Decks.Count = 0 then
     Exit;
-  Visible := FDatabase.ReadCopyMetadata(FRevision);
+  Visible := FDatabase.Revisions.ReadCopyMetadata(FRevision);
   Parents := TStringList.Create;
   Pending := TStringList.Create;
   Targets := TStringList.Create;

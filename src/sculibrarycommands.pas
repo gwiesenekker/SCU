@@ -160,7 +160,7 @@ begin
   Writer := THistoryWriter.Create;
   try
     Writer.Output := Context.Output;
-    Context.Database.ReadCommandHistory(Limit, @Writer.WriteLine);
+    Context.Database.Audit.ReadCommandHistory(Limit, @Writer.WriteLine);
   finally
     Writer.Free;
   end;

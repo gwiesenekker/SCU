@@ -1,0 +1,105 @@
+unit ScuSQLiteSchema;
+
+{$mode objfpc}{$H+}
+
+interface
+
+uses
+  ScuSQLiteDB;
+
+function EnsureLibrarySchema(Database: TSQLiteConnection; AllowCreate: Boolean): Integer;
+
+implementation
+
+uses
+  SysUtils, ScuIO;
+
+const
+  ApplicationID = '1396921650';
+
+procedure CreateExpansionCheckpoints(Database: TSQLiteConnection);
+begin
+  Database.Execute('CREATE TABLE expansion_checkpoints (' +
+    'version TEXT NOT NULL, output_directory TEXT NOT NULL, ' +
+    'revision INTEGER NOT NULL CHECK (revision >= 0), comment_prefix TEXT, ' +
+    'build_pending INTEGER NOT NULL DEFAULT 0 CHECK (build_pending IN (0, 1)), ' +
+    'PRIMARY KEY (version, output_directory)); PRAGMA user_version = 3');
+end;
+
+procedure CreateAuditState(Database: TSQLiteConnection);
+begin
+  Database.Execute('CREATE TABLE IF NOT EXISTS audit_state (' +
+    'id INTEGER PRIMARY KEY CHECK (id = 1), record_count INTEGER NOT NULL CHECK (record_count > 0), ' +
+    'head TEXT NOT NULL, pending TEXT NOT NULL, pending_command TEXT NOT NULL, ' +
+    'interrupted INTEGER NOT NULL CHECK (interrupted >= 0 AND interrupted < record_count), ' +
+    'initialized INTEGER NOT NULL CHECK (initialized IN (0, 1)));' +
+    'CREATE INDEX IF NOT EXISTS audit_digest ON audit_records (substr(line, 1, 64));' +
+    'CREATE TRIGGER IF NOT EXISTS audit_state_insert AFTER INSERT ON audit_records ' +
+      'BEGIN DELETE FROM audit_state WHERE id = 1; END;' +
+    'CREATE TRIGGER IF NOT EXISTS audit_state_update AFTER UPDATE ON audit_records ' +
+      'BEGIN DELETE FROM audit_state WHERE id = 1; END;' +
+    'CREATE TRIGGER IF NOT EXISTS audit_state_delete AFTER DELETE ON audit_records ' +
+      'BEGIN DELETE FROM audit_state WHERE id = 1; END;' +
+    'PRAGMA user_version = 4');
+end;
+
+procedure CreateCopyMetadata(Database: TSQLiteConnection);
+begin
+  if Database.Scalar('SELECT 1 FROM pragma_table_info(''deck_revisions'') WHERE name = ''copy_metadata''') = '' then
+    Database.Execute('ALTER TABLE deck_revisions ADD COLUMN copy_metadata TEXT');
+  Database.Execute('PRAGMA user_version = 5');
+end;
+
+function EnsureLibrarySchema(Database: TSQLiteConnection; AllowCreate: Boolean): Integer;
+var
+  ID: RawByteString;
+begin
+  ID := Database.Scalar('PRAGMA application_id');
+  if ID = ApplicationID then
+  begin
+    Result := StrToIntDef(Database.Scalar('PRAGMA user_version'), 0);
+    if not (Result in [1..5]) then
+      raise EScuError.Create('Unsupported SQLite library schema.');
+    if not Database.ReadOnly then
+    begin
+      if Result = 1 then
+      begin
+        CreateExpansionCheckpoints(Database);
+        Result := 3;
+      end;
+      if Result = 2 then
+      begin
+        Database.Execute('ALTER TABLE expansion_checkpoints ADD COLUMN build_pending INTEGER NOT NULL DEFAULT 0 ' +
+          'CHECK (build_pending IN (0, 1)); PRAGMA user_version = 3');
+        Result := 3;
+      end;
+      if Result = 3 then
+      begin
+        CreateAuditState(Database);
+        Result := 4;
+      end;
+      if Result = 4 then
+      begin
+        CreateCopyMetadata(Database);
+        Result := 5;
+      end;
+    end;
+    Exit;
+  end;
+  if not AllowCreate or (ID <> '0') or (Database.Scalar('SELECT count(*) FROM sqlite_master') <> '0') then
+    raise EScuError.Create('The SQLite database is not an SCU library.');
+  Database.Execute('CREATE TABLE library (id INTEGER PRIMARY KEY CHECK (id = 1), ' +
+    'identity TEXT NOT NULL, generation INTEGER NOT NULL CHECK (generation > 0), payload TEXT NOT NULL);' +
+    'CREATE TABLE deck_revisions (sequence INTEGER PRIMARY KEY CHECK (sequence > 0), ' +
+    'deck_name TEXT NOT NULL, library_version TEXT NOT NULL, deck_revision TEXT NOT NULL, payload TEXT NOT NULL, ' +
+    'UNIQUE (deck_name, library_version, deck_revision));' +
+    'CREATE INDEX deck_revision_history ON deck_revisions (deck_name, sequence);' +
+    'CREATE TABLE audit_records (sequence INTEGER PRIMARY KEY, line TEXT NOT NULL);' +
+    'PRAGMA application_id = ' + ApplicationID);
+  CreateExpansionCheckpoints(Database);
+  CreateAuditState(Database);
+  CreateCopyMetadata(Database);
+  Result := 5;
+end;
+
+end.

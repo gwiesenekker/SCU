@@ -55,7 +55,7 @@ var
 begin
   Metadata := MakeCopyMetadata(Prefix, Targets);
   try
-    Database.CacheCopyMetadata(Sequence, Metadata.AsJSON);
+    Database.Revisions.CacheCopyMetadata(Sequence, Metadata.AsJSON);
   finally
     Metadata.Free;
   end;

@@ -5,7 +5,7 @@ unit ScuAudit;
 interface
 
 uses
-  FPJSON, FGL, ScuCommand, ScuLibrary, ScuSQLite;
+  FPJSON, FGL, ScuCommand, ScuLibrary, ScuSQLite, ScuSQLiteAudit;
 
 type
   TAuditSnapshots = record
@@ -116,7 +116,7 @@ var
   Tail, PreviousDigest: RawByteString;
 begin
   Result := False;
-  if not FDatabase.ReadAuditTail(Sequence, Tail, PreviousDigest) or
+  if not FDatabase.Audit.ReadAuditTail(Sequence, Tail, PreviousDigest) or
     (Sequence <> State.RecordCount) or (Length(Tail) <= HashLength + 1) or
     (Tail[HashLength + 1] <> ' ') or (Copy(Tail, 1, HashLength) <> State.Head) then
     Exit;
@@ -125,7 +125,7 @@ begin
   if not IsHexDigest(PreviousDigest, HashLength) or
     (State.Head <> AuditSHA256(AuditDomain + PreviousDigest + ' ' + Copy(Tail, HashLength + 2, MaxInt))) then
     Exit;
-  if (Checkpoint <> '') and (Checkpoint <> State.Head) and not FDatabase.HasAuditDigest(Checkpoint) then
+  if (Checkpoint <> '') and (Checkpoint <> State.Head) and not FDatabase.Audit.HasAuditDigest(Checkpoint) then
     raise EScuError.Create('Saved audit head is absent from the verified chain.');
   FHead := State.Head;
   FPending := State.Pending;
@@ -149,13 +149,13 @@ begin
     FContents := TAuditRevisionDigests.Create;
     FContents.Sorted := True;
   end;
-  FUseState := not VerifyData and Database.AuditStateUsable;
-  HasState := Database.ReadAuditState(State);
+  FUseState := not VerifyData and Database.Audit.AuditStateUsable;
+  HasState := Database.Audit.ReadAuditState(State);
   if FUseState and HasState and Resume(State, Checkpoint) then
     Exit;
   FCheckpoint := Checkpoint;
   FFoundCheckpoint := Checkpoint = '';
-  Database.ReadAudit(@Accept);
+  Database.Audit.ReadAudit(@Accept);
   if not FFoundCheckpoint then
     raise EScuError.Create('Saved audit head is absent from the verified chain.');
   if HasState and ((State.RecordCount <> FRecords) or (State.Head <> FHead) or
@@ -285,11 +285,11 @@ begin
   if Length(Line) > MaxRecordSize then
     raise EScuError.Create('Audit record exceeds the size limit.');
   Accept(Line);
-  FDatabase.AppendAudit(FRecords, Line);
+  FDatabase.Audit.AppendAudit(FRecords, Line);
   if FUseState then
-    FDatabase.SaveAuditState(CurrentState)
+    FDatabase.Audit.SaveAuditState(CurrentState)
   else
-    FDatabase.ClearAuditState;
+    FDatabase.Audit.ClearAuditState;
 end;
 
 procedure TAuditLog.BeginCommand(Command: TScuCommand);

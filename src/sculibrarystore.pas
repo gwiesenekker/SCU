@@ -70,9 +70,9 @@ begin
         Reader := TSQLiteLibrary.OpenRead(Path);
         Database := Reader;
       end;
-      FSavedState := Database.StateKey;
-      FMetadata := Database.ReadMetadata;
-      Database.ReadRevisionIndex(@ReadIndexEntry);
+      FSavedState := Database.Revisions.StateKey;
+      FMetadata := Database.Revisions.ReadMetadata;
+      Database.Revisions.ReadRevisionIndex(@ReadIndexEntry);
       FSavedRevisionCount := Count;
     finally
       Reader.Free;
@@ -224,7 +224,7 @@ begin
     Exit;
   if not Assigned(Database) then
     raise EScuError.Create('Reading a revision requires an open SQLite transaction.');
-  Payload := Database.ReadRevision(Index + 1);
+  Payload := Database.Revisions.ReadRevision(Index + 1);
   try
     Result.LoadPayload(Payload);
   finally
@@ -242,7 +242,7 @@ begin
   if Entry.CopyMetadataJSON = '' then
   begin
     // Older audit digests cover the original payload. Validate derived metadata separately.
-    Indexed := Database.ReadRevisionCopyMetadata(Sequence);
+    Indexed := Database.Revisions.ReadRevisionCopyMetadata(Sequence);
     if Indexed <> '' then
     begin
       Metadata := ScanCopyMetadata(Entry.Decode, Entry.CommentPrefix);
@@ -267,21 +267,21 @@ begin
   CheckSessionInterrupt;
   if not Assigned(Database) then
     raise EScuError.Create('Saving requires an open SQLite transaction.');
-  if Database.StateKey <> FSavedState then
+  if Database.Revisions.StateKey <> FSavedState then
     raise EScuError.Create('The saved library changed outside this session. Unsaved changes are still in this session.');
-  SavedCount := Database.RevisionCount;
+  SavedCount := Database.Revisions.RevisionCount;
   if SavedCount > Count then
     raise EScuError.Create('SQLite library contains newer revisions.');
   if SavedCount <> FSavedRevisionCount then
     raise EScuError.Create('The saved library changed outside this session. Unsaved changes are still in this session.');
-  Database.SaveMetadata(FMetadata.AsJSON);
+  Database.Revisions.SaveMetadata(FMetadata.AsJSON);
   for Index := SavedCount to Count - 1 do
   begin
     Entry := Entries[Index];
-    Database.AppendRevision(Index + 1, Entry.Name, Header.Versions.AtRevision(Index + 1),
+    Database.Revisions.AppendRevision(Index + 1, Entry.Name, Header.Versions.AtRevision(Index + 1),
       FormatFixed(Entry.Number, 3), Entry.Serialized, Entry.CopyMetadataJSON);
   end;
-  Save.StateKey := Database.StateKey;
+  Save.StateKey := Database.Revisions.StateKey;
   Save.FirstRevision := FSavedRevisionCount + 1;
 end;
 
@@ -345,7 +345,7 @@ begin
   try
     try
       Reader := TSQLiteLibrary.OpenRead(FPath);
-      State := Reader.StateKey;
+      State := Reader.Revisions.StateKey;
       if Copy(State, 1, Pos(':', State)) = Copy(FSavedState, 1, Pos(':', FSavedState)) then
         Exit(ExportJSON(Reader));
     except

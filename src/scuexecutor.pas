@@ -68,7 +68,7 @@ var
           Audit := TAuditLog.Create(Database, Expansion);
           try
             if (Failure = '') and (Build.Checkpoint.Version <> '') then
-              Database.SaveExpansionCheckpoint(Build.Checkpoint.Version, Build.OutputPath,
+              Database.Checkpoints.SaveExpansionCheckpoint(Build.Checkpoint.Version, Build.OutputPath,
                 Build.CommentPrefix, Build.Checkpoint.LibraryRevision, False);
             Audit.RecordBuild(Expansion, Build.Command, Build.OutputPath, Failure = '', Failure);
             Database.Commit;
@@ -253,7 +253,7 @@ begin
       Context.Database := TSQLiteLibrary.OpenRead(FLibraryPath)
     else
       Context.Database := TSQLiteLibrary.OpenWrite(FLibraryPath);
-    LibraryExists := Context.Database.StateKey <> '';
+    LibraryExists := Context.Database.Revisions.StateKey <> '';
     if Handler.Mode = cmHistory then
     begin
       if not LibraryExists then

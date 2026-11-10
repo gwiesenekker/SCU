@@ -21,7 +21,7 @@ function ResetExpansionCheckpoint(var Context: TCommandContext): string;
 implementation
 
 uses
-  Classes, SysUtils, ScuCommands, ScuExpand, ScuIO, ScuLibrary, ScuSignals;
+  Classes, SysUtils, FPJSON, ScuCommands, ScuExpand, ScuIO, ScuLibrary, ScuSignals, ScuSQLiteCheckpoint;
 
 const
   CurrentLibraryVersionSelector = 'scu$current_library_version';
@@ -75,8 +75,8 @@ var
 begin
   Version := Context.Command['version'];
   if SameText(Version, CurrentLibraryVersionSelector) then
-    Version := Context.Database.CurrentVersion;
-  Result := Context.Database.InvalidateExpansionOutput(Version, Context.OutputDirectory,
+    Version := Context.Database.Revisions.ReadCurrentVersion;
+  Result := Context.Database.Checkpoints.InvalidateExpansionOutput(Version, Context.OutputDirectory,
     PrefixOption(Context.Command));
 end;
 
@@ -173,7 +173,7 @@ begin
   Context.Snapshots.Selected.Version := Version;
   Context.Snapshots.Selected.LibraryRevision := Revision;
   BuildPending := False;
-  if Expand and Context.Database.ReadExpansionCheckpoint(Version, Directory, CheckpointRevision,
+  if Expand and Context.Database.Checkpoints.ReadExpansionCheckpoint(Version, Directory, CheckpointRevision,
     Refresh, BuildPending) then
   begin
     if (CheckpointRevision < Base) or (CheckpointRevision > Revision) then
@@ -222,7 +222,7 @@ begin
         Context.Build.CommentPrefix := Prefix;
       end
       else if (Names.Count > 0) and (LibraryFile.BuildCommand = '') then
-        Context.Database.SaveExpansionCheckpoint(Version, Directory, Prefix, Revision, True);
+        Context.Database.Checkpoints.SaveExpansionCheckpoint(Version, Directory, Prefix, Revision, True);
     end;
     Result := Format('Wrote %d deck(s) for version %s', [Names.Count, Version]);
   finally
@@ -242,23 +242,36 @@ begin
   Result := TransferModifiedDecks(Context, True);
 end;
 
+function FormatExpansionCheckpoint(const Row: TExpansionCheckpoint): string;
+var
+  BuiltRevision, BuiltUTC, Status: string;
+begin
+  BuiltRevision := 'None';
+  if Row.HasBuiltRevision then
+    BuiltRevision := IntToStr(Row.BuiltRevision);
+  BuiltUTC := 'None';
+  if Row.HasBuildTime then
+    BuiltUTC := Row.BuiltUTC;
+  if Row.FullRebuildPending then
+    Status := 'Full rebuild pending'
+  else
+    Status := 'Incremental';
+  Result := Row.Version + #9 + StringToJSONString(Row.OutputDirectory) + #9 + BuiltRevision +
+    #9 + Status + #9 + BuiltUTC + #9 + IntToStr(Row.Revision);
+end;
+
 function DisplayExpansionCheckpoints(var Context: TCommandContext): string;
 var
-  Rows: TStringList;
-  Row: string;
+  Rows: TExpansionCheckpoints;
+  Row: TExpansionCheckpoint;
 begin
-  Rows := TStringList.Create;
-  try
-    Context.Database.ListExpansionCheckpoints(Rows);
-    if Rows.Count = 0 then
-      Exit('No expansion checkpoints.');
-    Context.Output.WriteLine('Version'#9'Output directory'#9'Last built library revision'#9'Status'#9 +
-      'Last successful build (UTC)'#9'Checkpoint library revision');
-    for Row in Rows do
-      Context.Output.WriteLine(Row);
-  finally
-    Rows.Free;
-  end;
+  Rows := Context.Database.Checkpoints.ReadExpansionCheckpoints;
+  if Length(Rows) = 0 then
+    Exit('No expansion checkpoints.');
+  Context.Output.WriteLine('Version'#9'Output directory'#9'Last built library revision'#9'Status'#9 +
+    'Last successful build (UTC)'#9'Checkpoint library revision');
+  for Row in Rows do
+    Context.Output.WriteLine(FormatExpansionCheckpoint(Row));
   Result := '';
 end;
 
@@ -269,7 +282,7 @@ var
 begin
   Version := Context.Command['version'];
   Context.LibraryFile.VersionBounds(Version, Base, Revision);
-  if Context.Database.ResetExpansionCheckpoint(Version, Context.OutputDirectory) then
+  if Context.Database.Checkpoints.ResetExpansionCheckpoint(Version, Context.OutputDirectory) then
     Result := Format('Reset expansion checkpoint for version %s in "%s".', [Version, Context.OutputDirectory])
   else
     Result := Format('No expansion checkpoint for version %s in "%s".', [Version, Context.OutputDirectory]);

@@ -59,13 +59,13 @@ begin
       if not RegularFileExists(BasePath) then
         raise EScuError.CreateFmt('Base library "%s" does not exist.', [BasePath]);
       Base := TSQLiteLibrary.OpenRead(BasePath);
-      State := Base.StateKey;
+      State := Base.Revisions.StateKey;
       if (State = '') or (Assigned(Recovery.Find('base_library_state')) and
         (Field(Recovery, 'base_library_state', jtString).AsString <> State)) then
         raise EScuError.Create('The base library does not match the saved snapshot in the recovery file.');
-      if Count <> Base.RevisionCount then
+      if Count <> Base.Revisions.RevisionCount then
         raise EScuError.Create('The base library revision count does not match the recovery file.');
-      BaseDocument := Base.ReadMetadata;
+      BaseDocument := Base.Revisions.ReadMetadata;
       try
         CheckBaseHistory(TJSONObject(Field(BaseDocument, 'header', jtObject)), Header);
       finally
@@ -81,7 +81,7 @@ begin
       for Index := 1 to Count do
       begin
         CheckSessionInterrupt;
-        Revisions.Add(Base.ReadRevision(Index));
+        Revisions.Add(Base.Revisions.ReadRevision(Index));
       end;
       for Index := 0 to Pending.Count - 1 do
         Revisions.Add(Pending.Items[Index].Clone);
