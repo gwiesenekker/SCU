@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Default extract and expand destinations to the selected deck, respect explicit empty arguments, and accept `--option=value`.
+- Preserve unsaved edits across interrupted builds and terminal hangups, with a recovery file when a hangup save fails.
+- Isolate build input, serialize expansion output directories, and resolve bare editor names through PATH.
+- Authenticate newly saved deck payloads and library headers in the audit log, and add repair for an incomplete JSON audit tail.
+- Load SQLite deck payloads on demand and preserve more context in large scattered diffs.
+- Preserve source output permissions, order new versions as decimals, and skip identical stores within the same version.
+
 - Added the Free Pascal SCU command line and JSON command definitions.
 - Added a JSON deck library with zstd compression, base64 encoding, and SHA-1 verification.
 - Added SQLite libraries with one JSON payload per deck revision, transactional saves and audit records, and JSON import and export.

@@ -51,32 +51,48 @@ begin
       raise EScuError.Create('The comment prefix must be printable and on one line.');
 end;
 
-procedure ParseVersion(const Name: string; out Major, Minor: Integer);
+procedure ParseVersion(const Name: string; out Major: Integer; out Minor: Int64);
 var
-  Dot: SizeInt;
+  Dot, Index: SizeInt;
   MinorText: string;
+  Valid: Boolean;
 begin
   Dot := Pos('.', Name);
   MinorText := Copy(Name, Dot + 1, MaxInt);
+  Valid := (Length(MinorText) > 0) and (Length(MinorText) <= 10);
+  for Index := 1 to Length(MinorText) do
+    Valid := Valid and (MinorText[Index] in ['0'..'9']);
   if (Dot <= 1) or not TryStrToInt(Copy(Name, 1, Dot - 1), Major) or
-    not TryStrToInt(MinorText, Minor) or (Major < 0) or (Minor < 0) or
-    (Copy(Name, 1, Dot - 1) <> IntToStr(Major)) or
-    ((MinorText <> IntToStr(Minor)) and ((Minor > 9) or (MinorText <> '0' + IntToStr(Minor)))) then
+    not Valid or not TryStrToInt64(MinorText, Minor) or (Major < 0) or
+    (Copy(Name, 1, Dot - 1) <> IntToStr(Major)) then
     raise EScuError.CreateFmt('Invalid version "%s". Expected MAJOR.MINOR.', [Name]);
 end;
 
-function LaterVersion(const Name, Previous: string): Boolean;
+function LaterVersion(const Name, Previous: string; Legacy: Boolean = False): Boolean;
 var
-  Major, Minor, PreviousMajor, PreviousMinor: Integer;
+  Major, PreviousMajor: Integer;
+  Minor, PreviousMinor: Int64;
+  Fraction, PreviousFraction: string;
 begin
   ParseVersion(Name, Major, Minor);
   ParseVersion(Previous, PreviousMajor, PreviousMinor);
-  Result := (Major > PreviousMajor) or ((Major = PreviousMajor) and (Minor > PreviousMinor));
+  if Major <> PreviousMajor then
+    Exit(Major > PreviousMajor);
+  if Legacy then
+    Exit(Minor > PreviousMinor);
+  Fraction := Copy(Name, Pos('.', Name) + 1, MaxInt);
+  PreviousFraction := Copy(Previous, Pos('.', Previous) + 1, MaxInt);
+  while (Fraction <> '') and (Fraction[Length(Fraction)] = '0') do
+    SetLength(Fraction, Length(Fraction) - 1);
+  while (PreviousFraction <> '') and (PreviousFraction[Length(PreviousFraction)] = '0') do
+    SetLength(PreviousFraction, Length(PreviousFraction) - 1);
+  Result := CompareStr(Fraction, PreviousFraction) > 0;
 end;
 
 constructor TVersionHistory.Create(Entries: TJSONArray; Latest: Integer);
 var
-  Index, Base, PreviousBase, Major, Minor: Integer;
+  Index, Base, PreviousBase, Major: Integer;
+  Minor: Int64;
   Name, PreviousName: string;
   IsLocked: Boolean;
 begin
@@ -93,7 +109,7 @@ begin
     IsLocked := Field(Entry(Index), 'locked', jtBoolean).AsBoolean;
     if (Base > Latest) or (Base < PreviousBase) or ((Index = 0) and (Base <> 0)) or
       ((Index < FEntries.Count - 1) and not IsLocked) or
-      ((Index > 0) and not LaterVersion(Name, PreviousName)) then
+      ((Index > 0) and not (LaterVersion(Name, PreviousName) or LaterVersion(Name, PreviousName, True))) then
       raise EScuError.Create('Invalid version history.');
     PreviousBase := Base;
     PreviousName := Name;
@@ -154,7 +170,8 @@ end;
 
 procedure TVersionHistory.Start(const Name, Prefix: string; Latest: Integer);
 var
-  Major, Minor: Integer;
+  Major, Index: Integer;
+  Minor: Int64;
   Item: TJSONObject;
 begin
   ParseVersion(Name, Major, Minor);
@@ -164,6 +181,9 @@ begin
       raise EScuError.CreateFmt('Lock version %s before starting a new version.', [Current]);
     if not LaterVersion(Name, Current) then
       raise EScuError.CreateFmt('The new version must be greater than %s.', [Current]);
+    for Index := 0 to FEntries.Count - 1 do
+      if Field(Entry(Index), 'name', jtString).AsString = Name then
+        raise EScuError.CreateFmt('Version "%s" already exists.', [Name]);
   end;
   Item := TJSONObject.Create;
   FEntries.Add(Item);
@@ -175,14 +195,24 @@ end;
 
 function TVersionHistory.NextVersion(Increment: Int64): string;
 var
-  Major, Minor: Integer;
-  Units: Int64;
+  Major, Places, Index: Integer;
+  Minor, NewMajor, Scale: Int64;
 begin
   ParseVersion(Current, Major, Minor);
-  Units := Int64(Major) * 100 + Minor;
-  if Increment > Int64(High(Integer)) * 100 + 99 - Units then
+  Places := Length(Current) - Pos('.', Current);
+  if Places = 1 then
+  begin
+    Places := 2;
+    Minor := Minor * 10;
+  end;
+  Scale := 100;
+  for Index := 3 to Places do
+    Scale := Scale * 10;
+  Minor := Minor + (Increment mod 100) * (Scale div 100);
+  NewMajor := Int64(Major) + (Increment div 100) + (Minor div Scale);
+  if NewMajor > High(Integer) then
     raise EScuError.Create('The next library version is out of range.');
-  Result := FormatFixed(Units + Increment, 2);
+  Result := IntToStr(NewMajor) + Copy(FormatFixed(Minor mod Scale, Places), 2, MaxInt);
 end;
 
 function TVersionHistory.IndexOf(const Name: string): Integer;

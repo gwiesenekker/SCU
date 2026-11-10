@@ -33,10 +33,13 @@ type
     FDeferredSave, FModified: Boolean;
     FSavedDigest: string;
     FDatabase: TSQLiteLibrary;
+    FOwnedReader: TSQLiteLibrary;
+    FIndexedRevisions, FSavedRevisionCount, FSaveFrom: Integer;
     FSavedState, FNextSavedState: string;
     FDeckNumbers: array of Integer;
     function GetRevision: Integer;
     function RevisionAt(Index: Integer): TJSONObject;
+    function RevisionPayloadAt(Index: Integer): TJSONObject;
     function FindDeckRevision(const Name: string; LastRevision: Integer): Integer;
     procedure LoadDeckNumbers;
     procedure MarkModified;
@@ -54,6 +57,10 @@ type
     procedure FinishDatabaseSave(Committed: Boolean);
     procedure ImportInto(Database: TSQLiteLibrary);
     function ExportJSON: RawByteString;
+    function ExportRecoveryJSON: RawByteString;
+    function SavedContents: TJSONObject;
+    function HeaderDigest: string;
+    function RevisionDigest(Sequence: Integer): string;
     function Store(const Deck: string; const Source: RawByteString;
       CreateOnly: Boolean = False; const Prefix: string = ''): Integer;
     function Extract(const Deck: string; Revision: Integer; const SelectedVersion: string = ''): TDeckSource;
@@ -95,7 +102,7 @@ function DeckName(const Name: string): string;
 implementation
 
 uses
-  SysUtils, DateUtils, FGL, ScuIO, ScuJSON, ScuCodec, ScuVersionNumbers;
+  SysUtils, DateUtils, FGL, ScuIO, ScuJSON, ScuCodec, ScuVersionNumbers, ScuSignals;
 
 const
   MaxLibrarySize = 256 * 1024 * 1024;
@@ -163,9 +170,9 @@ var
   Name: string;
   Data: RawByteString;
   Versions, DefaultEditor: TJSONArray;
-  Reader: TSQLiteLibrary;
 begin
   inherited Create;
+  FSaveFrom := -1;
   FPath := Path;
   FDatabase := Database;
   if InitialVersion <> '' then
@@ -201,14 +208,11 @@ begin
     end
     else if IsSQLiteLibrary(Path) then
     begin
-      Reader := TSQLiteLibrary.Create(Path, False, True);
-      try
-        Reader.BeginTransaction(True);
-        Reader.EnsureSchema(False);
-        FDocument := Reader.ReadDocument;
-      finally
-        Reader.Free;
-      end;
+      FOwnedReader := TSQLiteLibrary.Create(Path, False, True);
+      FOwnedReader.BeginTransaction(True);
+      FOwnedReader.EnsureSchema(False);
+      FDatabase := FOwnedReader;
+      FDocument := FDatabase.ReadDocument;
     end
     else
     begin
@@ -220,6 +224,8 @@ begin
     if IntegerField(FDocument, 'format') <> 1 then
       raise EScuError.Create('Unsupported library format.');
     FRevisions := TJSONArray(Field(FDocument, 'revisions', jtArray));
+    if Assigned(FDatabase) then
+      FIndexedRevisions := Revision;
     FHeader := TJSONObject(Field(FDocument, 'header', jtObject));
     Versions := TJSONArray(Field(FHeader, 'versions', jtArray));
     if Versions.Count = 0 then
@@ -253,11 +259,13 @@ begin
     else if LastModifiedDeck <> Name then
       raise EScuError.Create('The last_modified_deck header does not match the revision history.');
     LoadDeckNumbers;
+    FSavedRevisionCount := Revision;
   end;
 end;
 
 destructor TDeckLibrary.Destroy;
 begin
+  FOwnedReader.Free;
   FVersions.Free;
   FDocument.Free;
   inherited Destroy;
@@ -273,6 +281,31 @@ begin
   if not (FRevisions.Items[Index] is TJSONObject) then
     raise EScuError.CreateFmt('Invalid library revision %d.', [Index + 1]);
   Result := TJSONObject(FRevisions.Items[Index]);
+end;
+
+function TDeckLibrary.RevisionPayloadAt(Index: Integer): TJSONObject;
+var
+  Payload: TJSONObject;
+  Number: Int64;
+begin
+  Result := RevisionAt(Index);
+  if (Index >= FIndexedRevisions) or Assigned(Result.Find('zstd_base64')) then
+    Exit;
+  Payload := FDatabase.ReadRevision(Index + 1);
+  try
+    if Field(Payload, 'deck', jtString).AsString <> Field(Result, 'deck', jtString).AsString then
+      raise EScuError.Create('The SQLite deck name does not match its payload.');
+    if Assigned(Payload.Find('deck_revision')) and
+      (not TryParseFixed(Field(Payload, 'deck_revision', jtString).AsString, 3, Number) or
+      (Number <> FDeckNumbers[Index])) then
+      raise EScuError.Create('The SQLite deck revision does not match its payload.');
+    Field(Payload, 'zstd_base64', jtString);
+    FRevisions.Items[Index] := Payload;
+    Result := Payload;
+  except
+    Payload.Free;
+    raise;
+  end;
 end;
 
 function TDeckLibrary.FindDeckRevision(const Name: string; LastRevision: Integer): Integer;
@@ -351,6 +384,9 @@ begin
     FSavedState := FNextSavedState;
     FModified := False;
   end;
+  if Committed and (FSaveFrom >= 0) then
+    FSavedRevisionCount := Revision;
+  FSaveFrom := -1;
   FNextSavedState := '';
   FDatabase := nil;
 end;
@@ -389,11 +425,93 @@ begin
   for Index := 0 to Revision - 1 do
     Extract(Field(RevisionAt(Index), 'deck', jtString).AsString, Index + 1);
   WriteDatabase(Database);
+  FSaveFrom := 0;
+end;
+
+function TDeckLibrary.HeaderDigest: string;
+begin
+  Result := AuditSHA256(FHeader.AsJSON);
+end;
+
+function TDeckLibrary.RevisionDigest(Sequence: Integer): string;
+begin
+  Result := AuditSHA256(RevisionPayloadAt(Sequence - 1).AsJSON);
+end;
+
+function TDeckLibrary.SavedContents: TJSONObject;
+var
+  Index: Integer;
+  Digests: TJSONArray;
+begin
+  if FSaveFrom < 0 then
+    Exit(nil);
+  Result := TJSONObject.Create;
+  try
+    Result.Add('header_sha256', HeaderDigest);
+    Result.Add('revision_count', Revision);
+    Result.Add('first_revision', FSaveFrom + 1);
+    Digests := TJSONArray.Create;
+    Result.Add('revision_sha256', Digests);
+    for Index := FSaveFrom + 1 to Revision do
+      Digests.Add(RevisionDigest(Index));
+  except
+    Result.Free;
+    raise;
+  end;
 end;
 
 function TDeckLibrary.ExportJSON: RawByteString;
+var
+  Index: Integer;
 begin
+  for Index := 0 to FIndexedRevisions - 1 do
+    RevisionPayloadAt(Index);
   Result := FDocument.FormatJSON + #10;
+end;
+
+function TDeckLibrary.ExportRecoveryJSON: RawByteString;
+var
+  Reader: TSQLiteLibrary;
+  Recovery: TJSONObject;
+  Pending: TJSONArray;
+  Index: Integer;
+  State: string;
+begin
+  if FSavedState = '' then
+    Exit(ExportJSON);
+  Reader := nil;
+  try
+    try
+      Reader := TSQLiteLibrary.Create(FPath, False, True);
+      Reader.BeginTransaction(True);
+      Reader.EnsureSchema(False);
+      State := Reader.StateKey;
+      if Copy(State, 1, Pos(':', State)) = Copy(FSavedState, 1, Pos(':', FSavedState)) then
+      begin
+        FDatabase := Reader;
+        Exit(ExportJSON);
+      end;
+    except
+      // A removed or replaced database can leave only the in-memory edits available.
+      on E: Exception do ;
+    end;
+  finally
+    FDatabase := nil;
+    Reader.Free;
+  end;
+  Recovery := TJSONObject.Create;
+  try
+    Recovery.Add('format', 'scu-pending-recovery-v1');
+    Recovery.Add('base_library_revision', FSavedRevisionCount);
+    Recovery.Add('header', FHeader.Clone);
+    Pending := TJSONArray.Create;
+    Recovery.Add('pending_revisions', Pending);
+    for Index := FSavedRevisionCount to Revision - 1 do
+      Pending.Add(RevisionAt(Index).Clone);
+    Result := Recovery.FormatJSON + #10;
+  finally
+    Recovery.Free;
+  end;
 end;
 
 procedure TDeckLibrary.Save;
@@ -402,12 +520,14 @@ var
 begin
   if not FModified then
     Exit;
+  CheckSessionInterrupt;
   if Assigned(FDatabase) then
   begin
     if FDatabase.StateKey <> FSavedState then
       raise EScuError.Create('The saved library changed outside this session. Unsaved changes are still in this session.');
     WriteDatabase(FDatabase);
     FNextSavedState := FDatabase.StateKey;
+    FSaveFrom := FSavedRevisionCount;
     Exit;
   end;
   Data := ExportJSON;
@@ -423,6 +543,7 @@ begin
       raise EScuError.Create('The saved library changed outside this session. Unsaved changes are still in this session.');
   end;
   AtomicWrite(FPath, Data);
+  FSaveFrom := FSavedRevisionCount;
   if FDeferredSave then
     FSavedDigest := AuditSHA256(Data);
   FModified := False;
@@ -438,7 +559,8 @@ function TDeckLibrary.Store(const Deck: string; const Source: RawByteString;
   CreateOnly: Boolean; const Prefix: string): Integer;
 var
   Entry, Previous: TJSONObject;
-  Name, CommentPrefix, PreviousLastDeck: string;
+  Name, CommentPrefix, PreviousLastDeck, Digest: string;
+  PreviousSource: TDeckSource;
   PreviousRevision, Number, Base, Last: Integer;
 begin
   RequireOpenVersion;
@@ -447,33 +569,42 @@ begin
   if CreateOnly and (PreviousRevision > 0) then
     raise EScuError.CreateFmt('Deck "%s" already exists.', [Name]);
   VersionBounds(CurrentVersion, Base, Last);
-  Number := 0;
-  if PreviousRevision > Base then
-  begin
-    Number := FDeckNumbers[PreviousRevision - 1] + ParseIncrement(
-      Field(FHeader, 'revision_increment', jtString).AsString, 'revision_increment', 3, MaxDeckRevision);
-    if Number > MaxDeckRevision then
-      raise EScuError.CreateFmt('Deck "%s" has reached the revision limit. Lock version %s and start a new version.',
-        [Name, CurrentVersion]);
-  end;
   Previous := nil;
   if PreviousRevision > 0 then
-    Previous := RevisionAt(PreviousRevision - 1);
+    Previous := RevisionPayloadAt(PreviousRevision - 1);
   CommentPrefix := Prefix;
   if CommentPrefix = '' then
     CommentPrefix := StoredCommentPrefix(Previous);
   if CommentPrefix = '' then
     CommentPrefix := DefaultCommentPrefix(CurrentVersion);
   ValidateCommentPrefix(CommentPrefix);
+  Digest := DeckSHA1(Source);
+  Number := 0;
+  if PreviousRevision > Base then
+  begin
+    if (CommentPrefix = StoredCommentPrefix(Previous)) and
+      (Digest = Field(Previous, 'sha1', jtString).AsString) then
+    begin
+      PreviousSource := Extract(Name, PreviousRevision);
+      if PreviousSource.Bytes = Source then
+        Exit(0);
+    end;
+    Number := FDeckNumbers[PreviousRevision - 1] + ParseIncrement(
+      Field(FHeader, 'revision_increment', jtString).AsString, 'revision_increment', 3, MaxDeckRevision);
+    if Number > MaxDeckRevision then
+      raise EScuError.CreateFmt('Deck "%s" has reached the revision limit. Lock version %s and start a new version.',
+        [Name, CurrentVersion]);
+  end;
   Entry := TJSONObject.Create;
   try
     Entry.Add('deck', Name);
     Entry.Add('deck_revision', FormatFixed(Number, 3));
     Entry.Add('comment_prefix', CommentPrefix);
     Entry.Add('size', Length(Source));
-    Entry.Add('sha1', DeckSHA1(Source));
+    Entry.Add('sha1', Digest);
     Entry.Add('modified_utc', UtcTimestamp(UtcNow));
     Entry.Add('zstd_base64', EncodeDeck(Source));
+    CheckSessionInterrupt;
   except
     Entry.Free;
     raise;
@@ -508,7 +639,7 @@ begin
       raise EScuError.CreateFmt('Deck "%s" does not exist in version %s.', [Name, SelectedVersion]);
     raise EScuError.CreateFmt('Deck "%s" does not exist at revision %d.', [Name, Revision]);
   end;
-  Entry := RevisionAt(StoredRevision - 1);
+  Entry := RevisionPayloadAt(StoredRevision - 1);
   Result.CommentPrefix := StoredCommentPrefix(Entry);
   Result.ModifiedUTC := ModificationTime(Entry, Name);
   Result.Bytes := DecodeDeck(Field(Entry, 'zstd_base64', jtString).AsString,
@@ -551,7 +682,7 @@ begin
     Entry := RevisionAt(Index);
     if Field(Entry, 'deck', jtString).AsString = Name then
       Dest.Add(Format('%d'#9'%s'#9'%s'#9'%s', [Index + 1, VersionAt(Index + 1),
-        ModificationTime(Entry, Name), DeckVersionAt(Index + 1)]));
+        ModificationTime(RevisionPayloadAt(Index), Name), DeckVersionAt(Index + 1)]));
   end;
   if Dest.Count = InitialCount then
     raise EScuError.CreateFmt('Deck "%s" does not exist.', [Name]);
@@ -616,7 +747,7 @@ end;
 
 function TDeckLibrary.ParseRevision(const Value: string): Integer;
 begin
-  if not TryStrToInt(Value, Result) or (IntToStr(Result) <> Value) or
+  if not TryStrToInt(Value, Result) or
     (Result < 0) or (Result > Revision) then
     raise EScuError.CreateFmt('Expected a revision between 0 and %d.', [Revision]);
 end;
@@ -682,7 +813,7 @@ begin
     raise EScuError.CreateFmt('Deck "%s" does not exist at revision %d.', [Name, AtRevision]);
   Result.LibraryRevision := FindDeckRevision(Name, StoredRevision - 1);
   if Result.LibraryRevision = 0 then
-    raise EScuError.CreateFmt('Deck "%s" has no earlier revision to compare with.', [Name]);
+    raise EScuError.CreateFmt('Deck "%s" has no earlier revision to compare with. Store an edit before comparing.', [Name]);
   Result.Version := VersionAt(Result.LibraryRevision);
 end;
 

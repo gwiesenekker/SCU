@@ -23,22 +23,38 @@ function CanonicalFile(const Path: string): string;
 function CanonicalDirectory(const Path: string): string;
 function RegularFileExists(const Path: string): Boolean;
 function ReadBytes(const Path: string; Limit: Int64): RawByteString;
-procedure AtomicWrite(const Path: string; const Data: RawByteString; ReplaceExisting: Boolean = True); overload;
-procedure AtomicWrite(const Path: string; Data: TStream; ReplaceExisting: Boolean = True); overload;
+procedure AtomicWrite(const Path: string; const Data: RawByteString; ReplaceExisting: Boolean = True;
+  SourceOutput: Boolean = False); overload;
+procedure AtomicWrite(const Path: string; Data: TStream; ReplaceExisting: Boolean = True;
+  SourceOutput: Boolean = False); overload;
 function MakeTempDirectory(const Prefix: string): string;
 procedure SyncFile(Handle: THandle; const Path: string);
 procedure SyncParent(const Path: string);
 function UtcNow: TDateTime;
 function UtcTimestamp(Value: TDateTime): string;
+procedure WriteDiagnostic(const Message: string);
 
 implementation
 
 uses
   BaseUnix, Unix, DateUtils, InitC, Linux;
 
+procedure WriteDiagnostic(const Message: string);
+begin
+  {$push}{$I-}
+  WriteLn(StdErr, Message);
+  if IOResult = 0 then
+  begin
+    Flush(StdErr);
+    IOResult;
+  end;
+  {$pop}
+end;
+
 function realpath(Path, Resolved: PChar): PChar; cdecl; external 'c';
 function mkstemp(Template: PChar): LongInt; cdecl; external 'c';
 function mkdtemp(Template: PChar): PChar; cdecl; external 'c';
+function fchmod(Handle: cint; Mode: mode_t): cint; cdecl; external 'c';
 
 function MakeTempDirectory(const Prefix: string): string;
 begin
@@ -180,11 +196,13 @@ begin
   end;
 end;
 
-procedure AtomicWrite(const Path: string; Data: TStream; ReplaceExisting: Boolean);
+procedure AtomicWrite(const Path: string; Data: TStream; ReplaceExisting, SourceOutput: Boolean);
 var
   TempPath: string;
   Handle: THandle;
   Stream: THandleStream;
+  Mode, Mask: mode_t;
+  Info: Stat;
 begin
   TempPath := IncludeTrailingPathDelimiter(ExtractFileDir(Path)) + '.scu-XXXXXX';
   UniqueString(TempPath);
@@ -198,6 +216,19 @@ begin
       try
         if Data.Size > Data.Position then
           Stream.CopyFrom(Data, Data.Size - Data.Position);
+        if SourceOutput then
+        begin
+          if (fpLStat(Path, Info) = 0) and FPS_ISREG(Info.st_mode) then
+            Mode := Info.st_mode and &777
+          else
+          begin
+            Mask := fpUmask(0);
+            fpUmask(Mask);
+            Mode := &666 and not Mask;
+          end;
+          if fchmod(Handle, Mode) <> 0 then
+            RaiseLastOSError(cerrno);
+        end;
         SyncFile(Handle, TempPath);
       finally
         Stream.Free;
@@ -226,13 +257,13 @@ begin
   end;
 end;
 
-procedure AtomicWrite(const Path: string; const Data: RawByteString; ReplaceExisting: Boolean);
+procedure AtomicWrite(const Path: string; const Data: RawByteString; ReplaceExisting, SourceOutput: Boolean);
 var
   Stream: TRawByteStringStream;
 begin
   Stream := TRawByteStringStream.Create(Data);
   try
-    AtomicWrite(Path, Stream, ReplaceExisting);
+    AtomicWrite(Path, Stream, ReplaceExisting, SourceOutput);
   finally
     Stream.Free;
   end;

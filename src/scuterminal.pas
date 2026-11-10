@@ -28,6 +28,8 @@ function wcwidth(Character: cuint): cint; cdecl; external 'c';
 procedure UseTerminalLocale;
 begin
   setlocale(LC_CTYPE, '');
+  if wcwidth($754C) < 0 then
+    setlocale(LC_CTYPE, 'C.UTF-8');
 end;
 
 procedure TerminalSize(Handle: THandle; out Columns, Rows: Integer);

@@ -58,13 +58,17 @@ library. At a terminal, SCU runs `display_library` before the first prompt if
 the library already exists. A known command or alias in the first position
 takes precedence over a bare library filename. Use `ln=` to select a library
 with the same name as a command.
+Use `ln=PATH` to initialize a new library with an extensionless name.
 
 At the `scu>` prompt, enter one command per line. Use single or double quotes
 for values with spaces, such as `extract_deck main.pas output_file="working copy.pas"`.
 Interactive library changes are visible in the session and stay in memory
 until you run `save_library` (`savl`). Enter `quit_session`, `quit`, or `q` to
 save pending changes and leave, or use `quit save_library=no` to discard changes
-since the last save. End-of-input also saves pending changes. One-shot commands
+since the last save. End-of-input and terminal hangup also save pending
+changes. If a hangup save fails, SCU attempts to write a private recovery JSON
+file beside the library. If the original SQLite database is unavailable, the
+recovery file contains the pending revisions and header. One-shot commands
 save immediately, and `initialize_library` creates the empty library immediately.
 If another session changes the saved library, a save reports the conflict.
 At a terminal, SCU keeps the pending changes available at the prompt. When
@@ -111,8 +115,9 @@ type, and any aliases before asking for its value. SCU usually prompts for
 omitted optional arguments and options that have a configured default. At the
 prompt, press Enter to accept the displayed default or type a different value.
 Spaces are part of the value at an argument prompt. Press Ctrl+C to cancel the
-pending command and return to `scu>`. One-shot invocations apply defaults automatically and report
-missing required arguments as errors.
+pending command and return to `scu>`. One-shot invocations and redirected
+scripts apply defaults automatically and report missing required arguments
+as errors.
 
 ```sh
 scu initialize_library
@@ -162,9 +167,9 @@ only if the bytes changed. Review the editor setting before running
 version. `lock_version` closes it to edits. `start_version` opens a higher
 version once the current one is locked. Omit the version number to advance by
 the library's `version_increment` (default `0.01`). For example, `1.0` advances
-to `1.01`. Automatic version names use two digits for the minor part. Existing
-names such as `1.1` retain their original minor number and spelling. A new
-library version inherits the prior snapshot.
+to `1.01`, and `1.1` advances to `1.11`. Automatic version names use at
+least two fractional digits. SCU preserves existing names and compares new
+versions as decimal numbers. A new library version inherits the prior snapshot.
 
 Each deck has its own revision within a library version. The first stored
 revision is `0.000`, including the first edit of an inherited deck. Each later
@@ -266,8 +271,8 @@ changes in an interactive session. It can also be supplied explicitly as
 `deck_name='scu$last_modified_deck'`. SCU reports an error if the library is
 empty. Older libraries derive the attribute from their revision history.
 
-`extract_deck` and `expand_deck` also default `output_file` to the last
-modified deck's name and write the file in the current directory. Use
+`extract_deck` and `expand_deck` default `output_file` to `scu$deck_name`,
+the name of the selected deck, and write the file in the current directory. Use
 `output_file=working.pas` to choose a different destination.
 
 Use `scu ddl` for `display_deck_list`. The earlier `list_decks` spelling also
@@ -410,7 +415,9 @@ Both `expand_deck` and `expand_modified_decks` run the configured command after
 writing their output. `build=no` skips the build. A bulk expansion runs the
 command once when it writes at least one deck or a previous SQLite expansion
 is waiting to be built. The shell runs in the current working directory and
-receives the absolute output file or directory as `$1`.
+receives the absolute output file or directory as `$1`. Builds receive empty
+standard input. Review the build command before expanding a library from
+someone else, or use `build=no` to expand without running it.
 
 ```sh
 scu modify_library build_command='cc "$1" -o main'
@@ -418,7 +425,7 @@ scu expand_deck main.c compiled-main.c
 scu expand_deck main.c compiled-main.c build=no
 ```
 
-Use `modify_library --build_command ''` to clear the command. If the build fails,
+Use `modify_library build_command=` to clear the command. If the build fails,
 the expanded output remains available and SCU records the build outcome.
 
 - `SCU$DATE` expands to the stored deck revision's last modification date in
@@ -441,7 +448,9 @@ the same bytes.
 Both backends store each deck revision as JSON with a base64-encoded zstd
 frame, a SHA-1 checksum, and a byte count for the original source. SCU verifies
 the checksum and byte count on read. Decks and expanded output are limited to
-64 MiB each, and JSON library files are limited to 256 MiB. Expansion also
+64 MiB each, and JSON library files are limited to 256 MiB. New source output
+files respect the process's umask and replacements retain existing permission
+bits. Libraries, audit logs, and lock files are created with private permissions. Expansion also
 caps nesting and total source processed.
 
 SCU serializes library commands with a sibling `PATH.lock` file. The file stays
@@ -455,7 +464,8 @@ the save and its audit attempt. An interactive `save_library` keeps the
 pending edits available for retry.
 
 The audit trail includes failed commands that reach an initialized log and
-can record their outcome. Help commands, command-line parsing errors,
+can record their outcome. Help commands, command-line parsing errors, checks
+for missing or busy output directories,
 `verify_audit`, and interactive `quit` with no pending changes do not append
 records. Outcomes against a working library with unsaved changes carry
 `pending_save`. Quitting with pending changes records whether SCU saved or
@@ -475,7 +485,10 @@ is counted as interrupted.
 Each audit line contains a lowercase SHA-256 digest, a space, and the JSON
 event. The digest covers the literal `SCU audit v1 ` prefix, the previous
 digest (64 zeros for the first line), a space, and the exact JSON bytes. The
-chain detects changed records and partial writes. Save a verified head
+chain detects changed records and partial writes. For JSON audit logs,
+`verify_audit` reports the byte offset of an incomplete final record.
+`repair_audit` verifies every complete record before removing the incomplete
+tail and records the repair. Save a verified head
 somewhere independent of the library and audit file, then check it later.
 
 ```sh
@@ -486,8 +499,10 @@ scu verify_audit --head "$saved_head"
 Verification accepts later entries as long as the saved head still appears in
 the verified chain. A person with write access to the entire log can rewrite
 the chain or remove complete entries from its end. An independently saved
-head detects changes to the chain through that checkpoint. Deck SHA-1
-checksums serve as content integrity checks.
+head detects changes to the chain through that checkpoint. New saves record
+SHA-256 digests of the header and newly saved deck revisions. `verify_audit`
+checks those digests against the library. Older revisions without a recorded
+digest still have their stored SHA-1 checked when extracted.
 
 ## Historical reference
 

@@ -39,7 +39,7 @@ type
   TParameterSlots = array of Boolean;
 
 procedure SuggestNames(Entries: TJSONArray; const Prefix, Leader: string; Candidates: TStrings;
-  const Supplied: TParameterSlots = nil; Offset: Integer = 0);
+  const Supplied: TParameterSlots = nil; Offset: Integer = 0; PreferExact: Boolean = True);
 var
   Index, AliasIndex: Integer;
   Entry: TJSONObject;
@@ -51,7 +51,7 @@ var
     Spelling: string;
   begin
     Spelling := Leader + Name;
-    if SameText(Spelling, Prefix) then
+    if PreferExact and SameText(Spelling, Prefix) then
       Exact := Spelling
     else if SameText(Copy(Spelling, 1, Length(Prefix)), Prefix) then
       Candidates.Add(Spelling);
@@ -166,7 +166,7 @@ begin
           Values.Add('no');
           Values.Add('yes');
         end;
-      'command': SuggestNames(Commands, Value, '', Values);
+      'command': SuggestNames(Commands, Value, '', Values, nil, 0, False);
       'file', 'directory':
         begin
           Directory := ExtractFilePath(Value);
@@ -316,7 +316,13 @@ var
     if PositionalOnly then
       Exit;
     if Copy(Spelling, 1, 2) = '--' then
-      OptionSlot := FindDefinition(Options, Copy(Spelling, 3, MaxInt))
+    begin
+      EqualsAt := Pos('=', Spelling);
+      Key := Copy(Spelling, 3, MaxInt);
+      if EqualsAt > 0 then
+        Key := Copy(Spelling, 3, EqualsAt - 3);
+      OptionSlot := FindDefinition(Options, Key);
+    end
     else
     begin
       EqualsAt := Pos('=', Spelling);
@@ -459,7 +465,7 @@ begin
     if Tokens.Count = 0 then
     begin
       if Prefix = Current then
-        SuggestNames(Commands, Prefix, '', Candidates);
+        SuggestNames(Commands, Prefix, '', Candidates, nil, 0, False);
       Exit;
     end;
     Index := FindDefinition(Commands, Tokens[0]);

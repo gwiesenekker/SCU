@@ -9,12 +9,13 @@ procedure WriteDeckDiff(const OldSource, NewSource: RawByteString; const OldLabe
 implementation
 
 uses
-  SysUtils;
+  SysUtils, ScuSignals;
 
 const
   ContextLines = 3;
-  MaxEditDistance = 1024;
+  MaxEditDistance = 3072;
   MaxSearchBytes = 256 * 1024 * 1024;
+  MaxIndexedLines = 2000000;
 
 type
   TLinePosition = record
@@ -31,6 +32,11 @@ type
     After: TPosition;
     Deleted: Boolean;
   end;
+  TIndexedLine = record
+    Ending: Integer;
+    Hash: Cardinal;
+  end;
+  TLineIndex = array of TIndexedLine;
 
 // Offsets count consumed bytes. A line includes its LF if present.
 function LineEnd(const Source: RawByteString; Offset: Integer): Integer;
@@ -61,6 +67,35 @@ begin
     CompareMem(@OldSource[OldStart + 1], @NewSource[NewStart + 1], OldEnd - OldStart);
 end;
 
+function IndexLines(const Source: RawByteString): TLineIndex;
+var
+  Count, Offset, Index, Ending, Position: Integer;
+  Hash: Cardinal;
+begin
+  Result := nil;
+  Count := 0;
+  Offset := 0;
+  while Offset < Length(Source) do
+  begin
+    Offset := LineEnd(Source, Offset);
+    Inc(Count);
+    if Count > MaxIndexedLines then
+      Exit;
+  end;
+  SetLength(Result, Count);
+  Offset := 0;
+  for Index := 0 to Count - 1 do
+  begin
+    Ending := LineEnd(Source, Offset);
+    Hash := 2166136261;
+    for Position := Offset + 1 to Ending do
+      Hash := (Hash xor Ord(Source[Position])) * 16777619;
+    Result[Index].Ending := Ending;
+    Result[Index].Hash := Hash;
+    Offset := Ending;
+  end;
+end;
+
 function FindChanges(const OldSource, NewSource: RawByteString; out Changes: TChanges;
   out Prefix: TPosition): Boolean;
 var
@@ -68,7 +103,8 @@ var
   Distance, Deletions, Back, Index, Count: Integer;
   Budget: Int64;
   Step: TTraceStep;
-  CanDelete, CanInsert: Boolean;
+  CanDelete, CanInsert, Indexed: Boolean;
+  OldLines, NewLines: TLineIndex;
 
   procedure MatchLines(var Position: TPosition);
   var
@@ -77,9 +113,20 @@ var
     while (Budget > 0) and (Position.OldLine.Offset < Length(OldSource)) and
       (Position.NewLine.Offset < Length(NewSource)) do
     begin
-      OldEnd := LineEnd(OldSource, Position.OldLine.Offset);
-      NewEnd := LineEnd(NewSource, Position.NewLine.Offset);
-      Dec(Budget, (OldEnd - Position.OldLine.Offset) + (NewEnd - Position.NewLine.Offset));
+      if Indexed then
+      begin
+        Dec(Budget, SizeOf(TIndexedLine) * 2);
+        if OldLines[Position.OldLine.Lines].Hash <> NewLines[Position.NewLine.Lines].Hash then
+          Break;
+        OldEnd := OldLines[Position.OldLine.Lines].Ending;
+        NewEnd := NewLines[Position.NewLine.Lines].Ending;
+      end
+      else
+      begin
+        OldEnd := LineEnd(OldSource, Position.OldLine.Offset);
+        NewEnd := LineEnd(NewSource, Position.NewLine.Offset);
+        Dec(Budget, (OldEnd - Position.OldLine.Offset) + (NewEnd - Position.NewLine.Offset));
+      end;
       if not SameLine(OldSource, NewSource, Position.OldLine.Offset, Position.NewLine.Offset,
         OldEnd, NewEnd) then
         Break;
@@ -96,12 +143,26 @@ var
   begin
     if Deleted then
     begin
+      if Indexed then
+      begin
+        Position.OldLine.Offset := OldLines[Position.OldLine.Lines].Ending;
+        Inc(Position.OldLine.Lines);
+        Dec(Budget, SizeOf(TIndexedLine));
+        Exit;
+      end;
       Start := Position.OldLine.Offset;
       Advance(OldSource, Position.OldLine);
       Dec(Budget, Position.OldLine.Offset - Start);
     end
     else
     begin
+      if Indexed then
+      begin
+        Position.NewLine.Offset := NewLines[Position.NewLine.Lines].Ending;
+        Inc(Position.NewLine.Lines);
+        Dec(Budget, SizeOf(TIndexedLine));
+        Exit;
+      end;
       Start := Position.NewLine.Offset;
       Advance(NewSource, Position.NewLine);
       Dec(Budget, Position.NewLine.Offset - Start);
@@ -110,6 +171,10 @@ var
 
 begin
   Budget := MaxSearchBytes;
+  OldLines := IndexLines(OldSource);
+  NewLines := IndexLines(NewSource);
+  Indexed := ((Length(OldLines) > 0) or (OldSource = '')) and
+    ((Length(NewLines) > 0) or (NewSource = ''));
   Prefix := Default(TPosition);
   MatchLines(Prefix);
   SetLength(Trace, MaxEditDistance + 1);
@@ -120,6 +185,7 @@ begin
   // diagonal after d edits. The row index counts deletions.
   for Distance := 1 to MaxEditDistance do
   begin
+    CheckSessionInterrupt;
     SetLength(Trace[Distance], Distance + 1);
     for Deletions := 0 to Distance do
     begin

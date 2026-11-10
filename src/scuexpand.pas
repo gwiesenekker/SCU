@@ -34,7 +34,7 @@ type
 implementation
 
 uses
-  SysUtils, ScuIO, ScuVersions;
+  SysUtils, ScuIO, ScuVersions, ScuSignals;
 
 const
   CopyDirective = 'SCU_COPY';
@@ -193,6 +193,7 @@ var
   Index, First, Directive, LineNo, TokenLength: SizeInt;
   PreviousSize: Int64;
 begin
+  CheckSessionInterrupt;
   Name := DeckName(Deck);
   if FStack.IndexOf(Name) >= 0 then
     raise EScuError.CreateFmt('COPY cycle: %s -> %s.', [Trim(FStack.CommaText), Name]);
@@ -213,6 +214,8 @@ begin
     LineNo := 0;
     while Index <= Length(Source) do
     begin
+      if (LineNo and 255) = 0 then
+        CheckSessionInterrupt;
       Inc(LineNo);
       ReadSourceLine(Source, Index, Line, Ending);
       Directive := DirectiveStart(Line, Prefix, First);
@@ -282,6 +285,7 @@ begin
     Parents.OwnsObjects := True;
     for Name in Visible do
     begin
+      CheckSessionInterrupt;
       // Decks already scheduled for output do not need incoming edges.
       if Decks.IndexOf(Name) >= 0 then
         Continue;

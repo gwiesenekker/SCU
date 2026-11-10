@@ -12,7 +12,7 @@ type
   TCommandCompletion = ScuLineEditor.TCommandCompletion;
 
 function ReadCommandLine(const Prompt: string; out Line: string;
-  Completion: TCommandCompletion = nil): Boolean;
+  Completion: TCommandCompletion = nil; UseHistory: Boolean = True): Boolean;
 procedure RememberCommand(const Line: string);
 procedure TokenizeCommand(const Line: string; Tokens: TStrings);
 function TokenizeCommandPrefix(const Line: string; Tokens: TStrings;
@@ -73,11 +73,14 @@ begin
   end;
 end;
 
-function ReadCommandLine(const Prompt: string; out Line: string; Completion: TCommandCompletion): Boolean;
+function ReadCommandLine(const Prompt: string; out Line: string; Completion: TCommandCompletion;
+  UseHistory: Boolean): Boolean;
 begin
   Line := '';
   if IsATTY(Input) = 1 then
   begin
+    if not UseHistory then
+      Exit(ReadTerminalLine(Prompt, nil, Completion, Line));
     if not Assigned(CommandHistory) then
       LoadHistory;
     Exit(ReadTerminalLine(Prompt, CommandHistory, Completion, Line));

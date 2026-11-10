@@ -90,6 +90,68 @@ class ScuIntegration(unittest.TestCase):
         self.run_scu("modify_library", "--build_command", "")
         self.assertEqual(json.loads(self.run_scu("show_library"))["build_command"], "")
 
+    def test_review_safe_output_defaults_and_redirected_commands(self):
+        self.store("shared.inc", b"shared\n")
+        self.store("main.pas", b"main\n")
+        working = self.root / "main.pas"
+        working.write_bytes(b"unsaved work\n")
+        self.run_scu("extd", "shared.inc", "output_file=", error="Expected a file path")
+        self.run_scu("expd", "shared.inc", "output_file=", "build=no", error="Expected a file path")
+        self.run_scu("extd", "shared.inc", "--revision=+01")
+        self.assertEqual((self.root / "shared.inc").read_bytes(), b"shared\n")
+        self.assertEqual(working.read_bytes(), b"unsaved work\n")
+        self.run_scu("lock_verison", error='Unknown command "lock_verison"')
+        self.run_scu("extrct_deck", "main.pas", "x.pas", error='Unknown command "extrct_deck"')
+
+        self.run_scu("conl", "bc=cat > build-input")
+        result = subprocess.run(
+            [SCU], cwd=self.root, input="expd shared.inc batch-out\ncred\ncred after-build\n",
+            capture_output=True, text=True, timeout=20,
+        )
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("Missing required argument deck_name", result.stderr)
+        self.assertEqual((self.root / "build-input").read_bytes(), b"")
+        self.assertIn("after-build\t", self.run_scu("ddl"))
+        self.run_scu("conl", "bc=")
+        self.assertEqual(json.loads(self.run_scu("show_library"))["build_command"], "")
+
+    def test_review_editor_uses_path_and_removes_backup_files(self):
+        self.store("main", b"old")
+        programs = self.root / "programs"
+        programs.mkdir()
+        (self.root / "vi").write_text("#!/bin/sh\ntouch wrong-editor\n")
+        (self.root / "vi").chmod(0o700)
+        editor = programs / "vi"
+        editor.write_text('#!/bin/sh\nprintf "%s" "$1" > editor-path\n'
+                          'printf backup > "$1~"\nprintf edited > "$1"\n')
+        editor.chmod(0o700)
+        result = subprocess.run([SCU, "edid", "main"], cwd=self.root,
+                                env=dict(os.environ, PATH=str(programs)),
+                                capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.root / "wrong-editor").exists())
+        self.assertFalse(Path((self.root / "editor-path").read_text()).parent.exists())
+        self.run_scu("extd", "main", "edited")
+        self.assertEqual((self.root / "edited").read_bytes(), b"edited")
+
+    def test_review_version_order_noop_stores_and_output_modes(self):
+        self.store("main", b"same\n")
+        self.assertEqual(self.run_scu("store_deck", "main", "input"), "No changes to main")
+        self.assertEqual(len(self.read_library()["revisions"]), 1)
+        self.run_scu("lock_version")
+        self.run_scu("start_version", "1.1")
+        self.run_scu("lock_version")
+        self.run_scu("start_version", "1.02", error="must be greater")
+        self.assertEqual(self.run_scu("start_version"), "Started version 1.11")
+        output = self.root / "mode-output"
+        result = subprocess.run([SCU, "extd", "main", output], cwd=self.root, umask=0o027,
+                                capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output.stat().st_mode & 0o777, 0o640)
+        output.chmod(0o751)
+        self.run_scu("extd", "main", output)
+        self.assertEqual(output.stat().st_mode & 0o777, 0o751)
+
     def test_deck_version_increments_and_rollover_are_per_deck(self):
         header = self.read_library()["header"]
         self.assertEqual((header["version_increment"], header["revision_increment"]), ("0.01", "0.001"))
@@ -101,6 +163,7 @@ class ScuIntegration(unittest.TestCase):
         self.assertEqual([entry["deck_revision"] for entry in self.read_library()["revisions"]],
                          ["0.000", "0.000", "0.333", "0.666", "0.999"])
         unchanged = self.library.read_bytes()
+        (self.root / "input").write_bytes(b"beyond the revision limit\n")
         self.run_scu("store_deck", "main.pas", "input", error="has reached the revision limit")
         self.assertEqual(self.library.read_bytes(), unchanged)
         self.run_scu("lock_version")
@@ -164,7 +227,7 @@ class ScuIntegration(unittest.TestCase):
         self.assertEqual((self.root / "main.pas").read_bytes(), b"new\n//SCU$VERSION\n")
         begin, outcome = [json.loads(line.split(b" ", 1)[1]) for line in self.audit.read_bytes().splitlines()[-2:]]
         self.assertEqual(begin["parameters"], {"deck_name": "scu$last_modified_deck",
-                                              "output_file": "scu$last_modified_deck"})
+                                              "output_file": "scu$deck_name"})
         self.assertEqual(outcome["resolved_deck"], "main.pas")
         self.run_scu("expd", "output_file=last-expanded")
         self.assertEqual((self.root / "last-expanded").read_bytes(), b"new\n1.1\n")
@@ -172,10 +235,11 @@ class ScuIntegration(unittest.TestCase):
         self.assertEqual((self.root / "main.pas").read_bytes(), b"new\n1.1\n")
         begin, outcome = [json.loads(line.split(b" ", 1)[1]) for line in self.audit.read_bytes().splitlines()[-2:]]
         self.assertEqual(begin["parameters"], {"deck_name": "scu$last_modified_deck",
-                                              "output_file": "scu$last_modified_deck"})
+                                              "output_file": "scu$deck_name"})
         self.assertEqual(outcome["resolved_deck"], "main.pas")
         self.run_scu("expd", "other.pas")
-        self.assertEqual((self.root / "main.pas").read_bytes(), b"unrelated\n")
+        self.assertEqual((self.root / "other.pas").read_bytes(), b"unrelated\n")
+        self.assertEqual((self.root / "main.pas").read_bytes(), b"new\n1.1\n")
         self.run_scu("configure_library", "editor=[\"true\"]")
         self.assertEqual(self.run_scu("edid"), "No changes to main.pas")
         begin, outcome = [json.loads(line.split(b" ", 1)[1]) for line in self.audit.read_bytes().splitlines()[-2:]]
@@ -457,11 +521,87 @@ class ScuIntegration(unittest.TestCase):
         failed = json.loads(records[3].split(b" ", 1)[1])
         self.assertFalse(failed["success"])
         self.audit.write_bytes(b"".join(records[:3]))
-        self.assertIn("interrupted=1", self.run_scu("verify_audit"))
+        self.run_scu("verify_audit", error="does not match the audit log")
         self.run_scu("verify_audit", "--head", checkpoint, error="Saved audit head")
         self.audit.write_bytes(original.replace(b'"empty"', b'"other"', 1))
         self.run_scu("verify_audit", error="digest mismatch")
         self.run_scu("store_deck", "other", "input", error="digest mismatch")
+
+    def test_review_audit_repairs_partial_tail_and_checks_sqlite_payload(self):
+        original = self.audit.read_bytes()
+        self.audit.write_bytes(original + b"partial")
+        self.run_scu("verify_audit", error=f"partial record at byte offset {len(original)}")
+        self.assertEqual(self.run_scu("repa"), "Removed 7 incomplete audit byte(s).")
+        self.assertTrue(self.audit.read_bytes().startswith(original))
+        self.assertIn("interrupted=0", self.run_scu("verify_audit"))
+        self.audit.write_bytes(original + b"bad complete record\n")
+        self.run_scu("repa", error="Invalid audit record")
+        self.assertTrue(self.audit.read_bytes().endswith(b"bad complete record\n"))
+
+        original_db = self.root / "original.sqlite"
+        replacement_db = self.root / "replacement.sqlite"
+        source = self.root / "source"
+        for database, contents in ((original_db, b"original"), (replacement_db, b"replacement")):
+            self.run_scu(database, "init")
+            source.write_bytes(contents)
+            self.run_scu(database, "store_deck", "main", source)
+        head = self.run_scu(original_db, "verify_audit").split("head=")[1]
+        with closing(sqlite3.connect(replacement_db)) as connection:
+            payload, = connection.execute("SELECT payload FROM deck_revisions").fetchone()
+        with closing(sqlite3.connect(original_db, isolation_level=None)) as connection:
+            connection.execute("UPDATE deck_revisions SET payload = ? WHERE sequence = 1", (payload,))
+        self.run_scu(original_db, "verify_audit", "head=" + head,
+                     error="Library revision 1 does not match the audit log")
+        with closing(sqlite3.connect(original_db, isolation_level=None)) as connection:
+            connection.execute("UPDATE deck_revisions SET payload = json_set(?, '$.size', 1)", (payload,))
+        self.run_scu(original_db, "extd", "main", "tampered-output", error="size")
+        with closing(sqlite3.connect(original_db, isolation_level=None)) as connection:
+            connection.execute("UPDATE deck_revisions SET payload = json_set(?, '$.sha1', ?)", (payload, "0" * 40))
+        self.run_scu(original_db, "extd", "main", "tampered-output", error="SHA-1")
+
+    def test_review_source_and_expansion_limits(self):
+        source = self.root / "oversized"
+        with source.open("wb") as stream:
+            stream.truncate(64 * 1024 * 1024 + 1)
+        self.run_scu("store_deck", "large", source, error="File exceeds the 67108864-byte limit")
+        self.store("empty", b"")
+        self.store("many-copies", b"//SCU_COPY empty\n" * 10000)
+        self.run_scu("expd", "many-copies", "too-many", error="Expansion exceeds 10000 deck visits")
+        self.assertFalse((self.root / "too-many").exists())
+        self.store("megabyte", b"x" * (1024 * 1024))
+        self.store("large-expansion", b"//SCU_COPY megabyte\n" * 65)
+        self.run_scu("expd", "large-expansion", "too-large", error="exceeds the 64 MiB output limit")
+        self.assertFalse((self.root / "too-large").exists())
+        commands = []
+        for index in range(65):
+            name = f"chain-{index}"
+            data = f"//SCU_COPY chain-{index + 1}\n" if index < 64 else ""
+            (self.root / name).write_text(data)
+            commands.append(f"store_deck {name} {name}")
+        result = subprocess.run([SCU], cwd=self.root, input="\n".join(commands) + "\n",
+                                capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.run_scu("expd", "chain-0", "too-deep", error="COPY nesting exceeds 64 decks")
+        self.assertFalse((self.root / "too-deep").exists())
+        self.store("large-copy-line", b"//SCU_COPY " + b" " * (8 * 1024 * 1024) + b"empty\n")
+        self.store("large-input", b"//SCU_COPY large-copy-line\n" * 32)
+        self.run_scu("expd", "large-input", "too-much-input", error="exceeds 256 MiB of source input")
+        self.assertFalse((self.root / "too-much-input").exists())
+
+        oversized = self.root / "oversized.json"
+        with oversized.open("wb") as stream:
+            stream.truncate(256 * 1024 * 1024 + 1)
+        shutil.copyfile(self.audit, oversized.with_suffix(".json.audit"))
+        self.run_scu(oversized, "ddl", error="File exceeds the 268435456-byte limit")
+
+    def test_review_closed_pipe_still_records_the_command_outcome(self):
+        self.store("main", b"original\n" * 3000)
+        self.store("main", b"replacement\n" * 3000)
+        with subprocess.Popen([SCU, "difd", "main"], cwd=self.root, stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL) as process:
+            process.stdout.close()
+            self.assertEqual(process.wait(timeout=20), 1)
+        self.assertIn("interrupted=0", self.run_scu("verify_audit"))
 
     def sqlite_state(self, database):
         metadata = database.execute("SELECT * FROM library").fetchall()
@@ -564,6 +704,15 @@ class ScuIntegration(unittest.TestCase):
         self.run_scu(exported, "verify_audit", "--head", imported_head)
         self.run_scu(exported, "extract_deck", "main", "source", "--revision", "1")
         self.assertEqual((self.root / "source").read_bytes(), b"first\n")
+        tampered = json.loads(exported.read_bytes())
+        tampered["revisions"][0]["modified_utc"] = "2025-01-01T00:00:00.000Z"
+        exported.write_text(json.dumps(tampered))
+        rejected = self.root / "rejected.sqlite"
+        self.run_scu(rejected, "import_library", exported,
+                     error="Library revision 1 does not match the audit log")
+        if rejected.exists():
+            with closing(sqlite3.connect(rejected)) as database:
+                self.assertEqual(database.execute("SELECT name FROM sqlite_master").fetchall(), [])
 
     def test_sqlite_incremental_expansion_refreshes_only_changed_decks_and_copy_dependents(self):
         path = self.root / "project.sqlite"
@@ -1040,6 +1189,35 @@ class ScuIntegration(unittest.TestCase):
                 headers = f"--- source@{old}\n+++ source@{new}\n".encode()
                 self.assertEqual(result.stdout, headers + expected)
 
+    def test_review_diff_preserves_scattered_hunks_on_both_backends(self):
+        lines = [f"line {index:05}\n".encode() for index in range(6500)]
+        changed = lines.copy()
+        for index in range(10, 6000, 10):
+            changed[index] = f"changed {index:05}\n".encode()
+        source = self.root / "diff-input"
+        sqlite = self.root / "diff.sqlite"
+        self.run_scu(sqlite, "init")
+        for library in (self.library, sqlite):
+            with self.subTest(library=library):
+                for data in (lines, changed):
+                    source.write_bytes(b"".join(data))
+                    self.run_scu(library, "store_deck", "main", source)
+                patch = self.run_scu(library, "diff_deck", "main")
+                self.assertEqual(sum(line.startswith("@@ ") for line in patch.splitlines()), 599)
+
+    def test_diff_merges_hunks_across_at_most_six_context_lines(self):
+        lines = [f"line {index}\n".encode() for index in range(20)]
+        for gap, expected in ((6, 1), (7, 2)):
+            with self.subTest(gap=gap):
+                deck = f"gap-{gap}"
+                updated = lines.copy()
+                updated[4] = b"first edit\n"
+                updated[5 + gap] = b"second edit\n"
+                self.store(deck, b"".join(lines))
+                self.store(deck, b"".join(updated))
+                patch = self.run_scu("diff_deck", deck)
+                self.assertEqual(sum(line.startswith("@@ ") for line in patch.splitlines()), expected)
+
     def test_typed_definitions_and_aliases_are_loaded_per_command(self):
         (self.root / "source with spaces").write_text("stored text")
         subprocess.run(
@@ -1096,14 +1274,14 @@ class ScuIntegration(unittest.TestCase):
         ])
         self.run_scu("extd", "dn=main.pas", "output=copy", "r=1", executable=executable)
         self.assertEqual((self.root / "copy").read_bytes(), b"source")
-        self.run_scu("legacy", "init", executable=executable)
+        self.run_scu("ln=legacy", "init", executable=executable)
         self.assertIn("records=2", self.run_scu("legacy", "verify_audit"))
         (self.root / "legacy").unlink()
-        self.run_scu("legacy", "initialize_library", error="previously initialized")
+        self.run_scu("ln=legacy", "initialize_library", error="previously initialized")
 
     def test_library_first_and_named_invocation_share_the_same_library(self):
         name = "project library"
-        self.run_scu(name, "init")
+        self.run_scu(f"ln={name}", "init")
         (self.root / "source").write_text("project source")
         self.run_scu(f"ln={name}", "store_deck", "main.pas", "source")
         self.assertEqual(self.run_scu(f"library_name={name}", "ddl"), "main.pas\t1.0-0.000")
@@ -1241,23 +1419,24 @@ class ScuIntegration(unittest.TestCase):
         self.assertEqual(help_text.splitlines()[0], "extract_deck, extd")
         self.assertIn("deck_name (deck, dn) : string = scu$last_modified_deck", help_text)
         self.assertIn("including COPY directives and macro text", help_text)
-        self.assertIn("output_file (o, output) : string = scu$last_modified_deck\n"
+        self.assertIn("output_file (o, output) : string = scu$deck_name\n"
                       "    Path to write the original source bytes.", help_text)
         self.assertIn("--revision (r) : integer = scu$optional\n"
                       "    Library-wide snapshot after the specified saved change. Revision 0 is empty.",
                       help_text)
         self.assertIn("--version (v) : string = scu$optional\n"
                       "    Latest snapshot of a named version, including inherited decks.", help_text)
-        self.run_scu("display_command", "command_name=", error="Missing required argument command_name")
+        self.run_scu("display_command", error="Missing required argument command_name")
+        self.run_scu("display_command", "command_name=", error='Unknown command ""')
 
-        result = subprocess.run(
-            [SCU], cwd=self.root, input="display_command command_name=\nextd\nquit\n",
-            capture_output=True, text=True, timeout=20,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("command_name (cn) : string = scu$required\n"
-                      "Full command name or alias to look up.\ncommand_name= ", result.stderr)
-        self.assertEqual(result.stdout.strip(), help_text)
+        with self.terminal_session(TERM="dumb") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"display_command\n")
+            self.assertIn(b"command_name (cn) : string = scu$required", read_until(b"command_name= "))
+            os.write(terminal, b"extd\n")
+            self.assertIn(help_text.replace("\n", "\r\n").encode(), read_until(b"scu> "))
+            os.write(terminal, b"quit\n")
+            self.assertEqual(process.wait(timeout=5), 0)
 
     def test_command_catalog_is_alphabetically_sorted(self):
         catalog = Path(__file__).resolve().parents[1] / "commands.json"
@@ -1304,6 +1483,29 @@ class ScuIntegration(unittest.TestCase):
         self.assertIn(b'"aliases": ["library_name", "ln"]', formatted)
         subprocess.run(formatter, check=True, timeout=20)
         self.assertEqual(path.read_bytes(), formatted)
+
+    def test_format_commands_accepts_legacy_catalogs_without_aliases(self):
+        path = self.root / "commands.json"
+        formatter = Path(__file__).resolve().parents[1] / "tools/format_commands.py"
+        for version in (1, 2):
+            with self.subTest(version=version):
+                if version == 1:
+                    arguments = ["second", "first"]
+                    options = {"z_option": "last", "a_option": "first"}
+                else:
+                    arguments = [{"name": "second"}, {"name": "first"}]
+                    options = [{"name": "z_option"}, {"name": "a_option"}]
+                catalog = {"format": version, "commands": [
+                    {"name": "z_command", "arguments": arguments, "options": options},
+                    {"name": "a_command", "arguments": [], "options": {} if version == 1 else []},
+                ]}
+                path.write_text(json.dumps(catalog))
+                subprocess.run([sys.executable, formatter, path], check=True, timeout=20)
+                first, last = json.loads(path.read_bytes())["commands"]
+                self.assertEqual(first["name"], "a_command")
+                self.assertEqual(last["arguments"], arguments)
+                names = list(last["options"]) if version == 1 else [item["name"] for item in last["options"]]
+                self.assertEqual(names, ["a_option", "z_option"])
 
     def test_command_catalog_has_consistent_names_and_resolves_every_alias(self):
         definitions = json.loads(SCU.with_name("commands.json").read_bytes())
@@ -1378,16 +1580,22 @@ class ScuIntegration(unittest.TestCase):
         self.assertEqual((self.root / "override").read_bytes(), b"source")
         (self.root / "default output").unlink()
         self.store("main.pas", b"updated")
-        result = subprocess.run(
-            [executable], cwd=self.root, capture_output=True, text=True, timeout=20,
-            input="extd main.pas\n\n\nextd main.pas\ninteractive override\n2\nquit\n",
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("output_file (o, output) : string = default output\n"
-                      "Path to write the original source bytes.\n"
-                      "Press Enter to accept the default.\noutput_file= ", result.stderr)
-        self.assertIn("--revision (r) : integer = 1\n", result.stderr)
-        self.assertIn("Press Enter to accept the default.\nrevision= ", result.stderr)
+        with self.terminal_session(TERM="dumb", executable=executable) as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"extd main.pas\n")
+            self.assertIn(b"output_file (o, output) : string = default output", read_until(b"output_file= "))
+            os.write(terminal, b"\n")
+            self.assertIn(b"--revision (r) : integer = 1", read_until(b"revision= "))
+            os.write(terminal, b"\n")
+            read_until(b"scu> ")
+            os.write(terminal, b"extd main.pas\n")
+            read_until(b"output_file= ")
+            os.write(terminal, b"interactive override\n")
+            read_until(b"revision= ")
+            os.write(terminal, b"2\n")
+            read_until(b"scu> ")
+            os.write(terminal, b"quit\n")
+            self.assertEqual(process.wait(timeout=5), 0)
         self.assertEqual((self.root / "default output").read_bytes(), b"source")
         self.assertEqual((self.root / "interactive override").read_bytes(), b"updated")
 
@@ -1604,6 +1812,54 @@ class ScuIntegration(unittest.TestCase):
             self.assertEqual(process.wait(timeout=5), 0)
         self.assertIn("records=4", self.run_scu("verify_audit"))
 
+    def test_review_interrupt_during_build_preserves_pending_changes(self):
+        self.store("main", b"source")
+        self.run_scu("conl", "bc=echo build-started; sleep 30")
+        with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"cred pending\n")
+            self.assertIn(b"pending version", read_until(b"scu> "))
+            os.write(terminal, b"expd main built\n")
+            read_until(b"build-started")
+            process.send_signal(signal.SIGINT)
+            self.assertIn(b"Build command interrupted", read_until(b"scu> "))
+            os.write(terminal, b"quit\n")
+            self.assertEqual(process.wait(timeout=5), 1)
+        self.assertIn("pending\t", self.run_scu("ddl"))
+        self.assertIn("interrupted=0", self.run_scu("verify_audit"))
+
+    def test_review_hangup_saves_and_termination_restores_terminal(self):
+        with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"cred pending\n")
+            self.assertIn(b"pending version", read_until(b"scu> "))
+            process.send_signal(signal.SIGHUP)
+            self.assertEqual(process.wait(timeout=5), 0)
+            self.assertTrue(termios.tcgetattr(terminal)[3] & termios.ICANON)
+        self.assertIn("pending\t", self.run_scu("ddl"))
+        with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            process.send_signal(signal.SIGTERM)
+            self.assertEqual(process.wait(timeout=5), 128 + signal.SIGTERM)
+            self.assertTrue(termios.tcgetattr(terminal)[3] & termios.ICANON)
+
+    def test_review_hangup_conflict_writes_a_recovery_library(self):
+        path = self.root / "project.sqlite"
+        self.run_scu(path, "init")
+        self.run_scu(path, "cred", "base")
+        with self.terminal_session(path, TERM="xterm") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"cred pending\n")
+            read_until(b"scu> ")
+            self.run_scu(path, "cred", "concurrent")
+            process.send_signal(signal.SIGHUP)
+            self.assertEqual(process.wait(timeout=5), 1)
+        recovery, = self.root.glob("project.sqlite.recovery-*.json")
+        document = json.loads(recovery.read_bytes())
+        self.assertEqual([entry["deck"] for entry in document["revisions"]], ["base", "pending"])
+        self.assertEqual(recovery.stat().st_mode & 0o777, 0o600)
+        self.assertIn("concurrent\t", self.run_scu(path, "ddl"))
+
     def test_terminal_editor_handles_utf8_keys_and_ctrl_c_and_restores_terminal(self):
         (self.root / "café").write_bytes(b"source")
         with self.terminal_session(TERM="xterm", LC_ALL="C.UTF-8") as (process, terminal, read_until):
@@ -1633,7 +1889,7 @@ class ScuIntegration(unittest.TestCase):
         with self.terminal_session(TERM="xterm", LC_ALL="C.UTF-8") as (process, terminal, read_until):
             read_until(b"scu> ")
             os.write(terminal, b"\x1b[A\x1b[A\n")
-            self.assertIn(b"sample version 1.0 revision 0.001", read_until(b"scu> "))
+            self.assertIn(b"No changes to sample", read_until(b"scu> "))
             os.write(terminal, b"quit\n")
             self.assertEqual(process.wait(timeout=5), 0)
 
@@ -1795,6 +2051,25 @@ class ScuIntegration(unittest.TestCase):
                 os.write(terminal, b"quit\n")
                 self.assertEqual(process.wait(timeout=5), 0)
 
+    def test_review_completion_shows_longer_aliases_and_complete_paths(self):
+        self.store("main", b"source")
+        for name in ("my file.txt", "my fine.txt", "back\\slash.txt"):
+            (self.root / name).touch()
+        with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"disd\t\t")
+            matches = read_until(b"scu> disd")
+            self.assertIn(b"disdl", matches)
+            os.write(terminal, b"\x15extd o=my\t\t")
+            matches = read_until(b"scu> extd o=my\\ fi")
+            self.assertIn(b"o=my\\ file.txt", matches)
+            self.assertIn(b"o=my\\ fine.txt", matches)
+            os.write(terminal, b"\x15extd o=back\t\n")
+            read_until(b"scu> ")
+            self.assertEqual((self.root / "back\\slash.txt").read_bytes(), b"source")
+            os.write(terminal, b"quit\n")
+            self.assertEqual(process.wait(timeout=5), 0)
+
     def test_terminal_tab_completion_pages_and_restores_the_draft_cursor(self):
         self.store("main", b"source")
         names = [f"pick-{index:02}" for index in range(20)]
@@ -1841,8 +2116,9 @@ class ScuIntegration(unittest.TestCase):
         self.store("main.pas", b"old\n")
         self.run_scu("lock_version")
         self.run_scu("start_version", "2.0")
-        for _ in range(9):
-            self.store("main.pas", b"new\n")
+        for index in range(8):
+            self.store("main.pas", f"edit {index}\n".encode())
+        self.store("main.pas", b"new\n")
         directory = self.root / "output dir"
         directory.mkdir()
         (directory / "working copy").touch()
@@ -1890,8 +2166,8 @@ class ScuIntegration(unittest.TestCase):
         self.run_scu("lock_version")
         self.run_scu("start_version", "2.0")
         self.store("alpha-new", b"new deck\n")
-        for _ in range(6):
-            self.store("other", b"other\n")
+        for index in range(6):
+            self.store("other", f"other {index}\n".encode())
         self.store("alpha-old", b"updated\n")
         self.store("alpha-new", b"updated new deck\n")
 
@@ -2013,13 +2289,17 @@ class ScuIntegration(unittest.TestCase):
         source = self.root / "input"
         source.write_bytes(b"same bytes")
 
-        def store_deck(number):
-            return self.run_scu("store_deck", f"deck{number}", source)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as workers:
-            list(workers.map(store_deck, range(8)))
+        sqlite = self.root / "concurrent.sqlite"
+        self.run_scu(sqlite, "init")
+        for library in (self.library, sqlite):
+            with self.subTest(library=library):
+                with concurrent.futures.ThreadPoolExecutor(max_workers=4) as workers:
+                    list(workers.map(
+                        lambda number: self.run_scu(library, "store_deck", f"deck{number}", source), range(8)
+                    ))
+                self.assertEqual(len(self.run_scu(library, "ddl").splitlines()), 8)
+                self.assertIn("records=20 interrupted=0", self.run_scu(library, "verify_audit"))
         self.assertEqual(len(self.read_library()["revisions"]), 8)
-        self.assertIn("records=18 interrupted=0", self.run_scu("verify_audit"))
 
 
 if __name__ == "__main__":

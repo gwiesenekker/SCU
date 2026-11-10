@@ -290,7 +290,7 @@
           "name": "output_file",
           "type": "string",
           "aliases": ["o", "output"],
-          "value": "scu$last_modified_deck",
+          "value": "scu$deck_name",
           "prompt_for_default": false,
           "description": "Path to write the expanded source.",
           "completion": "file"
@@ -424,7 +424,7 @@
           "name": "output_file",
           "type": "string",
           "aliases": ["o", "output"],
-          "value": "scu$last_modified_deck",
+          "value": "scu$deck_name",
           "prompt_for_default": false,
           "description": "Path to write the original source bytes.",
           "completion": "file"
@@ -547,6 +547,14 @@
       ],
       "options": [],
       "help": "Exit the interactive session. Pending library changes are saved by default. Use quit save_library=no to discard them."
+    },
+    {
+      "name": "repair_audit",
+      "aliases": ["repa"],
+      "summary": "Remove an incomplete final record from a JSON library audit log.",
+      "arguments": [],
+      "options": [],
+      "help": "Verify every complete record, remove only an unterminated final record, and record the repair."
     },
     {
       "name": "reset_expansion_checkpoint",

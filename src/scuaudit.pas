@@ -5,13 +5,15 @@ unit ScuAudit;
 interface
 
 uses
-  Classes, FPJSON, ScuLibrary, ScuSQLite;
+  Classes, FPJSON, FGL, ScuLibrary, ScuSQLite;
 
 type
   TAuditSnapshots = record
     Selected: TLibrarySnapshot;
     ResolvedDeck, FromDeckVersion, ToDeckVersion: string;
   end;
+
+  TAuditRevisionDigests = specialize TFPGMap<Integer, string>;
 
   TAuditLog = class
   private
@@ -21,27 +23,35 @@ type
     FCheckpoint: string;
     FFoundCheckpoint: Boolean;
     FHead, FPending, FPendingCommand: string;
-    FRecords, FInterrupted: Int64;
+    FRecords, FInterrupted, FRepairedBytes: Int64;
     FInitialized: Boolean;
+    FContents: TAuditRevisionDigests;
+    FHeaderDigest: string;
+    FRevisionCount: Integer;
     function GetInterrupted: Int64;
     procedure Accept(const Line: RawByteString);
-    procedure Scan(const Checkpoint: string);
+    procedure AcceptContents(Event: TJSONObject);
+    procedure Scan(const Checkpoint: string; RepairTail: Boolean = False);
     procedure Append(Event: TJSONObject);
   public
     constructor Create(const Path: string; AllowCreate, ReadOnly: Boolean;
-      const Checkpoint: string = ''); overload;
-    constructor Create(Database: TSQLiteLibrary; const Checkpoint: string = ''); overload;
+      const Checkpoint: string = ''; RepairTail: Boolean = False); overload;
+    constructor Create(Database: TSQLiteLibrary; const Checkpoint: string = '';
+      VerifyData: Boolean = False); overload;
     destructor Destroy; override;
     procedure ImportFile(const Path: string);
     procedure BeginCommand(const Command: string; ArgumentNames: TJSONArray;
       Arguments, Options: TStrings);
     procedure EndCommand(Success: Boolean; const Detail: string; const Snapshots: TAuditSnapshots;
-      PendingSave: Boolean = False);
+      PendingSave: Boolean = False; Contents: TJSONObject = nil);
+    procedure VerifyContents(LibraryFile: TDeckLibrary);
     procedure RecordBuild(const Expansion, Command, OutputPath: string; Success: Boolean; const Detail: string);
     property Head: string read FHead;
     property Records: Int64 read FRecords;
     property Interrupted: Int64 read GetInterrupted;
     property Initialized: Boolean read FInitialized;
+    property RepairedBytes: Int64 read FRepairedBytes;
+    property SavedHeaderDigest: string read FHeaderDigest;
   end;
 
 implementation
@@ -55,7 +65,7 @@ const
   AuditDomain = 'SCU audit v1 ';
 
 constructor TAuditLog.Create(const Path: string; AllowCreate, ReadOnly: Boolean;
-  const Checkpoint: string);
+  const Checkpoint: string; RepairTail: Boolean);
 var
   Flags: cint;
   Info: Stat;
@@ -65,6 +75,11 @@ begin
   FHandle := -1;
   FPath := Path;
   FHead := StringOfChar('0', HashLength);
+  if ReadOnly then
+  begin
+    FContents := TAuditRevisionDigests.Create;
+    FContents.Sorted := True;
+  end;
   if (Checkpoint <> '') and not IsHexDigest(Checkpoint, HashLength) then
     raise EScuError.Create('Expected a lowercase SHA-256 audit head.');
   Created := AllowCreate and not RegularFileExists(Path);
@@ -83,15 +98,20 @@ begin
     raise EScuError.Create('Expected a regular audit log file.');
   if Created then
     SyncParent(Path);
-  Scan(Checkpoint);
+  Scan(Checkpoint, RepairTail);
 end;
 
-constructor TAuditLog.Create(Database: TSQLiteLibrary; const Checkpoint: string);
+constructor TAuditLog.Create(Database: TSQLiteLibrary; const Checkpoint: string; VerifyData: Boolean);
 begin
   inherited Create;
   FHandle := -1;
   FDatabase := Database;
   FHead := StringOfChar('0', HashLength);
+  if VerifyData then
+  begin
+    FContents := TAuditRevisionDigests.Create;
+    FContents.Sorted := True;
+  end;
   FCheckpoint := Checkpoint;
   FFoundCheckpoint := Checkpoint = '';
   Database.ReadAudit(@Accept);
@@ -120,9 +140,58 @@ end;
 
 destructor TAuditLog.Destroy;
 begin
+  FContents.Free;
   if FHandle >= 0 then
     fpClose(FHandle);
   inherited Destroy;
+end;
+
+procedure TAuditLog.AcceptContents(Event: TJSONObject);
+var
+  Contents: TJSONObject;
+  Digests: TJSONArray;
+  First, Count: Int64;
+  Index, Slot: Integer;
+  Digest: string;
+begin
+  if not Assigned(FContents) or not Assigned(Event.Find('saved_contents')) then
+    Exit;
+  Contents := TJSONObject(Field(Event, 'saved_contents', jtObject));
+  FHeaderDigest := Field(Contents, 'header_sha256', jtString).AsString;
+  First := IntegerField(Contents, 'first_revision');
+  Count := IntegerField(Contents, 'revision_count');
+  Digests := TJSONArray(Field(Contents, 'revision_sha256', jtArray));
+  if not IsHexDigest(FHeaderDigest, HashLength) or (Count < FRevisionCount) or
+    (Count > High(Integer)) or (First < 1) or (First > Count + 1) or
+    (Digests.Count <> Count - First + 1) then
+    raise EScuError.Create('Invalid saved contents in audit log.');
+  FRevisionCount := Count;
+  for Index := 0 to Digests.Count - 1 do
+  begin
+    Digest := Digests.Strings[Index];
+    if not IsHexDigest(Digest, HashLength) then
+      raise EScuError.Create('Invalid saved revision digest in audit log.');
+    if FContents.Find(First + Index, Slot) then
+      FContents.Data[Slot] := Digest
+    else
+      FContents.Add(First + Index, Digest);
+  end;
+end;
+
+procedure TAuditLog.VerifyContents(LibraryFile: TDeckLibrary);
+var
+  Index, Sequence: Integer;
+begin
+  if FHeaderDigest = '' then
+    Exit;
+  if (LibraryFile.Revision <> FRevisionCount) or (LibraryFile.HeaderDigest <> FHeaderDigest) then
+    raise EScuError.Create('Saved library header or revision count does not match the audit log.');
+  for Index := 0 to FContents.Count - 1 do
+  begin
+    Sequence := FContents.Keys[Index];
+    if LibraryFile.RevisionDigest(Sequence) <> FContents.Data[Index] then
+      raise EScuError.CreateFmt('Library revision %d does not match the audit log.', [Sequence]);
+  end;
 end;
 
 function TAuditLog.GetInterrupted: Int64;
@@ -156,6 +225,8 @@ begin
     else if (Phase = 'end') and (FPending <> '') and
       (Field(Event, 'begin', jtString).AsString = FPending) then
     begin
+      if Field(Event, 'success', jtBoolean).AsBoolean then
+        AcceptContents(Event);
       if Field(Event, 'success', jtBoolean).AsBoolean and
         ((FPendingCommand = 'initialize_library') or (FPendingCommand = 'init') or
          (FPendingCommand = 'import_library')) then
@@ -180,12 +251,13 @@ begin
   FFoundCheckpoint := FFoundCheckpoint or (Digest = FCheckpoint);
 end;
 
-procedure TAuditLog.Scan(const Checkpoint: string);
+procedure TAuditLog.Scan(const Checkpoint: string; RepairTail: Boolean);
 var
   Buffer: array[0..8191] of Char;
   Line, Part: RawByteString;
   Count: ssize_t;
   Index, Start: SizeInt;
+  Offset: Int64;
   Found: Boolean;
 
   procedure AddPart(Offset, Size: SizeInt);
@@ -199,6 +271,7 @@ var
 begin
   Found := Checkpoint = '';
   Line := '';
+  Offset := 0;
   repeat
     repeat
       Count := fpRead(FHandle, Buffer, SizeOf(Buffer));
@@ -219,11 +292,21 @@ begin
       end;
     if Start < Count then
       AddPart(Start, Count - Start);
+    Inc(Offset, Count);
   until Count = 0;
-  if Line <> '' then
-    raise EScuError.Create('Audit log ends with a partial record.');
   if not Found then
     raise EScuError.Create('Saved audit head is absent from the verified chain.');
+  if Line <> '' then
+  begin
+    Dec(Offset, Length(Line));
+    if not RepairTail then
+      raise EScuError.CreateFmt('Audit log ends with a partial record at byte offset %d. Run repair_audit.',
+        [Offset]);
+    if fpFTruncate(FHandle, Offset) <> 0 then
+      RaiseLastOSError(fpGetErrNo);
+    SyncFile(FHandle, FPath);
+    FRepairedBytes := Length(Line);
+  end;
 end;
 
 procedure TAuditLog.Append(Event: TJSONObject);
@@ -287,7 +370,7 @@ begin
 end;
 
 procedure TAuditLog.EndCommand(Success: Boolean; const Detail: string; const Snapshots: TAuditSnapshots;
-  PendingSave: Boolean);
+  PendingSave: Boolean; Contents: TJSONObject);
 var
   Event: TJSONObject;
 
@@ -311,6 +394,8 @@ begin
     Event.Add('success', Success);
     if PendingSave then
       Event.Add('pending_save', True);
+    if Assigned(Contents) then
+      Event.Add('saved_contents', Contents.Clone);
     if Detail <> '' then
       Event.Add('detail', Detail);
     if Snapshots.ResolvedDeck <> '' then

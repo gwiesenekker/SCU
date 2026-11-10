@@ -3,11 +3,19 @@ program Scu;
 {$mode objfpc}{$H+}
 
 uses
-  SysUtils, ScuCLI;
+  SysUtils, BaseUnix, ScuCLI, ScuIO;
 
 var
   CLI: TScuCLI;
+
+procedure HandleBrokenPipe(Signal: cint); cdecl;
 begin
+  // Let the failed write return to the command's audit error handler.
+end;
+
+begin
+  AllowDirectorySeparators := ['/'];
+  fpSignal(SIGPIPE, @HandleBrokenPipe);
   try
     CLI := TScuCLI.Create;
     try
@@ -18,7 +26,7 @@ begin
   except
     on E: Exception do
     begin
-      WriteLn(StdErr, 'scu: ', E.Message);
+      WriteDiagnostic('scu: ' + E.Message);
       ExitCode := 1;
     end;
   end;

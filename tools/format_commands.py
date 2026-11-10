@@ -31,13 +31,20 @@ def format_commands(path):
     path = path.resolve()
     original = path.read_bytes()
     catalog = json.loads(original, parse_float=Decimal)
-    catalog["library_option"]["aliases"].sort()
+    catalog.get("library_option", {}).get("aliases", []).sort()
+    if "argument_aliases" in catalog:
+        catalog["argument_aliases"] = dict(sorted(catalog["argument_aliases"].items()))
     catalog["commands"].sort(key=lambda command: command["name"])
     for command in catalog["commands"]:
-        command["aliases"].sort()
-        command["options"].sort(key=lambda option: option["name"])
-        for parameter in command["arguments"] + command["options"]:
-            parameter["aliases"].sort()
+        command.get("aliases", []).sort()
+        options = command.get("options", [])
+        if isinstance(options, dict):
+            command["options"] = dict(sorted(options.items()))
+        else:
+            options.sort(key=lambda option: option["name"] if isinstance(option, dict) else option)
+        for parameter in command.get("arguments", []) + (options if isinstance(options, list) else []):
+            if isinstance(parameter, dict):
+                parameter.get("aliases", []).sort()
 
     formatted = (format_json(catalog) + "\n").encode("utf-8")
     if formatted == original:

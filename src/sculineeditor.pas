@@ -5,10 +5,10 @@ unit ScuLineEditor;
 interface
 
 uses
-  Classes, ScuIO;
+  Classes, ScuSignals;
 
 type
-  ECommandCancelled = class(EScuError);
+  ECommandCancelled = ScuSignals.ECommandCancelled;
   TCommandCompletion = procedure(const Before, Prefix, After: string; Candidates: TStrings;
     out AppendCharacter: Char) of object;
 
@@ -18,11 +18,15 @@ function ReadTerminalLine(const Prompt: string; History: TStrings; Completion: T
 implementation
 
 uses
-  SysUtils, BaseUnix, Linux, InitC, Termio, Math, ScuTerminal;
+  SysUtils, BaseUnix, Linux, InitC, Termio, Math, ScuTerminal, ScuIO;
 
 const
   CSI = #27'[';
-  EscapeDelay = 100;
+  EscapeDelay = 250;
+  EscapeSequenceDelay = 1000;
+  TerminalSuspended = -2;
+  TerminalResumed = -3;
+  TerminalResized = -4;
 
 function signalfd(Handle: cint; Mask: PSigSet; Flags: cint): cint; cdecl; external 'c';
 
@@ -38,21 +42,23 @@ type
     FCursor, FDraftCursor, FViewStart, FShownCursor, FShownWidth: SizeInt;
     FHistoryIndex: Integer;
     FPending: Char;
-    FHasPending: Boolean;
+    FHasPending, FShowingCompletion: Boolean;
     FCompletionState: TCompletionState;
+    FOriginal, FEditing: TermIOS;
     function ReadByte(out Key: Char; Timeout: Integer = -1): Boolean;
     function ReadCharacter(Lead: Char): string;
     procedure ChangePrompt(const Prompt: string);
     procedure Redraw;
+    procedure Suspend;
     procedure ReplaceText(Start, Count: SizeInt; const Text: string);
     procedure Recall(Index: Integer);
     function SearchHistory: Boolean;
-    procedure ReadEscape(ApplyKey: Boolean = True);
+    procedure ReadEscape(ApplyKey: Boolean = True; HistoryMatch: Integer = -1);
     procedure ShowCompletionCandidates(Candidates: TStrings);
     procedure Complete;
   public
     constructor Create(const Prompt: string; History: TStrings; Completion: TCommandCompletion;
-      SignalHandle: cint);
+      SignalHandle: cint; const Original, Editing: TermIOS);
     function ReadLine(out Line: string): Boolean;
   end;
 
@@ -84,10 +90,22 @@ begin
     begin
       if fpRead(SignalHandle, SignalData, SizeOf(SignalData)) < 0 then
         RaiseLastOSError(fpGetErrNo);
-      raise ECommandCancelled.Create('Command cancelled.');
+      case PCardinal(@SignalData[0])^ of
+        SIGINT: raise ECommandCancelled.Create('Command cancelled.');
+        SIGTSTP: Exit(TerminalSuspended);
+        SIGCONT: Exit(TerminalResumed);
+        SIGWINCH: Exit(TerminalResized);
+      end;
+      NoteSessionSignal(PCardinal(@SignalData[0])^);
+      Exit(0);
     end;
     Result := fpRead(StdInputHandle, Buffer, Size);
   until (Result >= 0) or (fpGetErrNo <> ESysEINTR);
+  if (Result < 0) and (fpGetErrNo = ESysEIO) then
+  begin
+    NoteSessionSignal(SIGHUP);
+    Exit(0);
+  end;
   if Result < 0 then
     RaiseLastOSError(fpGetErrNo);
 end;
@@ -103,14 +121,68 @@ begin
     Result := Offset - 1;
 end;
 
+function NextCursorCharacter(const Text: string; Offset: SizeInt): SizeInt;
+var
+  Next: SizeInt;
+begin
+  Result := NextCharacter(Text, Offset);
+  while Result < Length(Text) do
+  begin
+    Next := NextCharacter(Text, Result);
+    if CellWidth(Text, Result, Next) <> 0 then
+      Break;
+    Result := Next;
+  end;
+end;
+
+function PreviousCursorCharacter(const Text: string; Offset: SizeInt): SizeInt;
+begin
+  Result := PreviousCharacter(Text, Offset);
+  while (Result > 0) and (CellWidth(Text, Result, Offset) = 0) do
+  begin
+    Offset := Result;
+    Result := PreviousCharacter(Text, Offset);
+  end;
+end;
+
 function VisibleText(const Text: string): string;
 var
   Index: SizeInt;
 begin
   Result := Text;
-  for Index := 1 to Length(Result) do
+  for Index := Length(Result) downto 1 do
     if Result[Index] in [#0..#31, #127] then
+      Result[Index] := '?'
+    else if (Result[Index] = #$C2) and (Index < Length(Result)) and
+      (Result[Index + 1] in [#$80..#$9F]) then
+    begin
       Result[Index] := '?';
+      Delete(Result, Index + 1, 1);
+    end;
+end;
+
+function CompletionStart(const Text: string; Ending: SizeInt): SizeInt;
+var
+  Index: SizeInt;
+  Quote, Current: Char;
+begin
+  Result := 0;
+  Index := 1;
+  Quote := #0;
+  while Index <= Ending do
+  begin
+    Current := Text[Index];
+    if (Quote = #0) and (Current in [' ', #9]) then
+      Result := Index
+    else if (Quote = #0) and (Current in ['"', #39]) then
+      Quote := Current
+    else if Current = Quote then
+      Quote := #0
+    else if (Current = '\') and ((Quote = #0) or ((Quote = '"') and
+      (Index < Ending) and (Text[Index + 1] in ['\', '"']))) then
+      Inc(Index);
+    Inc(Index);
+  end;
 end;
 
 function EditorColumns: SizeInt;
@@ -241,7 +313,7 @@ begin
 end;
 
 constructor TLineEditor.Create(const Prompt: string; History: TStrings; Completion: TCommandCompletion;
-  SignalHandle: cint);
+  SignalHandle: cint; const Original, Editing: TermIOS);
 begin
   inherited Create;
   FPrompt := Copy(Prompt, LastDelimiter(#10, Prompt) + 1, MaxInt);
@@ -250,9 +322,13 @@ begin
     FHistoryIndex := History.Count;
   FCompletion := Completion;
   FSignalHandle := SignalHandle;
+  FOriginal := Original;
+  FEditing := Editing;
 end;
 
 function TLineEditor.ReadByte(out Key: Char; Timeout: Integer): Boolean;
+var
+  Count: ssize_t;
 begin
   if FHasPending then
   begin
@@ -260,7 +336,28 @@ begin
     FHasPending := False;
     Exit(True);
   end;
-  Result := ReadTerminalBytes(FSignalHandle, Key, SizeOf(Key), Timeout) > 0;
+  repeat
+    Count := ReadTerminalBytes(FSignalHandle, Key, SizeOf(Key), Timeout);
+    case Count of
+      TerminalSuspended: Suspend;
+      TerminalResumed:
+        begin
+          TCSetAttr(StdInputHandle, TCSANOW, FEditing);
+          if not FShowingCompletion then
+          begin
+            ChangePrompt(FPrompt);
+            Redraw;
+          end;
+        end;
+      TerminalResized:
+        if not FShowingCompletion then
+        begin
+          ChangePrompt(FPrompt);
+          Redraw;
+        end;
+      else Exit(Count > 0);
+    end;
+  until False;
 end;
 
 function TLineEditor.ReadCharacter(Lead: Char): string;
@@ -290,6 +387,25 @@ begin
   FShown := '';
   FShownCursor := 0;
   FShownWidth := 0;
+end;
+
+procedure TLineEditor.Suspend;
+var
+  Signals, Previous: TSigSet;
+begin
+  TCSetAttr(StdInputHandle, TCSANOW, FOriginal);
+  WriteDiagnostic('');
+  fpSigEmptySet(Signals);
+  fpSigAddSet(Signals, SIGTSTP);
+  fpSigProcMask(SIG_UNBLOCK, @Signals, @Previous);
+  fpKill(fpGetPid, SIGTSTP);
+  fpSigProcMask(SIG_SETMASK, @Previous, nil);
+  TCSetAttr(StdInputHandle, TCSANOW, FEditing);
+  if not FShowingCompletion then
+  begin
+    ChangePrompt(FPrompt);
+    Redraw;
+  end;
 end;
 
 procedure TLineEditor.Redraw;
@@ -382,7 +498,7 @@ var
   function FindMatch(Start: Integer): Integer;
   begin
     for Result := Start downto 0 do
-      if (Query = '') or (Pos(Query, FHistory[Result]) > 0) then
+      if (Query = '') or (Pos(LowerCase(Query), LowerCase(FHistory[Result])) > 0) then
         Exit;
     Result := -1;
   end;
@@ -413,7 +529,7 @@ begin
       #7, #10, #13: Break;
       #8, #127:
         begin
-          SetLength(Query, PreviousCharacter(Query, Length(Query)));
+          SetLength(Query, PreviousCursorCharacter(Query, Length(Query)));
           Match := FindMatch(SearchFrom);
         end;
       #18:
@@ -426,11 +542,7 @@ begin
             Match := Older;
           end;
         end;
-      #27:
-        begin
-          ReadEscape(False);
-          Break;
-        end;
+      #27: Break;
       ' '..#126, #128..#255:
         begin
           Query := Query + ReadCharacter(Key);
@@ -444,10 +556,12 @@ begin
   if (Key in [#10, #13]) and (Match >= 0) then
     Recall(Match);
   ChangePrompt(Prompt);
+  if Key = #27 then
+    ReadEscape(True, Match);
   Result := True;
 end;
 
-procedure TLineEditor.ReadEscape(ApplyKey: Boolean);
+procedure TLineEditor.ReadEscape(ApplyKey: Boolean; HistoryMatch: Integer);
 var
   Key: Char;
   Parameters: string;
@@ -456,28 +570,47 @@ begin
     Exit;
   if not (Key in ['[', 'O']) then
   begin
-    FPending := Key;
-    FHasPending := True;
+    if ApplyKey and (Key = 'b') then
+    begin
+      while (FCursor > 0) and (FLine[FCursor] in [' ', #9]) do
+        Dec(FCursor);
+      while (FCursor > 0) and not (FLine[FCursor] in [' ', #9]) do
+        FCursor := PreviousCursorCharacter(FLine, FCursor);
+    end
+    else if ApplyKey and (Key = 'f') then
+    begin
+      while (FCursor < Length(FLine)) and (FLine[FCursor + 1] in [' ', #9]) do
+        Inc(FCursor);
+      while (FCursor < Length(FLine)) and not (FLine[FCursor + 1] in [' ', #9]) do
+        FCursor := NextCursorCharacter(FLine, FCursor);
+    end
+    else
+    begin
+      FPending := Key;
+      FHasPending := True;
+    end;
     Exit;
   end;
   Parameters := '';
-  while ReadByte(Key, EscapeDelay) do
+  while ReadByte(Key, EscapeSequenceDelay) do
   begin
     if Key in ['@'..'~'] then
     begin
       if not ApplyKey then
         Exit;
+      if (HistoryMatch >= 0) and (Key in ['A', 'B', 'C', 'D', 'H', 'F', '~']) then
+        Recall(HistoryMatch);
       case Key of
         'A': Recall(FHistoryIndex - 1);
         'B': Recall(FHistoryIndex + 1);
-        'C': FCursor := NextCharacter(FLine, FCursor);
-        'D': FCursor := PreviousCharacter(FLine, FCursor);
+        'C': FCursor := NextCursorCharacter(FLine, FCursor);
+        'D': FCursor := PreviousCursorCharacter(FLine, FCursor);
         'H': FCursor := 0;
         'F': FCursor := Length(FLine);
         '~': case Parameters of
           '1', '7': FCursor := 0;
           '4', '8': FCursor := Length(FLine);
-          '3': ReplaceText(FCursor, NextCharacter(FLine, FCursor) - FCursor, '');
+          '3': ReplaceText(FCursor, NextCursorCharacter(FLine, FCursor) - FCursor, '');
         end;
       end;
       Exit;
@@ -503,9 +636,7 @@ begin
   if not Assigned(FCompletion) or ((FCursor < Length(FLine)) and
     not (FLine[FCursor + 1] in [' ', #9])) then
     Exit;
-  Start := FCursor;
-  while (Start > 0) and not (FLine[Start] in [' ', #9]) do
-    Dec(Start);
+  Start := CompletionStart(FLine, FCursor);
   Candidates := TStringList.Create;
   try
     try
@@ -528,7 +659,12 @@ begin
     else if FCompletionState = csPending then
     begin
       WriteLn(StdErr);
-      ShowCompletionCandidates(Candidates);
+      FShowingCompletion := True;
+      try
+        ShowCompletionCandidates(Candidates);
+      finally
+        FShowingCompletion := False;
+      end;
       Write(StdErr, FPrompt);
       FShown := '';
       FShownCursor := 0;
@@ -573,15 +709,15 @@ begin
     begin
       case Key of
         #1: FCursor := 0;
-        #2: FCursor := PreviousCharacter(FLine, FCursor);
+        #2: FCursor := PreviousCursorCharacter(FLine, FCursor);
         #3: raise ECommandCancelled.Create('Command cancelled.');
         #4: if FLine = '' then Exit(False)
-            else ReplaceText(FCursor, NextCharacter(FLine, FCursor) - FCursor, '');
+            else ReplaceText(FCursor, NextCursorCharacter(FLine, FCursor) - FCursor, '');
         #5: FCursor := Length(FLine);
-        #6: FCursor := NextCharacter(FLine, FCursor);
+        #6: FCursor := NextCursorCharacter(FLine, FCursor);
         #8, #127:
           begin
-            Start := PreviousCharacter(FLine, FCursor);
+            Start := PreviousCursorCharacter(FLine, FCursor);
             ReplaceText(Start, FCursor - Start, '');
           end;
         #9: Complete;
@@ -595,6 +731,7 @@ begin
         #16: Recall(FHistoryIndex - 1);
         #18: if not SearchHistory then Exit(False);
         #21: ReplaceText(0, FCursor, '');
+        #26: Suspend;
         #27: ReadEscape;
         ' '..#126, #128..#255: ReplaceText(FCursor, 0, ReadCharacter(Key));
       end;
@@ -604,8 +741,7 @@ begin
     end;
     Result := False;
   finally
-    WriteLn(StdErr);
-    Flush(StdErr);
+    WriteDiagnostic('');
   end;
 end;
 
@@ -617,18 +753,29 @@ var
   Editor: TLineEditor;
   Buffer: array[0..4095] of Char;
   Count: ssize_t;
-  SignalHandle: cint;
+  SignalHandle, Signal: cint;
+  RawMode: Boolean;
 begin
+  RawMode := (GetEnvironmentVariable('TERM') <> 'dumb') and (IsATTY(StdErr) = 1);
   fpSigEmptySet(Signals);
-  fpSigAddSet(Signals, SIGINT);
+  for Signal in SessionSignals do
+    fpSigAddSet(Signals, Signal);
+  if RawMode then
+  begin
+    fpSigAddSet(Signals, SIGTSTP);
+    fpSigAddSet(Signals, SIGCONT);
+    fpSigAddSet(Signals, SIGWINCH);
+  end;
   if fpSigProcMask(SIG_BLOCK, @Signals, @Previous) <> 0 then
     RaiseLastOSError(fpGetErrNo);
   try
+    if SessionSignal <> 0 then
+      Exit(False);
     SignalHandle := signalfd(-1, @Signals, O_CLOEXEC);
     if SignalHandle < 0 then
       RaiseLastOSError(cerrno);
     try
-      if (GetEnvironmentVariable('TERM') = 'dumb') or (IsATTY(StdErr) <> 1) then
+      if not RawMode then
       begin
         WritePrompt(Prompt);
         Count := ReadTerminalBytes(SignalHandle, Buffer, SizeOf(Buffer), -1);
@@ -651,7 +798,7 @@ begin
         RaiseLastOSError(fpGetErrNo);
       try
         UseTerminalLocale;
-        Editor := TLineEditor.Create(Prompt, History, Completion, SignalHandle);
+        Editor := TLineEditor.Create(Prompt, History, Completion, SignalHandle, Original, Editing);
         try
           WritePrompt(Prompt);
           Result := Editor.ReadLine(Line);

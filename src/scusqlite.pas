@@ -32,6 +32,7 @@ type
     function StateKey: string;
     function RevisionCount: Integer;
     function ReadDocument: TJSONObject;
+    function ReadRevision(Sequence: Integer): TJSONObject;
     procedure SaveMetadata(const Payload: RawByteString);
     procedure AppendRevision(Sequence: Integer; const Deck, Version, DeckRevision, Payload: RawByteString);
     procedure ReadAudit(Visit: TAuditLineVisitor);
@@ -405,16 +406,16 @@ begin
   try
     Revisions := TJSONArray.Create;
     Result.Add('revisions', Revisions);
-    Statement := Prepare('SELECT sequence, deck_name, payload FROM deck_revisions ORDER BY sequence');
+    Statement := Prepare('SELECT sequence, deck_name, deck_revision FROM deck_revisions ORDER BY sequence');
     try
       while Next(Statement) do
       begin
         if sqlite3_column_int64(Statement, 0) <> Int64(Revisions.Count) + 1 then
           raise EScuError.Create('Invalid SQLite deck revision sequence.');
-        Entry := ParseObject(ColumnText(Statement, 2));
+        Entry := TJSONObject.Create;
         Revisions.Add(Entry);
-        if Field(Entry, 'deck', jtString).AsString <> ColumnText(Statement, 1) then
-          raise EScuError.Create('The SQLite deck name does not match its payload.');
+        Entry.Add('deck', ColumnText(Statement, 1));
+        Entry.Add('deck_revision', ColumnText(Statement, 2));
       end;
     finally
       sqlite3_finalize(Statement);
@@ -422,6 +423,21 @@ begin
   except
     Result.Free;
     raise;
+  end;
+end;
+
+function TSQLiteLibrary.ReadRevision(Sequence: Integer): TJSONObject;
+var
+  Statement: psqlite3_stmt;
+begin
+  Statement := Prepare('SELECT payload FROM deck_revisions WHERE sequence = ?');
+  try
+    Check(sqlite3_bind_int(Statement, 1, Sequence));
+    if not Next(Statement) then
+      raise EScuError.CreateFmt('SQLite library revision %d is missing.', [Sequence]);
+    Result := ParseObject(ColumnText(Statement, 0));
+  finally
+    sqlite3_finalize(Statement);
   end;
 end;
 

@@ -41,8 +41,11 @@ type
       out AppendCharacter: Char);
     procedure RunCommand;
     procedure RunCommandInDirectory(const OutputDirectory: string);
+    procedure BuildProcessGroup(Sender: TObject);
     procedure RunBuild(const Build: TBuildRequest; const AuditPath, Expansion: string);
     procedure RunInteractive(Tokens: TStrings);
+    procedure RunInteractiveSession(Tokens: TStrings);
+    procedure RecoverPendingLibrary;
   public
     constructor Create;
     destructor Destroy; override;
@@ -53,11 +56,14 @@ implementation
 
 uses
   SysUtils, BaseUnix, Process, ScuIO, ScuJSON, ScuCodec, ScuExpand, ScuEdit, ScuDiff, ScuCommands,
-  ScuInput, ScuComplete, ScuVersions, ScuTerminal, Termio;
+  ScuInput, ScuComplete, ScuVersions, ScuTerminal, ScuSignals, Termio;
 
 const
   CurrentLibraryVersionSelector = 'scu$current_library_version';
   LibraryDirectorySelector = 'scu$library_directory';
+  DeckNameSelector = 'scu$deck_name';
+
+function setpgid(Pid, Group: cint): cint; cdecl; external 'c';
 
 function CommandFile: string;
 var
@@ -148,6 +154,10 @@ begin
     end
     else if (Copy(First, 1, 1) <> '-') and (FindDefinition(FCommands, First) < 0) then
     begin
+      Name := LowerCase(ExtractFileExt(First));
+      if not FileExists(First) and (Name <> '.json') and (Name <> '.sqlite') and
+        (Name <> '.sqlite3') and (Name <> '.db') then
+        Definition(First);
       FLibraryPath := First;
       Result := 1;
     end;
@@ -275,7 +285,7 @@ var
     repeat
       FPromptParameter := Entry;
       try
-        if not ReadCommandLine(Prompt, Argument, @CompletePromptValue) then
+        if not ReadCommandLine(Prompt, Argument, @CompletePromptValue, False) then
           raise ECommandCancelled.Create('Command cancelled.');
       finally
         FPromptParameter := nil;
@@ -315,8 +325,7 @@ var
     if Index + 1 >= Tokens.Count then
       Exit(False);
     Next := Tokens[Index + 1];
-    if (Copy(Next, 1, 2) = '--') and
-      ((Next = '--') or (FindDefinition(Options, Copy(Next, 3, MaxInt)) >= 0)) then
+    if Copy(Next, 1, 2) = '--' then
       Exit(False);
     Separator := Pos('=', Next);
     if Separator <= 1 then
@@ -351,18 +360,24 @@ begin
       PositionalOnly := True
     else if not PositionalOnly and (Copy(Value, 1, 2) = '--') then
     begin
-      OptionSlot := FindDefinition(Options, Copy(Value, 3, MaxInt));
+      Key := Copy(Value, 3, MaxInt);
+      if EqualsAt > 0 then
+        Key := Copy(Value, 3, EqualsAt - 3);
+      OptionSlot := FindDefinition(Options, Key);
       if OptionSlot < 0 then
         raise EScuError.CreateFmt('Unknown option %s for %s.', [Value, FCommand]);
-      if ParameterRequired(DefinitionAt(Options, OptionSlot), False) and not ValueFollows then
+      if EqualsAt > 0 then
+        SetOption(OptionSlot, Copy(Value, EqualsAt + 1, MaxInt))
+      else if ParameterRequired(DefinitionAt(Options, OptionSlot), False) and not ValueFollows then
       begin
         Key := DefinitionName(DefinitionAt(Options, OptionSlot));
         if FOptions.IndexOfName(Key) >= 0 then
           raise EScuError.CreateFmt('Duplicate option --%s.', [Key]);
         Inc(Index);
         Continue;
-      end;
-      SetOption(OptionSlot, ReadValue(Value));
+      end
+      else
+        SetOption(OptionSlot, ReadValue(Value));
     end
     else
     begin
@@ -375,21 +390,8 @@ begin
           raise EScuError.CreateFmt('Ambiguous argument or option "%s" for %s.', [Key, FCommand]);
         if (Slot >= 0) or (OptionSlot >= 0) then
         begin
-          if EqualsAt = Length(Value) then
-          begin
-            if not ValueFollows then
-            begin
-              if (Slot >= 0) and Supplied[Slot] then
-                raise EScuError.CreateFmt('Duplicate argument %s.', [FArgumentNames.Strings[Slot]]);
-              if (OptionSlot >= 0) and
-                (FOptions.IndexOfName(DefinitionName(DefinitionAt(Options, OptionSlot))) >= 0) then
-                raise EScuError.CreateFmt('Duplicate option --%s.',
-                  [DefinitionName(DefinitionAt(Options, OptionSlot))]);
-              Inc(Index);
-              Continue;
-            end;
-            Value := ReadValue(Key);
-          end
+          if (EqualsAt = Length(Value)) and ValueFollows then
+            Value := ReadValue(Key)
           else
             Value := Copy(Value, EqualsAt + 1, MaxInt);
           if Slot >= 0 then
@@ -849,7 +851,9 @@ begin
         if FOptions.IndexOfName('revision') < 0 then
           MissingDeckVersion := SnapshotsUsed.Selected.Version;
         Path := FArguments[1];
-        if SameText(Path, LastModifiedDeckSelector) then
+        if SameText(Path, DeckNameSelector) then
+          Path := DeckName(FArguments[0])
+        else if SameText(Path, LastModifiedDeckSelector) then
           Path := ResolveLastModifiedDeck;
         Path := OutputPath(Path);
         if FCommand = 'expand_deck' then
@@ -867,7 +871,8 @@ begin
           Source := LibraryFile.Extract(FArguments[0], SnapshotsUsed.Selected.LibraryRevision, MissingDeckVersion);
           Bytes := Source.Bytes;
         end;
-        AtomicWrite(Path, Bytes);
+        CheckSessionInterrupt;
+        AtomicWrite(Path, Bytes, True, True);
         if FCommand = 'expand_deck' then
           ScheduleBuild(Path);
         ReportSnapshot('Using', SnapshotsUsed.Selected);
@@ -926,7 +931,8 @@ begin
               Source := LibraryFile.Extract(Names[Index], Revision);
               Bytes := Source.Bytes;
             end;
-            AtomicWrite(Destinations[Index], Bytes);
+            CheckSessionInterrupt;
+            AtomicWrite(Destinations[Index], Bytes, True, True);
           end;
           if Assigned(Expander) and ((Names.Count > 0) or BuildPending) then
           begin
@@ -956,6 +962,12 @@ begin
   end;
 end;
 
+procedure TScuCLI.BuildProcessGroup(Sender: TObject);
+begin
+  if setpgid(0, 0) <> 0 then
+    fpExit(126);
+end;
+
 procedure TScuCLI.RunBuild(const Build: TBuildRequest; const AuditPath, Expansion: string);
 var
   Child: TProcess;
@@ -970,13 +982,16 @@ begin
     try
       Child.Executable := '/bin/sh';
       Child.Parameters.Add('-c');
-      Child.Parameters.Add(Build.Command);
+      Child.Parameters.Add('exec </dev/null' + LineEnding + Build.Command);
       Child.Parameters.Add('scu-build');
       Child.Parameters.Add(Build.OutputPath);
-      Child.Options := [poWaitOnExit];
-      Child.Execute;
-      if Child.ExitStatus <> 0 then
-        raise EScuError.CreateFmt('Build command failed with exit status %d.', [Child.ExitStatus]);
+      if FInteractive then
+        Child.OnForkEvent := @BuildProcessGroup;
+      WaitForChild(Child, FInteractive);
+      if SessionSignal <> 0 then
+        raise EScuError.Create('Build command interrupted.');
+      if ChildExitStatus(Child) <> 0 then
+        raise EScuError.CreateFmt('Build command failed with exit status %d.', [ChildExitStatus(Child)]);
     finally
       Child.Free;
     end;
@@ -1028,22 +1043,33 @@ end;
 
 procedure TScuCLI.RunCommand;
 var
-  Directory: string;
+  Directory, Path: string;
   Lock: TLibraryLock;
 begin
-  if ((FCommand <> 'expand_modified_decks') and (FCommand <> 'reset_expansion_checkpoint')) or
-    not IsSQLiteLibrary(CanonicalFile(FLibraryPath)) then
+  if FCommand = 'expand_deck' then
+  begin
+    Path := FArguments[1];
+    if (Path = '') or SameText(Path, DeckNameSelector) or SameText(Path, LastModifiedDeckSelector) then
+      Directory := GetCurrentDir
+    else
+      Directory := ExtractFileDir(ExpandFileName(Path));
+  end
+  else if (FCommand = 'expand_modified_decks') or (FCommand = 'reset_expansion_checkpoint') then
+    Directory := BulkOutputDirectory
+  else
   begin
     RunCommandInDirectory('');
     Exit;
   end;
-  Directory := BulkOutputDirectory;
   if not DirectoryExists(Directory) then
     raise EScuError.Create('The output directory must already exist.');
   Directory := CanonicalDirectory(Directory);
   Lock := TLibraryLock.CreateForDirectory(Directory);
   try
-    RunCommandInDirectory(Directory);
+    if (FCommand <> 'expand_deck') and IsSQLiteLibrary(CanonicalFile(FLibraryPath)) then
+      RunCommandInDirectory(Directory)
+    else
+      RunCommandInDirectory('');
   finally
     Lock.Free;
   end;
@@ -1060,6 +1086,7 @@ var
   SnapshotsUsed: TAuditSnapshots;
   Build: TBuildRequest;
   PreviousAuditRecords: Int64;
+  Contents: TJSONObject;
 
   procedure RaiseMissingLibrary;
   begin
@@ -1141,13 +1168,15 @@ begin
     AuditPath := FLibraryPath + '.audit';
     if IsSQLiteLibrary(FLibraryPath) then
     begin
+      if FCommand = 'repair_audit' then
+        raise EScuError.Create('repair_audit applies to JSON library audit files.');
       if not LibraryExists and not (Initializing or Importing) then
         RaiseMissingLibrary;
       Database := TSQLiteLibrary.Create(FLibraryPath, Initializing or Importing, Verifying);
       Database.BeginTransaction(Verifying);
       Database.EnsureSchema(Initializing or Importing);
       LibraryExists := Database.StateKey <> '';
-      Audit := TAuditLog.Create(Database, Checkpoint);
+      Audit := TAuditLog.Create(Database, Checkpoint, Verifying or Importing);
     end
     else
     begin
@@ -1155,12 +1184,20 @@ begin
         raise EScuError.Create('JSON import and export require a selected SQLite library.');
       if not LibraryExists and not Initializing and not Verifying and not RegularFileExists(AuditPath) then
         RaiseMissingLibrary;
-      Audit := TAuditLog.Create(AuditPath, Initializing and not LibraryExists, Verifying, Checkpoint);
+      Audit := TAuditLog.Create(AuditPath, Initializing and not LibraryExists, Verifying, Checkpoint,
+        FCommand = 'repair_audit');
     end;
     if (LibraryExists or Assigned(FPendingLibrary)) and (Audit.Records = 0) then
       raise EScuError.Create('The audit log for the existing library is empty.');
     if Verifying then
     begin
+      if Audit.SavedHeaderDigest <> '' then
+      begin
+        if not LibraryExists then
+          RaiseMissingLibrary;
+        LibraryFile := TDeckLibrary.Create(FLibraryPath, '', False, Database);
+        Audit.VerifyContents(LibraryFile);
+      end;
       WriteLn('records=', Audit.Records, ' interrupted=', Audit.Interrupted, ' head=', Audit.Head);
       Exit;
     end;
@@ -1191,7 +1228,9 @@ begin
       Database.Execute('SAVEPOINT scu_operation');
     SnapshotsUsed := Default(TAuditSnapshots);
     try
-      if Initializing then
+      if FCommand = 'repair_audit' then
+        Detail := Format('Removed %d incomplete audit byte(s).', [Audit.RepairedBytes])
+      else if Initializing then
       begin
         if LibraryExists or Audit.Initialized then
           raise EScuError.Create('A library already exists or was previously initialized here.');
@@ -1204,6 +1243,7 @@ begin
         if LibraryExists then
           raise EScuError.Create('The destination library already exists.');
         LibraryFile := TDeckLibrary.Create(TransferPath);
+        Audit.VerifyContents(LibraryFile);
         LibraryFile.ImportInto(Database);
         SnapshotsUsed.Selected := LibraryFile.CurrentSnapshot;
         Detail := 'Imported JSON library.';
@@ -1229,6 +1269,8 @@ begin
         else
         begin
           Detail := ExecuteLibrary(LibraryFile, Database, OutputDirectory, SnapshotsUsed, Build);
+          if SessionSignal <> SIGHUP then
+            Flush(Output);
           if Assigned(Database) and not FInteractive then
             LibraryFile.Save;
         end;
@@ -1255,7 +1297,14 @@ begin
     try
       PendingSave := FInteractive and Assigned(LibraryFile) and LibraryFile.Modified and
         not Initializing and not IsSessionExit(FCommand) and (FCommand <> 'save_library');
-      Audit.EndCommand(True, Detail, SnapshotsUsed, PendingSave);
+      Contents := nil;
+      try
+        if Assigned(LibraryFile) then
+          Contents := LibraryFile.SavedContents;
+        Audit.EndCommand(True, Detail, SnapshotsUsed, PendingSave, Contents);
+      finally
+        Contents.Free;
+      end;
       if Assigned(Database) then
         Database.Commit;
       Committed := True;
@@ -1265,7 +1314,7 @@ begin
       on E: Exception do
         raise EScuError.Create('Could not commit the command outcome: ' + E.Message);
     end;
-    if Detail <> '' then
+    if (Detail <> '') and (SessionSignal <> SIGHUP) then
       WriteLn(Detail);
     if FCommand = 'display_library' then
       WriteLn(LibraryFile.HeaderJSON);
@@ -1319,8 +1368,46 @@ end;
 
 procedure TScuCLI.RunInteractive(Tokens: TStrings);
 var
+  Previous: TSessionSignalHandlers;
+begin
+  StartSessionSignals(Previous);
+  try
+    RunInteractiveSession(Tokens);
+  finally
+    RestoreSessionSignals(Previous);
+  end;
+end;
+
+procedure TScuCLI.RecoverPendingLibrary;
+var
+  Path: string;
+  Data: RawByteString;
+begin
+  if not Assigned(FPendingLibrary) then
+    Exit;
+  try
+    Data := FPendingLibrary.ExportRecoveryJSON;
+    Path := FLibraryPath + '.recovery-' + IntToStr(fpGetPid) + '.json';
+    try
+      AtomicWrite(Path, Data, False);
+    except
+      on E: Exception do
+      begin
+        Path := IncludeTrailingPathDelimiter(MakeTempDirectory('scu-recovery')) + 'library.json';
+        AtomicWrite(Path, Data, False);
+      end;
+    end;
+    WriteDiagnostic('scu: Saved pending changes in ' + Path);
+  except
+    on E: Exception do
+      WriteDiagnostic('scu: Could not recover pending changes: ' + E.Message);
+  end;
+end;
+
+procedure TScuCLI.RunInteractiveSession(Tokens: TStrings);
+var
   Line, Prompt: string;
-  OpeningLibrary, EndOfInput: Boolean;
+  OpeningLibrary, EndOfInput, SawCommand: Boolean;
 begin
   FInteractive := True;
   Prompt := '';
@@ -1328,9 +1415,15 @@ begin
     Prompt := 'scu> ';
   OpeningLibrary := Prompt <> '';
   EndOfInput := False;
+  SawCommand := False;
   repeat
     try
-      if OpeningLibrary then
+      if SessionSignal = SIGINT then
+      begin
+        SessionSignal := 0;
+        raise ECommandCancelled.Create('Command cancelled.');
+      end;
+      if OpeningLibrary and (SessionSignal = 0) then
       begin
         OpeningLibrary := False;
         if (FindDefinition(FCommands, 'display_library') < 0) or
@@ -1340,14 +1433,15 @@ begin
         Tokens.Add('display_library');
         ParseCommand(Tokens, 0, True);
       end
-      else if ReadCommandLine(Prompt, Line, @CompleteInteractiveLine) then
+      else if (SessionSignal = 0) and ReadCommandLine(Prompt, Line, @CompleteInteractiveLine) then
       begin
         FCommand := '';
         try
           TokenizeCommand(Line, Tokens);
           if Tokens.Count = 0 then
             Continue;
-          ParseCommand(Tokens, 0, True);
+          SawCommand := True;
+          ParseCommand(Tokens, 0, Prompt <> '');
         finally
           if not IsSessionExit(FCommand) then
             RememberCommand(Line);
@@ -1355,7 +1449,17 @@ begin
       end
       else
       begin
-        EndOfInput := Prompt = '';
+        if (SessionSignal = SIGTERM) or (SessionSignal = SIGQUIT) then
+        begin
+          ExitCode := 128 + SessionSignal;
+          Exit;
+        end;
+        if SessionSignal = SIGINT then
+          Continue;
+        EndOfInput := (Prompt = '') or (SessionSignal = SIGHUP) or (IsATTY(Input) <> 1);
+        if EndOfInput and (SessionSignal = 0) and not SawCommand and not FileExists(FLibraryPath) then
+          raise EScuError.CreateFmt('Library "%s" does not exist. Use initialize_library to create it.',
+            [FLibraryPath]);
         FCommand := 'quit_session';
         FOptions.Clear;
         FArgumentNames.Clear;
@@ -1370,14 +1474,21 @@ begin
         Exit;
     except
       on E: ECommandCancelled do
-        WriteLn(StdErr, E.Message);
+      begin
+        if SessionSignal = SIGINT then
+          SessionSignal := 0;
+        WriteDiagnostic(E.Message);
+      end;
       on E: Exception do
       begin
-        WriteLn(StdErr, 'scu: ', E.Message);
+        WriteDiagnostic('scu: ' + E.Message);
+        if EndOfInput and (SessionSignal = SIGHUP) then
+          RecoverPendingLibrary;
         ExitCode := 1;
       end;
     end;
-    Flush(Output);
+    if SessionSignal <> SIGHUP then
+      Flush(Output);
   until EndOfInput;
 end;
 
