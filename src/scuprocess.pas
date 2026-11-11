@@ -58,7 +58,7 @@ var
   Deadline: QWord;
   TerminalMode: TermIOS;
   RestoreTerminal, Stopped: Boolean;
-  Received: cint;
+  Received, TerminalGroup: cint;
 
   procedure SignalChild(Signal: cint);
   begin
@@ -106,6 +106,7 @@ begin
   Sent := 0;
   Deadline := 0;
   Stopped := False;
+  Pid := -1;
   SetChildHandlesInterrupt(cpHandlesInterrupt in Options);
   try
     try
@@ -156,7 +157,9 @@ begin
       Result := WExitStatus(Status);
   finally
     SetChildHandlesInterrupt(False);
-    if RestoreTerminal and SetForegroundGroup(ForegroundGroup) then
+    TerminalGroup := tcgetpgrp(StdInputHandle);
+    if RestoreTerminal and ((TerminalGroup = ForegroundGroup) or
+      ((Pid > 0) and (TerminalGroup = Pid) and SetForegroundGroup(ForegroundGroup))) then
     begin
       while (TCSetAttr(StdInputHandle, TCSANOW, TerminalMode) <> 0) and
         (fpGetErrNo = ESysEINTR) do ;

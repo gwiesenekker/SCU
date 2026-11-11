@@ -23,7 +23,7 @@ type
     procedure Append(const Data: RawByteString);
     procedure AppendSlice(const Data: RawByteString; Index, Count: SizeInt);
     procedure ExpandInto(const Deck: string);
-    procedure ExpandMacros(const Line: RawByteString; const Stored: TDeckSource);
+    procedure ExpandMacros(const Line: RawByteString; LineStart, LineEnd: SizeInt; const Stored: TDeckSource);
   public
     constructor Create(ALibrary: TDeckLibrary; Database: TSQLiteLibrary; ARevision: Integer; const Version, Prefix: string;
       const MissingDeckVersion: string = '');
@@ -57,14 +57,14 @@ const
   MaxVisits = 10000;
   MaxSourceBytes = 256 * 1024 * 1024;
 
-function MacroAt(const Line: RawByteString; Index: SizeInt;
+function MacroAt(const Line: RawByteString; Index, LineStart, LineEnd: SizeInt;
   out TokenLength: SizeInt; AfterPrefix: Boolean = False): TMacro;
 var
   Candidate: TMacro;
   SpellingIndex: Integer;
 begin
-  if (Index + 3 > Length(Line)) or
-    ((Index > 1) and not AfterPrefix and IsIdentifierChar(Line[Index - 1])) then
+  if (Index + 3 > LineEnd) or
+    ((Index > LineStart) and not AfterPrefix and IsIdentifierChar(Line[Index - 1])) then
     Exit(NoMacro);
   case Line[Index] of
     'S':
@@ -77,7 +77,7 @@ begin
   end;
   for Candidate := Low(MacroNames) to High(MacroNames) do
     for SpellingIndex := Low(MacroNames[Candidate]) to High(MacroNames[Candidate]) do
-      if HasToken(Line, Index, MacroNames[Candidate, SpellingIndex]) then
+      if HasToken(Line, Index, LineEnd, MacroNames[Candidate, SpellingIndex]) then
       begin
         TokenLength := Length(MacroNames[Candidate, SpellingIndex]);
         Exit(Candidate);
@@ -133,21 +133,20 @@ begin
     FOutput.WriteBuffer(Data[Index], Count);
 end;
 
-procedure TDeckExpander.ExpandMacros(const Line: RawByteString; const Stored: TDeckSource);
+procedure TDeckExpander.ExpandMacros(const Line: RawByteString; LineStart, LineEnd: SizeInt; const Stored: TDeckSource);
 var
-  Index, FromIndex, TokenLength, LineLength: SizeInt;
+  Index, FromIndex, TokenLength: SizeInt;
   Macro: TMacro;
 begin
-  Index := 1;
+  Index := LineStart;
   FromIndex := Index;
-  LineLength := Length(Line);
-  while Index <= LineLength do
+  while Index <= LineEnd do
   begin
-    while (Index <= LineLength) and not (Line[Index] in ['S', '$']) do
+    while (Index <= LineEnd) and not (Line[Index] in ['S', '$']) do
       Inc(Index);
-    if Index > LineLength then
+    if Index > LineEnd then
       Break;
-    Macro := MacroAt(Line, Index, TokenLength);
+    Macro := MacroAt(Line, Index, LineStart, LineEnd, TokenLength);
     if Macro = NoMacro then
     begin
       Inc(Index);
@@ -167,15 +166,15 @@ begin
     Inc(Index, TokenLength);
     FromIndex := Index;
   end;
-  AppendSlice(Line, FromIndex, LineLength - FromIndex + 1);
+  AppendSlice(Line, FromIndex, LineEnd - FromIndex + 1);
 end;
 
 procedure TDeckExpander.ExpandInto(const Deck: string);
 var
   Name, Target, Prefix: string;
-  Source, Line, Ending: RawByteString;
+  Source: RawByteString;
   Stored: TDeckSource;
-  Index, First, Directive, LineNo, TokenLength: SizeInt;
+  Index, LineStart, EndingStart, First, Directive, LineNo, TokenLength: SizeInt;
   PreviousSize: Int64;
 begin
   CheckSessionInterrupt;
@@ -202,20 +201,21 @@ begin
       if (LineNo and 255) = 0 then
         CheckSessionInterrupt;
       Inc(LineNo);
-      ReadSourceLine(Source, Index, Line, Ending);
-      Directive := DirectiveStart(Line, Prefix, First);
+      LineStart := Index;
+      ReadSourceLine(Source, Index, EndingStart);
+      Directive := DirectiveStart(Source, Prefix, LineStart, EndingStart - 1, First);
       if Directive <> 0 then
       begin
-        if HasToken(Line, Directive, CopyDirective) then
+        if HasToken(Source, Directive, EndingStart - 1, CopyDirective) then
         begin
           try
-            if not TryCopyTarget(Line, Directive, Target) then
+            if not TryCopyTarget(Source, Directive, EndingStart - 1, Target) then
               raise EScuError.Create('Expected SCU_COPY followed by a deck name.');
             PreviousSize := FOutput.Size;
             ExpandInto(Target);
             if (FOutput.Size > PreviousSize) and
               not (PChar(FOutput.Memory)[FOutput.Size - 1] in [#10, #13]) then
-              Append(Ending);
+              AppendSlice(Source, EndingStart, Index - EndingStart);
           except
             on E: ECommandCancelled do
               raise;
@@ -224,11 +224,14 @@ begin
           end;
           Continue;
         end;
-        if MacroAt(Line, Directive, TokenLength, True) <> NoMacro then
-          Delete(Line, First, Length(Prefix));
+        if MacroAt(Source, Directive, LineStart, EndingStart - 1, TokenLength, True) <> NoMacro then
+        begin
+          AppendSlice(Source, LineStart, First - LineStart);
+          LineStart := Directive;
+        end;
       end;
-      ExpandMacros(Line, Stored);
-      Append(Ending);
+      ExpandMacros(Source, LineStart, EndingStart - 1, Stored);
+      AppendSlice(Source, EndingStart, Index - EndingStart);
     end;
   finally
     FStack.Delete(FStack.Count - 1);

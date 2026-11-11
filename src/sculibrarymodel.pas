@@ -347,37 +347,42 @@ end;
 procedure TLibraryRevision.ReadSourceFields;
 var
   Stamp: TDateTime;
+  Context: string;
 begin
   if FSourceFieldsRead then
     Exit;
+  Assert(Loaded);
+  Context := 'Deck "' + Name + '" revision payload';
   FCommentPrefix := '';
   if Assigned(FPayload.Find('comment_prefix')) then
   begin
-    FCommentPrefix := Field(FPayload, 'comment_prefix', jtString).AsString;
+    FCommentPrefix := Field(FPayload, 'comment_prefix', jtString, Context).AsString;
     ValidateCommentPrefix(FCommentPrefix);
   end;
-  FModifiedUTC := Field(FPayload, 'modified_utc', jtString).AsString;
+  FModifiedUTC := Field(FPayload, 'modified_utc', jtString, Context).AsString;
   if not TryISO8601ToDate(FModifiedUTC, Stamp) or (UtcTimestamp(Stamp) <> FModifiedUTC) then
     raise EScuError.CreateFmt('Invalid modification timestamp for deck "%s".', [Name]);
-  FEncoded := Field(FPayload, 'zstd_base64', jtString).AsString;
-  FSHA1 := Field(FPayload, 'sha1', jtString).AsString;
-  FSize := IntegerField(FPayload, 'size', 'Deck "' + Name + '" revision payload');
+  FEncoded := Field(FPayload, 'zstd_base64', jtString, Context).AsString;
+  FSHA1 := Field(FPayload, 'sha1', jtString, Context).AsString;
+  FSize := IntegerField(FPayload, 'size', Context);
   FSourceFieldsRead := True;
 end;
 
 procedure TLibraryRevision.LoadPayload(var Payload: TJSONObject);
 var
   PayloadNumber: Int64;
+  Context: string;
 begin
+  Context := 'Deck "' + Name + '" revision payload';
   if Loaded then
     raise EScuError.Create('The revision payload is already loaded.');
-  if Field(Payload, 'deck', jtString).AsString <> Name then
+  if Field(Payload, 'deck', jtString, Context).AsString <> Name then
     raise EScuError.Create('The SQLite deck name does not match its payload.');
   if Assigned(Payload.Find('deck_revision')) and
-    (not TryParseFixed(Field(Payload, 'deck_revision', jtString).AsString, 3, PayloadNumber) or
+    (not TryParseFixed(Field(Payload, 'deck_revision', jtString, Context).AsString, 3, PayloadNumber) or
     (PayloadNumber <> FNumber)) then
     raise EScuError.Create('The SQLite deck revision does not match its payload.');
-  Field(Payload, 'zstd_base64', jtString);
+  Field(Payload, 'zstd_base64', jtString, Context);
   FPayload := Payload;
   Payload := nil;
 end;
@@ -414,6 +419,7 @@ function TLibraryRevision.GetCopyMetadataJSON: RawByteString;
 var
   Metadata: TJSONData;
 begin
+  Assert(Loaded);
   Metadata := FPayload.Find('copy_metadata');
   if Assigned(Metadata) then
     Exit(Metadata.AsJSON);
@@ -454,11 +460,13 @@ end;
 
 function TLibraryRevision.CloneJSON: TJSONObject;
 begin
+  Assert(Loaded);
   Result := TJSONObject(FPayload.Clone);
 end;
 
 function TLibraryRevision.Serialized: RawByteString;
 begin
+  Assert(Loaded);
   Result := FPayload.AsJSON;
 end;
 

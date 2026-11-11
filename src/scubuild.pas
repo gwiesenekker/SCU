@@ -14,6 +14,9 @@ implementation
 uses
   SysUtils, BaseUnix, Process, ScuErrors, ScuOutputLock, ScuProcess, ScuSignals;
 
+const
+  BuildActiveVariable = 'SCU_BUILD_ACTIVE';
+
 type
   TBuildProcess = class(TProcess)
   private
@@ -31,12 +34,11 @@ begin
   inherited Create(nil);
   FOutputLock := OutputLock;
   FInteractive := Interactive;
+  for Index := 1 to GetEnvironmentVariableCount do
+    Environment.Add(GetEnvironmentString(Index));
+  Environment.Values[BuildActiveVariable] := '1';
   if OutputLock >= 0 then
-  begin
-    for Index := 1 to GetEnvironmentVariableCount do
-      Environment.Add(GetEnvironmentString(Index));
     Environment.Values[BuildOutputLockVariable] := IntToStr(OutputLock);
-  end;
   OnForkEvent := @PrepareChild;
 end;
 
@@ -57,6 +59,8 @@ var
 begin
   Result := '';
   try
+    if GetEnvironmentVariable(BuildActiveVariable) = '1' then
+      raise EScuError.Create('Nested SCU builds are disabled. Use build=no in the build command.');
     Child := TBuildProcess.Create(OutputLock, Interactive);
     try
       Child.Executable := '/bin/sh';

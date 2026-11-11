@@ -9,7 +9,7 @@ uses
 
 type
   TVersionEntry = record
-    Name, CommentPrefix: string;
+    Name, CommentPrefix, LockedUTC, Description: string;
     BaseRevision: Integer;
     Locked: Boolean;
   end;
@@ -21,12 +21,14 @@ type
     function Entry(Index: Integer): TJSONObject;
     function GetCurrent: string;
     function GetLocked: Boolean;
+    function GetCount: Integer;
+    function GetEntry(Index: Integer): TVersionEntry;
     function BaseRevision(Index: Integer): Integer;
     function EndRevision(Index, Latest: Integer): Integer;
     function IndexOf(const Name: string): Integer;
   public
     constructor Create(Entries: TJSONArray; Latest: Integer);
-    procedure Lock;
+    procedure Lock(const Description: string);
     procedure Start(const Name, Prefix: string; Latest: Integer);
     function NextVersion(Increment: Int64): string;
     function CommentPrefix(const Name: string): string;
@@ -36,6 +38,8 @@ type
     procedure ListNames(Latest, MinimumRevision: Integer; Dest: TStrings);
     function AtRevision(Revision: Integer): string;
     function TryPrevious(out Name: string; out Last: Integer): Boolean;
+    property Count: Integer read GetCount;
+    property Entries[Index: Integer]: TVersionEntry read GetEntry;
     property Current: string read GetCurrent;
     property Locked: Boolean read GetLocked;
   end;
@@ -45,7 +49,7 @@ procedure ValidateCommentPrefix(const Prefix: string);
 implementation
 
 uses
-  SysUtils, ScuErrors, ScuJSON, ScuVersionNumbers;
+  SysUtils, DateUtils, ScuClock, ScuErrors, ScuJSON, ScuVersionNumbers;
 
 procedure ValidateCommentPrefix(const Prefix: string);
 var
@@ -104,6 +108,8 @@ var
   Minor: Int64;
   Name, PreviousName: string;
   IsLocked: Boolean;
+  Stamp: TDateTime;
+  Context: string;
 begin
   inherited Create;
   FSerialized := Entries;
@@ -125,6 +131,16 @@ begin
     FEntries[Index].Name := Name;
     FEntries[Index].BaseRevision := Base;
     FEntries[Index].Locked := IsLocked;
+    Context := 'Version "' + Name + '"';
+    if Assigned(Item.Find('locked_utc')) then
+    begin
+      FEntries[Index].LockedUTC := Field(Item, 'locked_utc', jtString, Context).AsString;
+      if not IsLocked or not TryISO8601ToDate(FEntries[Index].LockedUTC, Stamp) or
+        (UtcTimestamp(Stamp) <> FEntries[Index].LockedUTC) then
+        raise EScuError.CreateFmt('Invalid lock timestamp for version "%s".', [Name]);
+    end;
+    if Assigned(Item.Find('description')) then
+      FEntries[Index].Description := Field(Item, 'description', jtString, Context).AsString;
     if (Base > Latest) or (Base < PreviousBase) or ((Index = 0) and (Base <> 0)) or
       ((Index < Length(FEntries) - 1) and not IsLocked) or
       ((Index > 0) and not (LaterVersion(Name, PreviousName) or LaterVersion(Name, PreviousName, True))) then
@@ -174,12 +190,35 @@ begin
   Last := BaseRevision(Length(FEntries) - 1);
 end;
 
-procedure TVersionHistory.Lock;
+function TVersionHistory.GetCount: Integer;
+begin
+  Result := Length(FEntries);
+end;
+
+function TVersionHistory.GetEntry(Index: Integer): TVersionEntry;
+begin
+  Result := FEntries[Index];
+end;
+
+procedure TVersionHistory.Lock(const Description: string);
+var
+  Index: Integer;
+  LockedUTC: string;
+  Item: TJSONObject;
 begin
   if Locked then
     raise EScuError.CreateFmt('Version %s is already locked.', [Current]);
-  Entry(Length(FEntries) - 1).Booleans['locked'] := True;
-  FEntries[High(FEntries)].Locked := True;
+  if Trim(Description) = '' then
+    raise EScuError.Create('A nonempty version description is required.');
+  LockedUTC := UtcTimestamp(UtcNow);
+  Index := High(FEntries);
+  Item := Entry(Index);
+  Item.Booleans['locked'] := True;
+  Item.Strings['locked_utc'] := LockedUTC;
+  Item.Strings['description'] := Description;
+  FEntries[Index].Locked := True;
+  FEntries[Index].LockedUTC := LockedUTC;
+  FEntries[Index].Description := Description;
 end;
 
 procedure TVersionHistory.Start(const Name, Prefix: string; Latest: Integer);

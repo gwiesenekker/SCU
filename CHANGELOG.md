@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Require a description when locking a version, record its UTC lock timestamp, and add display_version_history.
+- Validate catalog commands in the CLI and retain successful outcomes when Ctrl+C arrives after commit.
+- Split executor transaction phases and completion providers into focused routines.
+- Keep the shell in control after background builds and save pending edits on termination from the pager or a suspended prompt.
+- Reject unsupported catalog commands at startup and prevent recursive builds.
+- Decode deck base64 directly and expand source lines without copying each line.
+- Test the diff edit limit and add context to deck payload and output directory errors.
 - Show audit history outcomes without taking the library lock and record resolved output destinations for extraction and expansion.
 - Support extensionless library paths, retain output file groups, remove dangling editor links, and report broken output pipes accurately.
 - Suspend and resume interactive builds and completion paging through shell job control.

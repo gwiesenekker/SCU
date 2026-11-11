@@ -17,7 +17,7 @@ type
   private
     FSignalHandle: cint;
     FPreviousMask: TSigSet;
-    FMaskBlocked, FRawMode: Boolean;
+    FMaskBlocked, FRawMode, FEditingApplied: Boolean;
     FOriginal, FEditing: TermIOS;
     function GetReady: Boolean;
   public
@@ -36,6 +36,7 @@ uses
   SysUtils, Linux, InitC, ScuErrors, ScuOutput, ScuSignals;
 
 function signalfd(Handle: cint; Mask: PSigSet; Flags: cint): cint; cdecl; external 'c';
+function sigpending(Mask: PSigSet): cint; cdecl; external 'c';
 
 constructor TRawTerminalSession.Create;
 var
@@ -76,11 +77,12 @@ begin
   if TCSetAttr(StdInputHandle, TCSANOW, FEditing) <> 0 then
     RaiseSystemError('Could not enable terminal editing mode', fpGetErrNo);
   FRawMode := True;
+  FEditingApplied := True;
 end;
 
 destructor TRawTerminalSession.Destroy;
 begin
-  if FRawMode then
+  if FEditingApplied then
     TCSetAttr(StdInputHandle, TCSANOW, FOriginal);
   if FSignalHandle >= 0 then
     fpClose(FSignalHandle);
@@ -140,7 +142,8 @@ procedure TRawTerminalSession.Suspend;
 var
   Signals, Previous: TSigSet;
 begin
-  TCSetAttr(StdInputHandle, TCSANOW, FOriginal);
+  if TCSetAttr(StdInputHandle, TCSANOW, FOriginal) = 0 then
+    FEditingApplied := False;
   WriteDiagnostic('');
   fpSigEmptySet(Signals);
   fpSigAddSet(Signals, SIGTSTP);
@@ -154,8 +157,19 @@ begin
 end;
 
 procedure TRawTerminalSession.ResumeEditing;
+var
+  Pending: TSigSet;
+  Signal: cint;
 begin
-  TCSetAttr(StdInputHandle, TCSANOW, FEditing);
+  if sigpending(@Pending) = 0 then
+    for Signal in SessionSignals do
+      if (Signal <> SIGINT) and (fpSigIsMember(Pending, Signal) = 1) then
+      begin
+        NoteSessionSignal(Signal);
+        Exit;
+      end;
+  if not SessionEnding and (TCSetAttr(StdInputHandle, TCSANOW, FEditing) = 0) then
+    FEditingApplied := True;
 end;
 
 end.

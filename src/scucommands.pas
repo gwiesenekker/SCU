@@ -127,7 +127,7 @@ function TryParseYesNo(const Value: string; out Parsed: Boolean): Boolean;
 implementation
 
 uses
-  SysUtils, Math, FPJSON, ScuErrors, ScuFiles, ScuJSON, ScuLegacyCatalog;
+  SysUtils, Math, FPJSON, ScuErrors, ScuFiles, ScuJSON;
 
 const
   ParameterKinds: array[TParameterKind] of string = ('string', 'integer', 'float', 'boolean');
@@ -549,7 +549,8 @@ begin
   try
     Definitions := ParseObject(ReadBytes(Path, 1024 * 1024));
     try
-      PrepareCommandDefinitions(Definitions);
+      if IntegerField(Definitions, 'format') <> 3 then
+        raise EScuError.Create('Unsupported commands.json format. Expected format 3.');
       LibraryEntry := TJSONObject(Field(Definitions, 'library_option', jtObject));
       FLibraryOption := LoadParameter(LibraryEntry, nil, False);
       FLibraryDefault := Field(LibraryEntry, 'default', jtString).AsString;

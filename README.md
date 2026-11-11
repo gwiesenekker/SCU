@@ -169,7 +169,7 @@ only if the bytes changed. Review the editor setting before running
 ## Versions and revisions
 
 `initialize_library` opens version `1.0`. Every store or saved edit belongs to the open
-version. `lock_version` closes it to edits. `start_version` opens a higher
+version. `lock_version` closes it to edits and requires a description. `start_version` opens a higher
 version once the current one is locked. Omit the version number to advance by
 the library's `version_increment` (default `0.01`). For example, `1.0` advances
 to `1.01`, and `1.1` advances to `1.11`. Automatic version names use at
@@ -191,7 +191,7 @@ operations on the whole library. For older libraries, SCU derives deck labels
 from each deck's existing history using the default step.
 
 ```sh
-scu lock_version
+scu lock_version description="Initial release"
 scu start_version 1.1
 scu edit_deck main.pas
 scu list_versions
@@ -258,6 +258,11 @@ missing. If you specify `--revision`, the error names that revision.
 `display_deck_list` shows each deck's name and deck version in the selected
 snapshot. Inherited decks show the version where they were last changed.
 `list_versions` reports the version, lock state, base revision, and end revision.
+Use `display_version_history` (alias `disvh`) to show each version's lock
+status, UTC lock timestamp, and description. For example, run
+`lock_version description="Ready for release"`. Interactive SCU prompts for
+an omitted description. Scripted commands must supply it. Older locked versions
+without a recorded timestamp show `None` and an empty description.
 
 ## Inspect and compare decks
 
@@ -385,8 +390,8 @@ groups of options that can be used one at a time. `display_command` shows
 these groups, and Tab completion hides the alternatives after a selection.
 The optional `examples` list pairs commands with descriptions in detailed help.
 Detailed help also displays each parameter's
-description, type, aliases, required or optional status, and default. SCU
-still reads formats 1 and 2, including their `presence` and `default_values` rules.
+description, type, aliases, required or optional status, and default. SCU requires
+command catalog format 3.
 
 ## Expand source
 
@@ -443,7 +448,9 @@ including while a build runs. A build can run `expand_deck ... build=no` in
 its own output directory. Run the nested command synchronously and preserve
 the inherited directory lock descriptor. For Python's `subprocess` module,
 pass the descriptor named by `SCU_BUILD_OUTPUT_LOCK_FD` via `pass_fds`.
-A build that already holds a directory lock gets an error if it invokes
+An SCU command launched by a build fails immediately if its output directory
+is busy, unless it can reuse the inherited lock. Use `build=no` for nested
+expansions. A build that already holds a directory lock gets an error if it invokes
 `expand_modified_decks` or `reset_expansion_checkpoint` in that directory.
 
 - `SCU$DECK_VERSION` is the combined version and revision of the deck being

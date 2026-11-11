@@ -5,7 +5,7 @@ unit ScuExecutor;
 interface
 
 uses
-  ScuCommand, ScuOutput, ScuLibrary, ScuCommandHandler;
+  SysUtils, ScuCommand, ScuOutput, ScuLibrary, ScuCommandHandler, ScuAudit;
 
 type
   TBuildRequest = ScuCommandHandler.TBuildRequest;
@@ -18,6 +18,17 @@ type
     FPendingLibrary: TDeckLibrary;
     procedure RunCommand(var Context: TCommandContext; const Handler: TCommandHandler;
       OutputLock: THandle = -1);
+    procedure RaiseMissingLibrary;
+    function OpenCommandDatabase(var Context: TCommandContext; const Handler: TCommandHandler): Boolean;
+    procedure VerifyLibrary(var Context: TCommandContext; Audit: TAuditLog; LibraryExists: Boolean);
+    procedure LoadCommandLibrary(var Context: TCommandContext; Audit: TAuditLog;
+      LibraryExists, Initializing: Boolean);
+    procedure RecordFailedCommand(const Context: TCommandContext; Audit: TAuditLog; Error: Exception);
+    function RunAuditedOperation(var Context: TCommandContext; const Handler: TCommandHandler;
+      Audit: TAuditLog; LibraryExists: Boolean): string;
+    procedure CommitCommand(const Context: TCommandContext; const Handler: TCommandHandler;
+      Audit: TAuditLog; const Detail: string);
+    procedure FinishLibrary(var Context: TCommandContext; Committed, Initializing: Boolean);
     procedure RestoreLibrary(var Context: TCommandContext; const Handler: TCommandHandler);
     procedure RunBuild(const Build: TBuildRequest; const Expansion: string; OutputLock: THandle);
   public
@@ -31,7 +42,7 @@ type
 implementation
 
 uses
-  Classes, SysUtils, BaseUnix, FPJSON, ScuAudit, ScuBuild, ScuCodec, ScuCommandRegistry,
+  Classes, BaseUnix, FPJSON, ScuBuild, ScuCodec, ScuCommandRegistry,
   ScuErrors, ScuFiles, ScuLibraryPaths, ScuLocks, ScuOutputLock, ScuRecovery, ScuSignals, ScuSQLite;
 
 constructor TScuExecutor.Create(const LibraryPath: string; Interactive: Boolean; Output: TScuOutput);
@@ -203,9 +214,12 @@ begin
   begin
     Context.OutputDirectory := Handler.ResolveOutputDirectory(Context);
     if not DirectoryExists(Context.OutputDirectory) then
-      raise EScuError.Create('The output directory must already exist.');
+      raise EScuError.CreateFmt('The output directory must already exist: "%s".', [Context.OutputDirectory]);
     Context.OutputDirectory := CanonicalDirectory(Context.OutputDirectory);
-    Lock := TOutputDirectoryLock.Create(Context.OutputDirectory, Handler.ReuseBuildLock);
+    if Handler.ReuseBuildLock then
+      Lock := TOutputDirectoryLock.CreateWithBuildLockReuse(Context.OutputDirectory)
+    else
+      Lock := TOutputDirectoryLock.Create(Context.OutputDirectory);
     try
       RunCommand(Context, Handler, Lock.BuildHandle);
     finally
@@ -216,46 +230,162 @@ begin
     RunCommand(Context, Handler);
 end;
 
+procedure TScuExecutor.RaiseMissingLibrary;
+begin
+  raise EScuError.CreateFmt('Library "%s" does not exist. Use initialize_library to create it.',
+    [FLibraryPath]);
+end;
+
+function TScuExecutor.OpenCommandDatabase(var Context: TCommandContext;
+  const Handler: TCommandHandler): Boolean;
+begin
+  if Context.Command.HasOption('head') and not IsHexDigest(Context.Command.Option('head'), 64) then
+    raise EScuError.Create('Expected a lowercase SHA-256 audit head.');
+  if not RegularFileExists(FLibraryPath) and (Handler.Mode <> cmInitialize) then
+    RaiseMissingLibrary;
+  if Handler.Mode = cmInitialize then
+    Context.Database := TSQLiteLibrary.OpenForInitialization(FLibraryPath)
+  else if Handler.Mode in [cmHistory, cmVerifyAudit] then
+    Context.Database := TSQLiteLibrary.OpenRead(FLibraryPath)
+  else
+    Context.Database := TSQLiteLibrary.OpenWrite(FLibraryPath);
+  Result := Context.Database.Revisions.StateKey <> '';
+end;
+
+procedure TScuExecutor.VerifyLibrary(var Context: TCommandContext; Audit: TAuditLog; LibraryExists: Boolean);
+begin
+  if Audit.SavedHeaderDigest <> '' then
+  begin
+    if not LibraryExists then
+      RaiseMissingLibrary;
+    Context.LibraryFile := TDeckLibrary.Load(FLibraryPath, Context.Database);
+    Audit.VerifyContents(Context.LibraryFile);
+  end;
+  FOutput.WriteLine(Format('records=%d interrupted=%d head=%s', [Audit.Records, Audit.Interrupted, Audit.Head]));
+end;
+
+procedure TScuExecutor.LoadCommandLibrary(var Context: TCommandContext; Audit: TAuditLog;
+  LibraryExists, Initializing: Boolean);
+begin
+  if Initializing then
+  begin
+    if LibraryExists or Audit.Initialized then
+      raise EScuError.Create('A library already exists or was previously initialized here.');
+    Context.LibraryFile := TDeckLibrary.CreateNew(FLibraryPath, '1.0');
+  end
+  else
+  begin
+    Context.LibraryFile := FPendingLibrary;
+    if not Assigned(Context.LibraryFile) then
+    begin
+      if not LibraryExists then
+        RaiseMissingLibrary;
+      Context.LibraryFile := TDeckLibrary.Load(FLibraryPath, Context.Database);
+    end;
+  end;
+end;
+
+procedure TScuExecutor.RecordFailedCommand(const Context: TCommandContext; Audit: TAuditLog; Error: Exception);
+begin
+  try
+    Context.Database.Execute('ROLLBACK TO scu_operation');
+    Audit.EndCommand(False, Error.Message, Context.Snapshots, Assigned(FPendingLibrary), nil, Error is ECommandCancelled);
+    Context.Database.Commit;
+  except
+    on AuditError: ECommandCancelled do raise;
+    on AuditError: Exception do
+    begin
+      if Error is ECommandCancelled then
+        WriteDiagnostic('scu: Could not save the audit outcome: ' + AuditError.Message)
+      else
+        raise EScuError.CreateFmt('%s Also could not save the audit outcome: %s',
+          [Error.Message, AuditError.Message]);
+    end;
+  end;
+end;
+
+function TScuExecutor.RunAuditedOperation(var Context: TCommandContext; const Handler: TCommandHandler;
+  Audit: TAuditLog; LibraryExists: Boolean): string;
+var
+  Initializing: Boolean;
+begin
+  Initializing := Handler.Mode = cmInitialize;
+  Audit.BeginCommand(Context.Command);
+  Context.Database.Execute('SAVEPOINT scu_operation');
+  try
+    LoadCommandLibrary(Context, Audit, LibraryExists, Initializing);
+    Result := Handler.Run(Context);
+    if not Initializing then
+    begin
+      if not SessionEnding then
+        FOutput.Flush;
+      if not FInteractive then
+        Context.LibraryFile.Save(Context.Database, Context.StagedSave);
+    end;
+  except
+    on E: Exception do
+    begin
+      if Initializing and not LibraryExists then
+        raise;
+      RecordFailedCommand(Context, Audit, E);
+      raise;
+    end;
+  end;
+end;
+
+procedure TScuExecutor.CommitCommand(const Context: TCommandContext; const Handler: TCommandHandler;
+  Audit: TAuditLog; const Detail: string);
+var
+  PendingSave: Boolean;
+begin
+  try
+    PendingSave := FInteractive and Context.LibraryFile.Modified and
+      (Handler.Mode <> cmInitialize) and not Handler.SavesLibrary;
+    RecordSuccessfulCommand(Audit, Context, Detail, PendingSave);
+    Context.Database.Commit;
+  except
+    on E: ECommandCancelled do raise;
+    on E: Exception do
+      raise EScuError.Create('Could not commit the command outcome: ' + E.Message);
+  end;
+end;
+
+procedure TScuExecutor.FinishLibrary(var Context: TCommandContext; Committed, Initializing: Boolean);
+begin
+  if Assigned(Context.LibraryFile) then
+  begin
+    if Committed then
+      Context.LibraryFile.AcceptSave(Context.StagedSave);
+    if FInteractive and Context.LibraryFile.Modified and not Initializing then
+      FPendingLibrary := Context.LibraryFile
+    else
+    begin
+      if Context.LibraryFile = FPendingLibrary then
+        FPendingLibrary := nil;
+      Context.LibraryFile.Free;
+    end;
+  end;
+end;
+
 procedure TScuExecutor.RunCommand(var Context: TCommandContext; const Handler: TCommandHandler;
   OutputLock: THandle);
 var
   Lock: TFileLock;
   Audit: TAuditLog;
-  Command: TScuCommand;
-  LibraryExists, Initializing, Committed, PendingSave: Boolean;
+  LibraryExists, Committed: Boolean;
   Checkpoint, Detail, Expansion: string;
-
-  procedure RaiseMissingLibrary;
-  begin
-    raise EScuError.CreateFmt('Library "%s" does not exist. Use initialize_library to create it.',
-      [FLibraryPath]);
-  end;
-
 begin
-  Command := Context.Command;
-  if Command.SessionExit and not FInteractive then
-    raise EScuError.CreateFmt('%s is only available in interactive mode.', [Command.Name]);
+  if Context.Command.SessionExit and not FInteractive then
+    raise EScuError.CreateFmt('%s is only available in interactive mode.', [Context.Command.Name]);
   FLibraryPath := CanonicalFile(FLibraryPath);
   Context.LibraryPath := FLibraryPath;
-  Initializing := Handler.Mode = cmInitialize;
   Audit := nil;
   Committed := False;
   Lock := nil;
   try
     if Handler.Mode <> cmHistory then
       Lock := TFileLock.Create(LibraryLockPath(FLibraryPath), @SessionEnding, @CheckSessionInterrupt);
-    Checkpoint := Command.Option('head');
-    if Command.HasOption('head') and not IsHexDigest(Checkpoint, 64) then
-      raise EScuError.Create('Expected a lowercase SHA-256 audit head.');
-    if not RegularFileExists(FLibraryPath) and not Initializing then
-      RaiseMissingLibrary;
-    if Initializing then
-      Context.Database := TSQLiteLibrary.OpenForInitialization(FLibraryPath)
-    else if Handler.Mode in [cmHistory, cmVerifyAudit] then
-      Context.Database := TSQLiteLibrary.OpenRead(FLibraryPath)
-    else
-      Context.Database := TSQLiteLibrary.OpenWrite(FLibraryPath);
-    LibraryExists := Context.Database.Revisions.StateKey <> '';
+    LibraryExists := OpenCommandDatabase(Context, Handler);
     if Handler.Mode = cmHistory then
     begin
       if not LibraryExists then
@@ -263,6 +393,7 @@ begin
       Handler.Run(Context);
       Exit;
     end;
+    Checkpoint := Context.Command.Option('head');
     if Handler.Mode = cmVerifyAudit then
       Audit := TAuditLog.Verify(Context.Database, Checkpoint)
     else
@@ -271,109 +402,30 @@ begin
       raise EScuError.Create('The audit log for the existing library is empty.');
     if Handler.Mode = cmVerifyAudit then
     begin
-      if Audit.SavedHeaderDigest <> '' then
-      begin
-        if not LibraryExists then
-          RaiseMissingLibrary;
-        Context.LibraryFile := TDeckLibrary.Load(FLibraryPath, Context.Database);
-        Audit.VerifyContents(Context.LibraryFile);
-      end;
-      FOutput.WriteLine(Format('records=%d interrupted=%d head=%s', [Audit.Records, Audit.Interrupted, Audit.Head]));
+      VerifyLibrary(Context, Audit, LibraryExists);
       Exit;
     end;
     if Assigned(Handler.Prepare) and LibraryExists and not Assigned(FPendingLibrary) and
       Handler.Prepare(Context) then
     begin
-      // Output files cannot roll back with SQLite. Commit checkpoint
-      // invalidation before the handler writes any files.
+      // Files cannot roll back with SQLite. Commit checkpoint invalidation
+      // before the handler writes any output.
       Context.Database.Commit;
       Context.Database.BeginTransaction;
       FreeAndNil(Audit);
       Audit := TAuditLog.Open(Context.Database, Checkpoint);
     end;
-    Audit.BeginCommand(Command);
-    Context.Database.Execute('SAVEPOINT scu_operation');
-    try
-      if Initializing then
-      begin
-        if LibraryExists or Audit.Initialized then
-          raise EScuError.Create('A library already exists or was previously initialized here.');
-        Context.LibraryFile := TDeckLibrary.CreateNew(FLibraryPath, '1.0');
-      end
-      else
-      begin
-        Context.LibraryFile := FPendingLibrary;
-        if not Assigned(Context.LibraryFile) then
-        begin
-          if not LibraryExists then
-            RaiseMissingLibrary;
-          Context.LibraryFile := TDeckLibrary.Load(FLibraryPath, Context.Database);
-        end;
-      end;
-      if not Assigned(Handler.Run) then
-        raise EScuError.CreateFmt('No implementation for command "%s".', [Command.Name]);
-      Detail := Handler.Run(Context);
-      if not Initializing then
-      begin
-        if not SessionEnding then
-          FOutput.Flush;
-        if not FInteractive then
-          Context.LibraryFile.Save(Context.Database, Context.StagedSave);
-      end;
-    except
-      on E: Exception do
-      begin
-        if Initializing and not LibraryExists then
-          raise;
-        try
-          Context.Database.Execute('ROLLBACK TO scu_operation');
-          Audit.EndCommand(False, E.Message, Context.Snapshots, Assigned(FPendingLibrary), nil, E is ECommandCancelled);
-          Context.Database.Commit;
-        except
-          on AuditError: ECommandCancelled do raise;
-          on AuditError: Exception do
-          begin
-            if E is ECommandCancelled then
-              WriteDiagnostic('scu: Could not save the audit outcome: ' + AuditError.Message)
-            else
-              raise EScuError.CreateFmt('%s Also could not save the audit outcome: %s',
-                [E.Message, AuditError.Message]);
-          end;
-        end;
-        raise;
-      end;
-    end;
-    try
-      PendingSave := FInteractive and Context.LibraryFile.Modified and not Initializing and
-        not Handler.SavesLibrary;
-      RecordSuccessfulCommand(Audit, Context, Detail, PendingSave);
-      Context.Database.Commit;
-      Committed := True;
-      if Context.Build.Command <> '' then
-        Expansion := Audit.Head;
-    except
-      on E: ECommandCancelled do raise;
-      on E: Exception do
-        raise EScuError.Create('Could not commit the command outcome: ' + E.Message);
-    end;
+    Detail := RunAuditedOperation(Context, Handler, Audit, LibraryExists);
+    CommitCommand(Context, Handler, Audit, Detail);
+    Committed := True;
+    if Context.Build.Command <> '' then
+      Expansion := Audit.Head;
     if (Detail <> '') and not SessionEnding then
       FOutput.WriteLine(Detail);
     if Assigned(Handler.ReportCommitted) then
       Handler.ReportCommitted(Context);
   finally
-    if Assigned(Context.LibraryFile) then
-    begin
-      if Committed then
-        Context.LibraryFile.AcceptSave(Context.StagedSave);
-      if FInteractive and Context.LibraryFile.Modified and not Initializing then
-        FPendingLibrary := Context.LibraryFile
-      else
-      begin
-        if Context.LibraryFile = FPendingLibrary then
-          FPendingLibrary := nil;
-        Context.LibraryFile.Free;
-      end;
-    end;
+    FinishLibrary(Context, Committed, Handler.Mode = cmInitialize);
     Audit.Free;
     Context.Database.Free;
     Lock.Free;

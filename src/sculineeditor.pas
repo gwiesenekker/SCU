@@ -17,7 +17,7 @@ function ReadTerminalLine(const Prompt: string; History: TStrings; Completion: T
 implementation
 
 uses
-  SysUtils, BaseUnix, Math, ScuErrors, ScuOutput, ScuTerminal, ScuTerminalSession, ScuTokenizer;
+  SysUtils, BaseUnix, Math, ScuErrors, ScuOutput, ScuTerminal, ScuTerminalSession, ScuTokenizer, ScuSignals;
 
 const
   CSI = #27'[';
@@ -155,6 +155,8 @@ var
           #26:
             begin
               Suspend;
+              if SessionEnding then
+                Exit(False);
               Write(StdErr, Hint);
               Flush(StdErr);
             end;
@@ -167,7 +169,8 @@ var
         end;
       Result := False;
     finally
-      Write(StdErr, #13, CSI, '2K');
+      if not SessionEnding then
+        Write(StdErr, #13, CSI, '2K');
     end;
   end;
 
@@ -262,6 +265,8 @@ function TLineEditor.ReadByte(out Key: Char; Timeout: Integer): Boolean;
 var
   Count: ssize_t;
 begin
+  if SessionEnding then
+    Exit(False);
   if FHasPending then
   begin
     Key := FPending;
@@ -275,6 +280,8 @@ begin
       TerminalResumed:
         begin
           FSession.ResumeEditing;
+          if SessionEnding then
+            Exit(False);
           if not FShowingCompletion then
           begin
             ChangePrompt(FPrompt);
@@ -289,6 +296,8 @@ begin
         end;
       else Exit(Count > 0);
     end;
+    if SessionEnding then
+      Exit(False);
   until False;
 end;
 
@@ -324,6 +333,8 @@ end;
 procedure TLineEditor.Suspend;
 begin
   FSession.Suspend;
+  if SessionEnding then
+    Exit;
   if not FShowingCompletion then
   begin
     ChangePrompt(FPrompt);
@@ -589,6 +600,8 @@ begin
       finally
         FShowingCompletion := False;
       end;
+      if SessionEnding then
+        Exit;
       Write(StdErr, FPrompt);
       FShown := '';
       FShownCursor := 0;
@@ -659,13 +672,16 @@ begin
         #27: ReadEscape;
         ' '..#126, #128..#255: ReplaceText(FCursor, 0, ReadCharacter(Key));
       end;
+      if SessionEnding then
+        Exit(False);
       if Key <> #9 then
         FCompletionState := csIdle;
       Redraw;
     end;
     Result := False;
   finally
-    WriteDiagnostic('');
+    if not SessionEnding then
+      WriteDiagnostic('');
   end;
 end;
 

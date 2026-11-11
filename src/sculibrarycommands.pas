@@ -16,13 +16,14 @@ procedure ReportLibraryHeader(const Context: TCommandContext);
 function ConfigureLibrary(var Context: TCommandContext): string;
 function LockVersion(var Context: TCommandContext): string;
 function StartVersion(var Context: TCommandContext): string;
+function DisplayVersionHistory(var Context: TCommandContext): string;
 function ListVersions(var Context: TCommandContext): string;
 function ShowHistory(var Context: TCommandContext): string;
 
 implementation
 
 uses
-  Classes, SysUtils, FPJSON, ScuAudit, ScuCommands, ScuErrors, ScuJSON, ScuLibrary, ScuOutput, ScuSignals;
+  Classes, SysUtils, FPJSON, ScuAudit, ScuCommands, ScuErrors, ScuJSON, ScuLibrary, ScuOutput, ScuSignals, ScuVersions;
 
 function InitializeLibrary(var Context: TCommandContext): string;
 begin
@@ -113,7 +114,7 @@ end;
 
 function LockVersion(var Context: TCommandContext): string;
 begin
-  Context.LibraryFile.LockVersion;
+  Context.LibraryFile.LockVersion(Context.Command['description']);
   Result := 'Locked version ' + Context.LibraryFile.CurrentVersion;
 end;
 
@@ -121,6 +122,29 @@ function StartVersion(var Context: TCommandContext): string;
 begin
   Context.LibraryFile.StartVersion(Context.Command['version']);
   Result := 'Started version ' + Context.LibraryFile.CurrentVersion;
+end;
+
+function DisplayVersionHistory(var Context: TCommandContext): string;
+var
+  Index: Integer;
+  Entry: TVersionEntry;
+  Status, LockedUTC, Description: string;
+begin
+  Context.Output.WriteLine('Version'#9'Status'#9'Locked (UTC)'#9'Description');
+  for Index := 0 to Context.LibraryFile.VersionCount - 1 do
+  begin
+    Entry := Context.LibraryFile.VersionHistory[Index];
+    if Entry.Locked then
+      Status := 'locked'
+    else
+      Status := 'open';
+    LockedUTC := Entry.LockedUTC;
+    if LockedUTC = '' then
+      LockedUTC := 'None';
+    Description := StringToJSONString(Entry.Description);
+    Context.Output.WriteLine(Entry.Name + #9 + Status + #9 + LockedUTC + #9 + Description);
+  end;
+  Result := '';
 end;
 
 function ListVersions(var Context: TCommandContext): string;

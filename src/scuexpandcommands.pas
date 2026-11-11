@@ -169,7 +169,7 @@ begin
     Directory := Context.Command['output_directory'];
   LibraryFile.VersionBounds(Version, Base, Revision);
   if not DirectoryExists(Directory) then
-    raise EScuError.Create('The output directory must already exist.');
+    raise EScuError.CreateFmt('The output directory must already exist: "%s".', [Directory]);
   Directory := CanonicalDirectory(Directory);
   Context.Snapshots.OutputDirectory := Directory;
   Context.Snapshots.Selected.Version := Version;

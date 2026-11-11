@@ -3,7 +3,7 @@ program ExecutorProbe;
 {$mode objfpc}{$H+}
 
 uses
-  Classes, SysUtils, ScuCommand, ScuExecutor, ScuLibraryModel, ScuLibraryStore, ScuOutput, ScuSQLite;
+  Classes, SysUtils, ScuCommand, ScuErrors, ScuExecutor, ScuLibraryModel, ScuLibraryStore, ScuOutput, ScuSQLite;
 
 type
   TCapturedOutput = class(TScuOutput)
@@ -66,6 +66,22 @@ begin
   Executor := TScuExecutor.Create(ParamStr(1), False, Capture);
   Options := TStringList.Create;
   try
+    Command := TScuCommand.Create('unregistered_command', nil, nil);
+    try
+      try
+        Executor.Execute(Command);
+        raise Exception.Create('Expected an unknown command to be rejected.');
+      except
+        on E: EScuError do
+          if E.Message <> 'No implementation for command "unregistered_command".' then
+            raise;
+      end;
+      if FileExists(ParamStr(1)) or FileExists(ParamStr(1) + '.lock') then
+        raise Exception.Create('Unknown command touched the library.');
+    finally
+      Command.Free;
+    end;
+
     Command := TScuCommand.Create('initialize_library', nil, nil);
     try
       Executor.Execute(Command);

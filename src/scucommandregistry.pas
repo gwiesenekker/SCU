@@ -12,17 +12,18 @@ function CommandHandler(const Name: string): TCommandHandler;
 implementation
 
 uses
-  ScuDeckCommands, ScuExpandCommands, ScuLibraryCommands;
+  ScuDeckCommands, ScuErrors, ScuExpandCommands, ScuLibraryCommands;
 
 function CommandHandler(const Name: string): TCommandHandler;
 begin
   Result := Default(TCommandHandler);
   case Name of
-    'configure_library', 'configure': Result.Run := @ConfigureLibrary;
+    'configure_library': Result.Run := @ConfigureLibrary;
     'create_deck': Result.Run := @CreateDeck;
     'diff_deck': Result.Run := @DiffDeck;
     'display_deck': Result.Run := @DisplayDeck;
     'display_deck_list': Result.Run := @DisplayDeckList;
+    'display_version_history': Result.Run := @DisplayVersionHistory;
     'display_expansion_checkpoints': Result.Run := @DisplayExpansionCheckpoints;
     'display_library':
       begin
@@ -44,7 +45,7 @@ begin
       end;
     'extract_deck': Result.Run := @ExtractDeck;
     'extract_modified_decks': Result.Run := @ExtractModifiedDecks;
-    'initialize_library', 'init':
+    'initialize_library':
       begin
         Result.Mode := cmInitialize;
         Result.Run := @InitializeLibrary;
@@ -61,7 +62,7 @@ begin
         Result.Run := @ResetExpansionCheckpoint;
         Result.ResolveOutputDirectory := @CheckpointDirectory;
       end;
-    'save_library', 'quit_session', 'quit':
+    'save_library', 'quit_session':
       begin
         Result.Run := @SaveLibrary;
         Result.SavesLibrary := True;
@@ -75,6 +76,8 @@ begin
     'start_version': Result.Run := @StartVersion;
     'store_deck': Result.Run := @StoreDeck;
     'verify_audit': Result.Mode := cmVerifyAudit;
+    else
+      raise EScuError.CreateFmt('No implementation for command "%s".', [Name]);
   end;
 end;
 

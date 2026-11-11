@@ -254,6 +254,14 @@
       "help": "Show the library path, current version, and most recent locked predecessor, followed by the full configuration header, including the editor and build command. SCU also runs this command when opening an existing library at a terminal."
     },
     {
+      "name": "display_version_history",
+      "aliases": ["disvh"],
+      "summary": "Show versions, lock status, lock times, and descriptions.",
+      "arguments": [],
+      "options": [],
+      "help": "Display every library version in chronological order with its lock status, UTC lock timestamp, and description. Older versions without a recorded timestamp show None."
+    },
+    {
       "name": "edit_deck",
       "aliases": ["edid"],
       "summary": "Edit an existing deck with the configured external editor.",
@@ -492,9 +500,23 @@
       "name": "lock_version",
       "aliases": ["locv"],
       "summary": "Lock the current version against further changes.",
-      "arguments": [],
+      "arguments": [
+        {
+          "name": "description",
+          "type": "string",
+          "aliases": ["desc"],
+          "value": "scu$required",
+          "description": "Describe the changes completed in this version."
+        }
+      ],
       "options": [],
-      "help": "Lock the current version and prevent further deck changes until a new version is started."
+      "help": "Lock the current version with a required description and record the lock date and time in UTC.",
+      "examples": [
+        {
+          "command": "lock_version description=\"Initial release\"",
+          "description": "Lock the current version and describe its changes."
+        }
+      ]
     },
     {
       "name": "quit_session",

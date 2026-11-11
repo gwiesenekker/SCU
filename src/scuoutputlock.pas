@@ -15,9 +15,11 @@ type
   private
     FHandle, FBorrowedHandle: THandle;
     FOwnsLock: Boolean;
+    procedure Acquire(const Directory: string; AllowBuildReuse: Boolean);
     function GetBuildHandle: THandle;
   public
-    constructor Create(const Directory: string; AllowBuildReuse: Boolean);
+    constructor Create(const Directory: string);
+    constructor CreateWithBuildLockReuse(const Directory: string);
     destructor Destroy; override;
     property BuildHandle: THandle read GetBuildHandle;
   end;
@@ -40,13 +42,24 @@ begin
   Result := Status = 0;
 end;
 
-constructor TOutputDirectoryLock.Create(const Directory: string; AllowBuildReuse: Boolean);
+constructor TOutputDirectoryLock.Create(const Directory: string);
+begin
+  inherited Create;
+  Acquire(Directory, False);
+end;
+
+constructor TOutputDirectoryLock.CreateWithBuildLockReuse(const Directory: string);
+begin
+  inherited Create;
+  Acquire(Directory, True);
+end;
+
+procedure TOutputDirectoryLock.Acquire(const Directory: string; AllowBuildReuse: Boolean);
 var
   BuildLock: string;
   InheritedHandle: Integer;
   OutputInfo, BuildInfo: Stat;
 begin
-  inherited Create;
   FBorrowedHandle := -1;
   FHandle := fpOpen(Directory, O_RDONLY or O_DIRECTORY or O_CLOEXEC);
   if FHandle < 0 then

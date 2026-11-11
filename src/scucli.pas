@@ -16,6 +16,7 @@ type
     FLibraryPath, FCatalogDirectory: string;
     FOutput: TScuOutput;
     FExecutor: TScuExecutor;
+    procedure ValidateCatalog(const CatalogPath: string);
     function Definition(const Name: string): TCommandDefinition;
     function SelectLibrary(Tokens: TStrings): Integer;
     function ParseCommand(Tokens: TStrings; CommandIndex: Integer; Spec: TCommandDefinition;
@@ -36,7 +37,20 @@ implementation
 
 uses
   SysUtils, BaseUnix, ScuBinder, ScuHelp, ScuInput, ScuErrors,
-  ScuLibrary, ScuSignals, ScuTerminal, ScuTokenizer, Termio;
+  ScuCommandRegistry, ScuLibrary, ScuSignals, ScuTerminal, ScuTokenizer, Termio;
+
+const
+  CLICommands: array[0..1] of string = ('display_command_list', 'display_command');
+
+function IsCLICommand(const Name: string): Boolean;
+var
+  CommandName: string;
+begin
+  for CommandName in CLICommands do
+    if CommandName = Name then
+      Exit(True);
+  Result := False;
+end;
 
 function CommandFile: string;
 var
@@ -61,6 +75,25 @@ begin
   CatalogPath := CommandFile;
   FCatalogDirectory := ExtractFileDir(CatalogPath);
   FCatalog := TCommandCatalog.Create(CatalogPath);
+  ValidateCatalog(CatalogPath);
+end;
+
+procedure TScuCLI.ValidateCatalog(const CatalogPath: string);
+var
+  Index: Integer;
+  Name: string;
+begin
+  try
+    for Index := 0 to FCatalog.Commands.Count - 1 do
+    begin
+      Name := FCatalog.Commands[Index].Name;
+      if not IsCLICommand(Name) then
+        CommandHandler(Name);
+    end;
+  except
+    on E: EScuError do
+      raise EScuError.CreateFmt('Could not load command catalog "%s": %s', [CatalogPath, E.Message]);
+  end;
 end;
 
 destructor TScuCLI.Destroy;
@@ -252,19 +285,21 @@ procedure TScuCLI.ExecuteCommand(Command: TScuCommand);
 var
   Columns: SizeInt;
 begin
-  case Command.Name of
-    'display_command_list', 'help', 'display_command':
-      begin
-        Columns := TerminalColumns(TextRec(Output).Handle);
-        if Columns > 0 then
-          UseTerminalLocale;
-        if Command.Name = 'display_command' then
-          RenderCommandHelp(Definition(Command['command_name']), FCatalogDirectory, FOutput, Columns)
-        else
-          RenderCommandList(FCatalog.Commands, FOutput, Columns);
-      end;
-    else FExecutor.Execute(Command);
-  end;
+  if IsCLICommand(Command.Name) then
+  begin
+    Columns := TerminalColumns(TextRec(Output).Handle);
+    if Columns > 0 then
+      UseTerminalLocale;
+    if Command.Name = 'display_command' then
+      RenderCommandHelp(Definition(Command['command_name']), FCatalogDirectory, FOutput, Columns)
+    else
+      RenderCommandList(FCatalog.Commands, FOutput, Columns);
+  end
+  else
+    FExecutor.Execute(Command);
+  // A normal return confirms completion. Only an actual cancellation exception
+  // can describe the command as cancelled.
+  ClearInterrupt;
 end;
 
 procedure TScuCLI.RunInteractive(Tokens: TStrings);

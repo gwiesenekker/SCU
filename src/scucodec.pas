@@ -104,36 +104,85 @@ begin
   Result := EncodeStringBase64(Compressed);
 end;
 
+const
+  Base64Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+var
+  Base64Values: array[Char] of ShortInt;
+
+procedure InitializeBase64;
+var
+  Index: Integer;
+begin
+  FillChar(Base64Values, SizeOf(Base64Values), $FF);
+  for Index := 1 to Length(Base64Alphabet) do
+    Base64Values[Base64Alphabet[Index]] := Index - 1;
+end;
+
+function DecodeBase64(const Encoded: string): RawByteString;
+var
+  Source, Dest, Last, Padding: SizeInt;
+  First, Second, Third, Fourth: Integer;
+
+  procedure InvalidEncoding;
+  begin
+    raise EScuError.Create('Invalid deck base64 encoding.');
+  end;
+
+begin
+  Last := Length(Encoded);
+  if (Last = 0) or (Last mod 4 <> 0) then
+    InvalidEncoding;
+  Padding := 0;
+  if Encoded[Last] = '=' then
+  begin
+    Padding := 1;
+    if Encoded[Last - 1] = '=' then
+      Padding := 2;
+  end;
+  SetLength(Result, (Last div 4) * 3 - Padding);
+  Source := 1;
+  Dest := 1;
+  while Source <= Last - Padding - 3 do
+  begin
+    First := Base64Values[Encoded[Source]];
+    Second := Base64Values[Encoded[Source + 1]];
+    Third := Base64Values[Encoded[Source + 2]];
+    Fourth := Base64Values[Encoded[Source + 3]];
+    if (First or Second or Third or Fourth) < 0 then
+      InvalidEncoding;
+    Result[Dest] := Chr((First shl 2) or (Second shr 4));
+    Result[Dest + 1] := Chr(((Second and $F) shl 4) or (Third shr 2));
+    Result[Dest + 2] := Chr(((Third and 3) shl 6) or Fourth);
+    Inc(Source, 4);
+    Inc(Dest, 3);
+  end;
+  if Padding = 0 then
+    Exit;
+  First := Base64Values[Encoded[Source]];
+  Second := Base64Values[Encoded[Source + 1]];
+  if ((First or Second) < 0) or ((Padding = 2) and ((Second and $F) <> 0)) then
+    InvalidEncoding;
+  Result[Dest] := Chr((First shl 2) or (Second shr 4));
+  if Padding = 1 then
+  begin
+    Third := Base64Values[Encoded[Source + 2]];
+    if (Third < 0) or ((Third and 3) <> 0) then
+      InvalidEncoding;
+    Result[Dest + 1] := Chr(((Second and $F) shl 4) or (Third shr 2));
+  end;
+end;
+
 function DecodeDeck(const Encoded, Digest: string; Size: Int64): RawByteString;
 var
   Compressed: RawByteString;
   Written: csize_t;
-  EncodedSize: SizeInt;
 begin
   if (Size < 0) or (Size > MaxDeckSize) then
     raise EScuError.Create('Deck size is out of range.');
   if not IsHexDigest(Digest, 40) then
     raise EScuError.Create('Invalid deck SHA-1 checksum.');
-  EncodedSize := Length(Encoded);
-  if (EncodedSize = 0) or (EncodedSize mod 4 <> 0) then
-    raise EScuError.Create('Invalid deck base64 encoding.');
-  // Strict decoding checks the alphabet and padding placement. Also require
-  // the unused bits of the final sextet to be zero, as in the encoder.
-  if Encoded[EncodedSize] = '=' then
-    if Encoded[EncodedSize - 1] = '=' then
-    begin
-      if not (Encoded[EncodedSize - 2] in ['A', 'Q', 'g', 'w']) then
-        raise EScuError.Create('Invalid deck base64 encoding.');
-    end
-    else if not (Encoded[EncodedSize - 1] in ['A', 'E', 'I', 'M', 'Q', 'U', 'Y',
-      'c', 'g', 'k', 'o', 's', 'w', '0', '4', '8']) then
-      raise EScuError.Create('Invalid deck base64 encoding.');
-  try
-    Compressed := DecodeStringBase64(Encoded, True);
-  except
-    on E: EBase64DecodingException do
-      raise EScuError.Create('Invalid deck base64 encoding.');
-  end;
+  Compressed := DecodeBase64(Encoded);
   if CheckZstd(ZSTD_findFrameCompressedSize(Pointer(Compressed), Length(Compressed))) <>
     csize_t(Length(Compressed)) then
     raise EScuError.Create('Expected one zstd frame.');
@@ -145,6 +194,9 @@ begin
   if (Written <> csize_t(Size)) or (DeckSHA1(Result) <> Digest) then
     raise EScuError.Create('Deck SHA-1 or size verification failed.');
 end;
+
+initialization
+  InitializeBase64;
 
 finalization
   if CryptoLibrary <> NilHandle then
