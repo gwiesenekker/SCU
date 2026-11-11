@@ -114,11 +114,13 @@ type
     FCommands: TCommandDefinitions;
     FLibraryOption: TParameterDefinition;
     FLibraryDefault: string;
+    FBatchOption: TParameterDefinition;
   public
     constructor Create(const Path: string);
     destructor Destroy; override;
     property Commands: TCommandDefinitions read FCommands;
     property LibraryOption: TParameterDefinition read FLibraryOption;
+    property BatchOption: TParameterDefinition read FBatchOption;
     property LibraryDefault: string read FLibraryDefault;
   end;
 
@@ -555,6 +557,8 @@ begin
       FLibraryOption := LoadParameter(LibraryEntry, nil, False);
       FLibraryDefault := Field(LibraryEntry, 'default', jtString).AsString;
       FLibraryOption.Validate(FLibraryDefault);
+      if Assigned(Definitions.Find('batch_option')) then
+        FBatchOption := LoadParameter(TJSONObject(Field(Definitions, 'batch_option', jtObject)), nil, False);
       Entries := TJSONArray(Field(Definitions, 'commands', jtArray));
       for Index := 0 to Entries.Count - 1 do
         FCommands.Add(LoadCommand(ObjectAt(Entries, Index)));
@@ -569,6 +573,7 @@ end;
 
 destructor TCommandCatalog.Destroy;
 begin
+  FBatchOption.Free;
   FLibraryOption.Free;
   FCommands.Free;
   inherited Destroy;

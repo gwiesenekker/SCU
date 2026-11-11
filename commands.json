@@ -725,5 +725,12 @@
       ],
       "help": "Verify the audit chain. Supply a previously saved SHA-256 head to check that it is still present."
     }
-  ]
+  ],
+  "batch_option": {
+    "name": "continue_on_error",
+    "type": "boolean",
+    "aliases": ["coe", "continue-on-error"],
+    "value": false,
+    "description": "Continue reading batch commands after an error; the final exit status remains nonzero."
+  }
 }

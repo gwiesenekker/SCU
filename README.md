@@ -63,9 +63,53 @@ One-shot commands save immediately, and `initialize_library` creates the empty
 library immediately.
 If another session changes the saved library, a save reports the conflict.
 At a terminal, SCU keeps the pending changes available at the prompt. When
-reading redirected input, SCU omits the `scu>` prompt. Errors are reported and
-the session continues.
-The session exits with status 1 if any command failed.
+reading redirected input, SCU omits the `scu>` prompt.
+
+## Run command batches
+
+Feed SCU one command per line through standard input:
+
+```sh
+./build/scu ln=project.sqlite < commands.scu
+```
+
+Batches stop at the first error by default, including unknown commands, invalid
+arguments, and execution failures. Successful pending library changes are saved
+before exiting; the entire batch is not a single transaction. Commands after the
+error are neither executed nor audited. To continue after errors, set the startup
+option `continue_on_error=yes` (aliases `coe` and `continue-on-error`):
+
+```sh
+./build/scu ln=project.sqlite continue_on_error=yes < commands.scu
+./build/scu --continue_on_error yes ln=project.sqlite < commands.scu
+```
+
+The option defaults to `no` and accepts `yes/y` or `no/n`. Put it before or after
+the library selector, before any command. The exit status is 1 if any command
+failed, including when execution continues. Required arguments must be supplied
+in batches; SCU does not prompt for them. Blank lines are ignored.
+
+At the SCU prompt or inside another command file, use `!filename` or
+`! filename` to read commands from a file. Quote filenames containing spaces:
+
+```text
+scu> ! "release commands.scu"
+```
+
+You can also start with `./build/scu ln=project.sqlite ! commands.scu`.
+`!` reads SCU commands; it does not run a shell. Files can include other command
+files, up to 16 levels. Nested filenames are relative to the including file's
+directory; other command paths keep their normal working-directory meaning.
+Errors from a command file include its filename and line number. Each executed
+command is expanded and audited normally; the `!` directive itself is not an
+audited library command.
+
+At a terminal, a completed command file returns to the prompt. On the first
+error, SCU abandons the current file and its enclosing command files and returns
+to the prompt, leaving successful pending edits available to save or discard.
+`continue_on_error=yes` instead processes the remaining lines. Ordinary commands
+typed at the prompt continue to return to the prompt after errors. `quit` exits
+the whole session, including from a command file.
 
 Use `recover_library` (`recl`) to restore a recovery file to a new SQLite
 library. For a pending-only file that references saved revisions, supply a

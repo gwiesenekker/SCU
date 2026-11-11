@@ -5,7 +5,7 @@ unit ScuCLI;
 interface
 
 uses
-  Classes, ScuCommand, ScuCommands, ScuComplete, ScuExecutor, ScuHistory, ScuOutput;
+  Classes, ScuCommand, ScuCommandFiles, ScuCommands, ScuComplete, ScuExecutor, ScuHistory, ScuOutput;
 
 type
   TScuCLI = class
@@ -16,6 +16,9 @@ type
     FLibraryPath, FCatalogDirectory: string;
     FOutput: TScuOutput;
     FExecutor: TScuExecutor;
+    FContinueOnError: Boolean;
+    FInitialFile: string;
+    procedure SelectBatchOptions(Tokens: TStrings; Index: Integer);
     procedure ValidateCatalog(const CatalogPath: string);
     function Definition(const Name: string): TCommandDefinition;
     function SelectLibrary(Tokens: TStrings): Integer;
@@ -24,6 +27,9 @@ type
     procedure CompleteInteractiveLine(const Before, Prefix, After: string; Candidates: TStrings;
       out AppendCharacter: Char);
     procedure ExecuteCommand(Command: TScuCommand);
+    function ParseSessionLine(const Line: string; Tokens: TStrings;
+      Files: TCommandFiles; BatchLine: Boolean): TScuCommand;
+    procedure SaveStoppedBatch;
     procedure RunInteractive(Tokens: TStrings);
     procedure RunInteractiveSession(Tokens: TStrings);
     procedure RecoverPendingLibrary;
@@ -149,7 +155,8 @@ begin
       if FLibraryPath = '' then
         raise EScuError.CreateFmt('Expected a library name for %s.', [First]);
     end
-    else if (Copy(First, 1, 1) <> '-') and (FCatalog.Commands.FindIndex(First) < 0) then
+    else if (Copy(First, 1, 1) <> '-') and (Copy(First, 1, 1) <> '!') and
+      (FCatalog.Commands.FindIndex(First) < 0) then
     begin
       Name := LowerCase(ExtractFileExt(First));
       if not FileExists(First) and (Pos(DirectorySeparator, First) = 0) and (Name <> '.sqlite') and
@@ -163,6 +170,36 @@ begin
     FCatalog.LibraryOption.Validate(FLibraryPath);
   if FLibraryPath = '' then
     raise EScuError.Create('Expected a library name.');
+end;
+
+procedure TScuCLI.SelectBatchOptions(Tokens: TStrings; Index: Integer);
+var
+  Name, Value: string;
+  EqualsAt: SizeInt;
+begin
+  while Assigned(FCatalog.BatchOption) and (Index < Tokens.Count) do
+  begin
+    Name := Tokens[Index];
+    EqualsAt := Pos('=', Name);
+    if EqualsAt > 0 then
+      Name := Copy(Name, 1, EqualsAt - 1);
+    if Copy(Name, 1, 2) = '--' then
+      Delete(Name, 1, 2);
+    if not FCatalog.BatchOption.Matches(Name) then
+      Exit;
+    if EqualsAt > 0 then
+      Value := Copy(Tokens[Index], EqualsAt + 1, MaxInt)
+    else
+    begin
+      if Index + 1 >= Tokens.Count then
+        raise EScuError.Create('Expected yes/y or no/n for continue_on_error.');
+      Value := Tokens[Index + 1];
+      Tokens.Delete(Index + 1);
+    end;
+    FCatalog.BatchOption.Validate(Value);
+    TryParseYesNo(Value, FContinueOnError);
+    Tokens.Delete(Index);
+  end;
 end;
 
 type
@@ -330,12 +367,75 @@ begin
   end;
 end;
 
+function TScuCLI.ParseSessionLine(const Line: string; Tokens: TStrings;
+  Files: TCommandFiles; BatchLine: Boolean): TScuCommand;
+var
+  Spec: TCommandDefinition;
+begin
+  Result := nil;
+  if (Line <> '') and (Line[1] = '!') then
+  begin
+    if not BatchLine then
+      FHistory.Remember(Line);
+    TokenizeCommand(Copy(Line, 2, MaxInt), Tokens);
+    if Tokens.Count <> 1 then
+      raise EScuError.Create('Expected one command filename after !. Quote filenames containing spaces.');
+    Files.Push(Tokens[0]);
+    Exit;
+  end;
+  Spec := nil;
+  try
+    TokenizeCommand(Line, Tokens);
+    if Tokens.Count = 0 then
+      Exit;
+    Spec := Definition(Tokens[0]);
+    Result := ParseCommand(Tokens, 0, Spec, not BatchLine);
+  finally
+    if not BatchLine and (Line <> '') and
+      (not Assigned(Spec) or not IsSessionExit(Spec.Name)) then
+      FHistory.Remember(Line);
+  end;
+end;
+
+procedure TScuCLI.SaveStoppedBatch;
+var
+  QuitCommand: TScuCommand;
+begin
+  if not Assigned(FExecutor.PendingLibrary) then
+    Exit;
+  QuitCommand := TScuCommand.CreateSessionExit;
+  try
+    try
+      ExecuteCommand(QuitCommand);
+    except
+      on E: Exception do
+      begin
+        WriteDiagnostic('scu: Could not save batch changes: ' + E.Message);
+        RecoverPendingLibrary;
+      end;
+    end;
+  finally
+    QuitCommand.Free;
+  end;
+end;
+
 procedure TScuCLI.RunInteractiveSession(Tokens: TStrings);
 var
-  Line, Prompt: string;
-  OpeningLibrary, EndOfInput, SawCommand: Boolean;
+  Line, Prompt, Location: string;
+  OpeningLibrary, EndOfInput, SawCommand, BatchLine, HasLine: Boolean;
+  Files: TCommandFiles;
   Command: TScuCommand;
-  Spec: TCommandDefinition;
+  procedure StopBatch;
+  begin
+    if not BatchLine or FContinueOnError then
+      Exit;
+    Files.Clear;
+    if Prompt <> '' then
+      Exit;
+    EndOfInput := True;
+    SaveStoppedBatch;
+  end;
+
 begin
   Prompt := '';
   if IsATTY(Input) = 1 then
@@ -344,9 +444,14 @@ begin
   EndOfInput := False;
   SawCommand := False;
   Command := nil;
+  Files := TCommandFiles.Create;
   try
+    if FInitialFile <> '' then
+      Files.Push(FInitialFile);
     repeat
       FreeAndNil(Command);
+      BatchLine := (Prompt = '') or Files.Active;
+      Location := '';
       try
         if ClearInterrupt then
           raise ECommandCancelled.Create('Command cancelled.');
@@ -360,30 +465,35 @@ begin
           Tokens.Add('display_library');
           Command := ParseCommand(Tokens, 0, Definition(Tokens[0]), True);
         end
-        else if (PendingSignal = 0) and ReadCommandLine(Prompt, Line, @CompleteInteractiveLine, FHistory) then
-        begin
-          Spec := nil;
-          try
-            TokenizeCommand(Line, Tokens);
-            if Tokens.Count = 0 then
-              Continue;
-            SawCommand := True;
-            Spec := Definition(Tokens[0]);
-            Command := ParseCommand(Tokens, 0, Spec, Prompt <> '');
-          finally
-            if not Assigned(Spec) or not IsSessionExit(Spec.Name) then
-              FHistory.Remember(Line);
-          end;
-        end
         else
         begin
-          if PendingSignal = SIGINT then
-            Continue;
-          EndOfInput := (Prompt = '') or SessionEnding or (IsATTY(Input) <> 1);
-          if EndOfInput and (PendingSignal = 0) and not SawCommand and not FileExists(FLibraryPath) then
-            raise EScuError.CreateFmt('Library "%s" does not exist. Use initialize_library to create it.',
-              [FLibraryPath]);
-          Command := TScuCommand.CreateSessionExit;
+          HasLine := False;
+          if PendingSignal = 0 then
+          begin
+            HasLine := Files.ReadLine(Line, Location);
+            BatchLine := (Prompt = '') or HasLine;
+            if not HasLine then
+              HasLine := ReadCommandLine(Prompt, Line, @CompleteInteractiveLine, FHistory);
+          end;
+          if HasLine then
+          begin
+            Line := Trim(Line);
+            if (Line <> '') and (Line[1] <> '!') then
+              SawCommand := True;
+            Command := ParseSessionLine(Line, Tokens, Files, BatchLine);
+            if not Assigned(Command) then
+              Continue;
+          end
+          else
+          begin
+            if PendingSignal = SIGINT then
+              Continue;
+            EndOfInput := (Prompt = '') or SessionEnding or (IsATTY(Input) <> 1);
+            if EndOfInput and (PendingSignal = 0) and not SawCommand and not FileExists(FLibraryPath) then
+              raise EScuError.CreateFmt('Library "%s" does not exist. Use initialize_library to create it.',
+                [FLibraryPath]);
+            Command := TScuCommand.CreateSessionExit;
+          end;
         end;
         if Command.SessionExit and not Assigned(FExecutor.PendingLibrary) then
           Exit;
@@ -395,19 +505,27 @@ begin
         begin
           ClearInterrupt;
           WriteDiagnostic(E.Message);
+          if BatchLine then
+            ExitCode := 1;
+          StopBatch;
         end;
         on E: Exception do
         begin
-          WriteDiagnostic('scu: ' + E.Message);
+          if Location <> '' then
+            WriteDiagnostic('scu: ' + Location + ': ' + E.Message)
+          else
+            WriteDiagnostic('scu: ' + E.Message);
           if EndOfInput and SessionEnding then
             RecoverPendingLibrary;
           ExitCode := 1;
+          StopBatch;
         end;
       end;
       if not SessionEnding then
         Flush(Output);
     until EndOfInput;
   finally
+    Files.Free;
     Command.Free;
   end;
 end;
@@ -422,7 +540,25 @@ begin
   try
     for Index := 1 to ParamCount do
       Tokens.Add(ParamStr(Index));
+    if Assigned(FCatalog.BatchOption) and FCatalog.BatchOption.HasDefault then
+      TryParseYesNo(FCatalog.BatchOption.DefaultValue, FContinueOnError);
+    SelectBatchOptions(Tokens, 0);
     CommandIndex := SelectLibrary(Tokens);
+    SelectBatchOptions(Tokens, CommandIndex);
+    if (CommandIndex < Tokens.Count) and (Copy(Tokens[CommandIndex], 1, 1) = '!') then
+    begin
+      FInitialFile := Copy(Tokens[CommandIndex], 2, MaxInt);
+      if FInitialFile = '' then
+      begin
+        Inc(CommandIndex);
+        if CommandIndex < Tokens.Count then
+          FInitialFile := Tokens[CommandIndex];
+      end;
+      if (FInitialFile = '') or (CommandIndex <> Tokens.Count - 1) then
+        raise EScuError.Create('Expected one command filename after !.');
+      Tokens.Clear;
+      CommandIndex := 0;
+    end;
     FExecutor := TScuExecutor.Create(FLibraryPath, CommandIndex = Tokens.Count, FOutput);
     if CommandIndex = Tokens.Count then
       RunInteractive(Tokens)

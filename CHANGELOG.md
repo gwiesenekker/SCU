@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Stop command batches on the first error by default, support continue_on_error, and read nested SCU command files with !.
+
 - Document the NOS/VE command abbreviation convention and check every command's verb and standard abbreviation in the catalog regression tests.
 - Enforce lazy revision guards in normal builds and mark only library-changing commands as pending save.
 - Keep background terminal reads alive when job-control signals are ignored, resume stopped background builds with fg, and finish interrupted prompts with a newline.

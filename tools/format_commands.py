@@ -31,7 +31,8 @@ def format_commands(path):
     path = path.resolve()
     original = path.read_bytes()
     catalog = json.loads(original, parse_float=Decimal)
-    catalog.get("library_option", {}).get("aliases", []).sort()
+    for option in ("library_option", "batch_option"):
+        catalog.get(option, {}).get("aliases", []).sort()
     if "argument_aliases" in catalog:
         catalog["argument_aliases"] = dict(sorted(catalog["argument_aliases"].items()))
     catalog["commands"].sort(key=lambda command: command["name"])

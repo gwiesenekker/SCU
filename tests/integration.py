@@ -137,7 +137,7 @@ class ScuIntegration(unittest.TestCase):
 
         self.run_scu("conl", "bc=cat > build-input")
         result = subprocess.run(
-            [SCU], cwd=self.root, input="expd shared.inc batch-out\ncred\ncred after-build\n",
+            [SCU, "continue_on_error=yes"], cwd=self.root, input="expd shared.inc batch-out\ncred\ncred after-build\n",
             capture_output=True, text=True, timeout=20,
         )
         self.assertEqual(result.returncode, 1, result.stderr)
@@ -2217,10 +2217,150 @@ end.
         self.run_scu("ln=init", "init")
         self.assertTrue((self.root / "init").is_file())
 
+    def test_batch_stops_on_parse_and_execution_errors_and_saves_prior_changes(self):
+        for index, failing in enumerate(("unknown_command", "cred", 'cred output comment_prefix="oops',
+                                         "extd nonexistent output")):
+            with self.subTest(command=failing):
+                result = subprocess.run(
+                    [SCU], cwd=self.root, capture_output=True, text=True, timeout=20,
+                    input=f"cred before{index}\n{failing}\ncred after{index}\n",
+                )
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(f"before{index}\t", self.run_scu("ddl"))
+                self.assertNotIn(f"after{index}\t", self.run_scu("ddl"))
+                events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
+                self.assertFalse(any(e.get("parameters", {}).get("deck_name") == f"after{index}"
+                                     for e in events))
+        self.run_scu("verify_audit")
+
+    def test_batch_continue_option_aliases_boolean_validation_and_exit_status(self):
+        for index, options in enumerate((
+                ["continue_on_error=yes"], ["--continue_on_error", "y"],
+                ["coe=y"], ["--continue-on-error", "yes"],
+                ["ln=" + str(self.library), "continue_on_error=yes"])):
+            with self.subTest(options=options):
+                result = subprocess.run(
+                    [SCU, *options], cwd=self.root, capture_output=True, text=True, timeout=20,
+                    input=f"unknown_command\ncred continued{index}\n",
+                )
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn(f"continued{index}\t", self.run_scu("ddl"))
+        for option in ("continue_on_error=no", "coe=n"):
+            result = subprocess.run([SCU, option], cwd=self.root, capture_output=True,
+                                    text=True, input="unknown_command\ncred skipped\n", timeout=20)
+            self.assertEqual(result.returncode, 1)
+            self.assertNotIn("skipped\t", self.run_scu("ddl"))
+        self.run_scu("continue_on_error=maybe", error="Expected yes/y or no/n")
+        self.run_scu("--continue_on_error", error="Expected yes/y or no/n")
+        self.run_scu("continue_on_error=", error="Expected yes/y or no/n")
+
+    def test_command_files_support_quoted_nested_paths_and_canonical_audit(self):
+        directory = self.root / "scripts"
+        directory.mkdir()
+        (directory / "child commands.scu").write_text("cred nested\n")
+        (directory / "main commands.scu").write_text(
+            '\ncred parent\n! "child commands.scu"\ndisdl\n')
+        result = subprocess.run(
+            [SCU, "ln=" + str(self.library), "!", "scripts/main commands.scu"],
+            cwd=self.root, capture_output=True, text=True, input="cred after-file\n", timeout=20,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("scu>", result.stdout + result.stderr)
+        listing = self.run_scu("ddl")
+        for name in ("parent", "nested", "after-file"):
+            self.assertIn(name + "\t", listing)
+        events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
+        creates = [e for e in events if e.get("command") == "create_deck"]
+        self.assertEqual([e["parameters"]["deck_name"] for e in creates],
+                         ["parent", "nested", "after-file"])
+        self.assertFalse(any(e.get("command", "").startswith("!") for e in events))
+        self.run_scu("verify_audit")
+
+    def test_command_file_failure_stops_enclosing_files_and_redirected_input(self):
+        (self.root / "child.scu").write_text("cred before\ncred\ncred child-after\n")
+        (self.root / "parent.scu").write_text("!child.scu\ncred parent-after\n")
+        result = subprocess.run([SCU], cwd=self.root, capture_output=True, text=True,
+                                input="!parent.scu\ncred stdin-after\n", timeout=20)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(str(self.root / "child.scu") + ":2:", result.stderr)
+        self.assertIn("Missing required argument deck_name", result.stderr)
+        listing = self.run_scu("ddl")
+        self.assertIn("before\t", listing)
+        for name in ("child-after", "parent-after", "stdin-after"):
+            self.assertNotIn(name + "\t", listing)
+        result = subprocess.run([SCU, "coe=yes"], cwd=self.root, capture_output=True, text=True,
+                                input="!parent.scu\ncred stdin-after\n", timeout=20)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        listing = self.run_scu("ddl")
+        for name in ("child-after", "parent-after", "stdin-after"):
+            self.assertIn(name + "\t", listing)
+
+    def test_command_file_quit_exits_session_and_preserves_discard_option(self):
+        (self.root / "quit.scu").write_text(
+            "cred discarded\nquit save_library=no\ncred after-quit\n")
+        result = subprocess.run([SCU, "!quit.scu"], cwd=self.root, capture_output=True,
+                                text=True, input="cred after-file\n", timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        listing = self.run_scu("ddl")
+        for name in ("discarded", "after-quit", "after-file"):
+            self.assertNotIn(name + "\t", listing)
+        (self.root / "empty.scu").write_text("")
+        result = subprocess.run([SCU], cwd=self.root, capture_output=True, text=True,
+                                input="!empty.scu\ncred after-empty\n", timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("after-empty\t", self.run_scu("ddl"))
+
+    def test_interactive_command_file_can_continue_after_errors_without_prompting(self):
+        (self.root / "continue.scu").write_text("cred\ncred continued-file\n")
+        with self.terminal_session("coe=yes", TERM="dumb") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"!continue.scu\n")
+            output = read_until(b"scu> ")
+            self.assertIn(b"Missing required argument deck_name", output)
+            self.assertIn(b"continued-file version", output)
+            os.write(terminal, b"quit\n")
+            self.assertEqual(process.wait(timeout=5), 1)
+        self.assertIn("continued-file\t", self.run_scu("ddl"))
+
+    def test_command_file_errors_are_bounded_and_do_not_execute_a_shell(self):
+        for line, message in (("!", "Expected one command filename"),
+                              ("! one two", "Expected one command filename"),
+                              ("!missing.scu", "missing.scu"),
+                              ("!touch shell-marker", "Expected one command filename")):
+            result = subprocess.run([SCU], cwd=self.root, capture_output=True, text=True,
+                                    input=line + "\ncred skipped\n", timeout=20)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn(message, result.stderr)
+            self.assertNotIn("skipped\t", self.run_scu("ddl"))
+        self.assertFalse((self.root / "shell-marker").exists())
+        (self.root / "recursive.scu").write_text("!recursive.scu\n")
+        result = subprocess.run([SCU, "!recursive.scu"], cwd=self.root, capture_output=True,
+                                text=True, input="", timeout=20)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("cannot be nested more than 16 levels", result.stderr)
+
+    def test_interactive_command_files_never_prompt_and_return_after_failure(self):
+        (self.root / "commands with spaces.scu").write_text(
+            "cred from-file\ncred\ncred skipped\n")
+        with self.terminal_session(TERM="dumb") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b'! "commands with spaces.scu"\n')
+            output = read_until(b"scu> ")
+            self.assertIn(b"Missing required argument deck_name", output)
+            self.assertNotIn(b"deck_name= ", output)
+            os.write(terminal, b"cred from-prompt\n")
+            read_until(b"scu> ")
+            os.write(terminal, b"quit\n")
+            self.assertEqual(process.wait(timeout=5), 1)
+        listing = self.run_scu("ddl")
+        self.assertIn("from-file\t", listing)
+        self.assertIn("from-prompt\t", listing)
+        self.assertNotIn("skipped\t", listing)
+
     def test_interactive_session_uses_quoted_arguments_and_logs_commands(self):
         (self.root / "source with spaces").write_text("interactive source")
         result = subprocess.run(
-            [SCU, "ln=interactive library"], cwd=self.root, capture_output=True, text=True,
+            [SCU, "ln=interactive library", "continue_on_error=yes"], cwd=self.root, capture_output=True, text=True,
             input=(
                 '\ninit\nstore_deck dn=main.pas source_file="source with spaces"\n'
                 'extd dn=main.pas output_file="unclosed\n'
@@ -2253,7 +2393,7 @@ end.
         empty = self.root / "empty"
         empty.mkdir()
         result = subprocess.run(
-            [SCU], cwd=empty, input="disdl\ninil\ndisdl\nquit\n",
+            [SCU, "continue_on_error=yes"], cwd=empty, input="disdl\ninil\ndisdl\nquit\n",
             capture_output=True, text=True, timeout=20,
         )
         self.assertEqual(result.returncode, 1, result.stderr)
@@ -2371,8 +2511,9 @@ end.
         command_names = [command["name"] for command in commands]
         self.assertEqual(command_names, sorted(command_names), "commands by full name")
 
-        library_aliases = definitions["library_option"]["aliases"]
-        self.assertEqual(library_aliases, sorted(library_aliases), "library option aliases")
+        for option in ("library_option", "batch_option"):
+            aliases = definitions[option]["aliases"]
+            self.assertEqual(aliases, sorted(aliases), f"{option} aliases")
         for command in commands:
             name = command["name"]
             option_names = [option["name"] for option in command["options"]]
@@ -2393,6 +2534,7 @@ end.
         expected = json.loads(json.dumps(catalog))
 
         catalog["library_option"]["aliases"].reverse()
+        catalog["batch_option"]["aliases"].reverse()
         catalog["commands"].reverse()
         for command in catalog["commands"]:
             command["aliases"].reverse()
