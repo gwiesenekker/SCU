@@ -28,6 +28,7 @@ type
     ModifiedUTC: string;
     DeckVersion: string;
     CommentPrefix: string;
+    Deleted: Boolean;
   end;
 
   TLibrarySave = ScuLibraryStore.TLibrarySave;
@@ -43,6 +44,9 @@ type
     function GetRevision: Integer;
     function FindDeckRevision(const Name: string; LastRevision: Integer): Integer;
     function GetHeaderJSON: string;
+    function NextDeckNumber(const Name: string; PreviousRevision: Integer): Integer;
+    function AppendDeckRevision(const Name: string; var Payload: TJSONObject): Integer;
+    function RevisionDeletedAt(Sequence: Integer): Boolean;
     function GetEditorCount: Integer;
     function GetEditorArgument(Index: Integer): string;
     function GetBuildCommand: string;
@@ -64,8 +68,9 @@ type
     function RevisionDigest(Sequence: Integer; Database: TSQLiteLibrary): string;
     function Store(Database: TSQLiteLibrary; const Deck: string; const Source: RawByteString;
       CreateOnly: Boolean = False; const Prefix: string = ''): Integer;
+    function Delete(Database: TSQLiteLibrary; const Deck: string): Integer;
     function Extract(Database: TSQLiteLibrary; const Deck: string; LibraryRevision: Integer;
-      const SelectedVersion: string = ''): TDeckSource;
+      const SelectedVersion: string = ''; AllowDeleted: Boolean = False): TDeckSource;
     procedure RequireOpenVersion;
     procedure List(LibraryRevision: Integer; Dest: TStrings);
     procedure ListDeckHistory(Database: TSQLiteLibrary; const Deck: string; Dest: TStrings);
@@ -97,6 +102,7 @@ type
     property LastModifiedDeck: string read GetLastModifiedDeck;
     property DeckVersion[LibraryRevision: Integer]: string read DeckVersionAt;
     property DeckRevision[LibraryRevision: Integer]: string read DeckRevisionAt;
+    property RevisionDeleted[Sequence: Integer]: Boolean read RevisionDeletedAt;
     property Revision: Integer read GetRevision;
     property Modified: Boolean read FModified;
     property ChangeCount: QWord read FChangeCount;
@@ -211,14 +217,13 @@ var
   Payload: TJSONObject;
   Previous: TLibraryRevision;
   Name, CommentPrefix, Digest: string;
-  PreviousRevision, Number, Base, Last: Integer;
+  PreviousRevision, Number: Integer;
 begin
   RequireOpenVersion;
   Name := DeckName(Deck);
   PreviousRevision := FindDeckRevision(Name, Revision);
-  if CreateOnly and (PreviousRevision > 0) then
+  if CreateOnly and (PreviousRevision > 0) and not RevisionDeletedAt(PreviousRevision) then
     raise EScuError.CreateFmt('Deck "%s" already exists.', [Name]);
-  VersionBounds(CurrentVersion, Base, Last);
   Previous := nil;
   if PreviousRevision > 0 then
     Previous := FStore.PayloadAt(PreviousRevision - 1, Database);
@@ -229,18 +234,54 @@ begin
     CommentPrefix := DefaultCommentPrefix(CurrentVersion);
   ValidateCommentPrefix(CommentPrefix);
   Digest := DeckSHA1(Source);
-  Number := 0;
-  if PreviousRevision > Base then
-  begin
-    if (CommentPrefix = Previous.CommentPrefix) and (Digest = Previous.SHA1) and
-      (Previous.Decode = Source) then
-      Exit(0);
-    Number := Previous.Number + FStore.Header.RevisionStep;
-    if Number > MaxDeckRevision then
-      raise EScuError.CreateFmt('Deck "%s" has reached the revision limit. Lock version %s and start a new version.',
-        [Name, CurrentVersion]);
-  end;
+  if Assigned(Previous) and not Previous.Deleted and
+    (VersionAt(PreviousRevision) = CurrentVersion) and
+    (CommentPrefix = Previous.CommentPrefix) and (Digest = Previous.SHA1) and
+    (Previous.Decode = Source) then
+    Exit(0);
+  Number := NextDeckNumber(Name, PreviousRevision);
   Payload := NewRevisionPayload(Name, CommentPrefix, Digest, Number, Source);
+  Result := AppendDeckRevision(Name, Payload);
+end;
+
+function TDeckLibrary.NextDeckNumber(const Name: string; PreviousRevision: Integer): Integer;
+var
+  Base, Last: Integer;
+begin
+  VersionBounds(CurrentVersion, Base, Last);
+  Result := 0;
+  if PreviousRevision > Base then
+    Result := FStore[PreviousRevision - 1].Number + FStore.Header.RevisionStep;
+  if Result > MaxDeckRevision then
+    raise EScuError.CreateFmt('Deck "%s" has reached the revision limit. Lock version %s and start a new version.',
+      [Name, CurrentVersion]);
+end;
+
+function TDeckLibrary.Delete(Database: TSQLiteLibrary; const Deck: string): Integer;
+var
+  Name, Prefix: string;
+  PreviousRevision: Integer;
+  Payload: TJSONObject;
+begin
+  RequireOpenVersion;
+  Name := DeckName(Deck);
+  PreviousRevision := FindDeckRevision(Name, Revision);
+  if (PreviousRevision = 0) or RevisionDeletedAt(PreviousRevision) then
+    raise EScuError.CreateFmt('Deck "%s" does not exist in version %s.', [Name, CurrentVersion]);
+  Prefix := FStore.PayloadAt(PreviousRevision - 1, Database).CommentPrefix;
+  if Prefix = '' then
+    Prefix := DefaultCommentPrefix(CurrentVersion);
+  Payload := NewDeletionPayload(Name, Prefix, NextDeckNumber(Name, PreviousRevision));
+  Result := AppendDeckRevision(Name, Payload);
+end;
+
+function TDeckLibrary.RevisionDeletedAt(Sequence: Integer): Boolean;
+begin
+  Result := FStore[Sequence - 1].Deleted;
+end;
+
+function TDeckLibrary.AppendDeckRevision(const Name: string; var Payload: TJSONObject): Integer;
+begin
   try
     CheckSessionInterrupt;
     FStore.Append(Payload);
@@ -258,7 +299,7 @@ begin
 end;
 
 function TDeckLibrary.Extract(Database: TSQLiteLibrary; const Deck: string; LibraryRevision: Integer;
-  const SelectedVersion: string): TDeckSource;
+  const SelectedVersion: string; AllowDeleted: Boolean): TDeckSource;
 var
   Name: string;
   Entry: TLibraryRevision;
@@ -266,13 +307,14 @@ var
 begin
   Name := DeckName(Deck);
   StoredRevision := FindDeckRevision(Name, LibraryRevision);
-  if StoredRevision = 0 then
+  if (StoredRevision = 0) or (not AllowDeleted and RevisionDeletedAt(StoredRevision)) then
   begin
     if SelectedVersion <> '' then
       raise EScuError.CreateFmt('Deck "%s" does not exist in version %s.', [Name, SelectedVersion]);
     raise EScuError.CreateFmt('Deck "%s" does not exist at revision %d.', [Name, LibraryRevision]);
   end;
   Entry := FStore.PayloadAt(StoredRevision - 1, Database);
+  Result.Deleted := Entry.Deleted;
   Result.LibraryRevision := StoredRevision;
   Result.CommentPrefix := Entry.CommentPrefix;
   Result.ModifiedUTC := Entry.ModifiedUTC;
@@ -296,7 +338,8 @@ begin
       if Seen.IndexOf(Name) >= 0 then
         Continue;
       Seen.Add(Name);
-      Dest.Add(Name + #9 + DeckVersionAt(Index + 1));
+      if not FStore[Index].Deleted then
+        Dest.Add(Name + #9 + DeckVersionAt(Index + 1));
     end;
   finally
     Seen.Free;
@@ -315,8 +358,12 @@ begin
   begin
     Entry := FStore[Index];
     if Entry.Name = Name then
+    begin
       Dest.Add(Format('%d'#9'%s'#9'%s'#9'%s', [Index + 1, VersionAt(Index + 1),
         FStore.PayloadAt(Index, Database).ModifiedUTC, DeckVersionAt(Index + 1)]));
+      if Entry.Deleted then
+        Dest[Dest.Count - 1] := Dest[Dest.Count - 1] + #9 + 'deleted';
+    end;
   end;
   if Dest.Count = InitialCount then
     raise EScuError.CreateFmt('Deck "%s" does not exist.', [Name]);
@@ -361,21 +408,21 @@ end;
 procedure TDeckLibrary.ListVersionNames(Dest: TStrings; const Deck: string);
 var
   Name: string;
-  Index, Latest, FirstRevision: Integer;
+  Index, Base, Last, Found: Integer;
 begin
-  Latest := Revision;
-  FirstRevision := 0;
-  if Deck <> '' then
+  if Deck = '' then
   begin
-    Name := DeckName(Deck);
-    Index := 0;
-    while (Index < Latest) and (FStore[Index].Name <> Name) do
-      Inc(Index);
-    if Index = Latest then
-      Exit;
-    FirstRevision := Index + 1;
+    Versions.ListNames(Revision, 0, Dest);
+    Exit;
   end;
-  Versions.ListNames(Latest, FirstRevision, Dest);
+  Name := DeckName(Deck);
+  for Index := 0 to Versions.Count - 1 do
+  begin
+    Versions.Bounds(Versions.Entries[Index].Name, Revision, Base, Last);
+    Found := FindDeckRevision(Name, Last);
+    if (Found > 0) and not RevisionDeletedAt(Found) then
+      Dest.Add(Versions.Entries[Index].Name);
+  end;
 end;
 
 function TDeckLibrary.ParseRevision(const Value: string): Integer;
@@ -422,9 +469,11 @@ function TDeckLibrary.TryDeckSnapshot(const Deck: string; LibraryRevision: Integ
 begin
   Snapshot := Default(TLibrarySnapshot);
   Snapshot.LibraryRevision := FindDeckRevision(DeckName(Deck), LibraryRevision);
-  Result := Snapshot.LibraryRevision <> 0;
+  Result := (Snapshot.LibraryRevision <> 0) and not RevisionDeletedAt(Snapshot.LibraryRevision);
   if Result then
-    Snapshot.Version := VersionAt(Snapshot.LibraryRevision);
+    Snapshot.Version := VersionAt(Snapshot.LibraryRevision)
+  else
+    Snapshot := Default(TLibrarySnapshot);
 end;
 
 function TDeckLibrary.ParseDeckSnapshot(const Name, Selector: string): TLibrarySnapshot;

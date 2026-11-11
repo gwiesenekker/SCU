@@ -8,6 +8,7 @@ uses
   ScuCommandHandler;
 
 function CreateDeck(var Context: TCommandContext): string;
+function DeleteDeck(var Context: TCommandContext): string;
 function StoreDeck(var Context: TCommandContext): string;
 function EditDeckCommand(var Context: TCommandContext): string;
 function DisplayDeck(var Context: TCommandContext): string;
@@ -55,6 +56,16 @@ begin
   Result := WriteDeck(Context, 'source_file', False);
 end;
 
+function DeleteDeck(var Context: TCommandContext): string;
+var
+  Deck: string;
+  Revision: Integer;
+begin
+  Deck := DeckName(ResolveDeck(Context));
+  Revision := Context.LibraryFile.Delete(Context.Database, Deck);
+  Result := 'Deleted ' + DeckWriteReport(Context.LibraryFile, Deck, Revision);
+end;
+
 function EditDeckCommand(var Context: TCommandContext): string;
 var
   Deck: string;
@@ -100,7 +111,7 @@ end;
 
 function DiffDeck(var Context: TCommandContext): string;
 var
-  Deck, FromSelector: string;
+  Deck, FromSelector, FromLabel, ToLabel: string;
   LibraryFile: TDeckLibrary;
   FromSnapshot, ToSnapshot: TLibrarySnapshot;
   Source, OtherSource: TDeckSource;
@@ -123,10 +134,23 @@ begin
     FromSnapshot := LibraryFile.PreviousDeckSnapshot(Deck, ToSnapshot.LibraryRevision);
     Context.Snapshots.FromDeckVersion := LibraryFile.DeckVersion[FromSnapshot.LibraryRevision];
   end;
-  Source := LibraryFile.Extract(Context.Database, Deck, FromSnapshot.LibraryRevision);
-  OtherSource := LibraryFile.Extract(Context.Database, Deck, ToSnapshot.LibraryRevision);
-  WriteDeckDiff(Source.Bytes, OtherSource.Bytes, Deck + '@' + Context.Snapshots.FromDeckVersion,
-    Deck + '@' + Context.Snapshots.ToDeckVersion, Context.Output);
+  Source := LibraryFile.Extract(Context.Database, Deck, FromSnapshot.LibraryRevision, '', True);
+  OtherSource := LibraryFile.Extract(Context.Database, Deck, ToSnapshot.LibraryRevision, '', True);
+  FromLabel := Deck + '@' + Context.Snapshots.FromDeckVersion;
+  ToLabel := Deck + '@' + Context.Snapshots.ToDeckVersion;
+  if Source.Deleted then
+    FromLabel := '/dev/null';
+  if OtherSource.Deleted then
+    ToLabel := '/dev/null';
+  if (Source.Bytes = '') and (OtherSource.Bytes = '') and (Source.Deleted <> OtherSource.Deleted) then
+  begin
+    if OtherSource.Deleted then
+      Context.Output.WriteLine('Deleted empty deck ' + Deck)
+    else
+      Context.Output.WriteLine('Recreated empty deck ' + Deck);
+  end
+  else
+    WriteDeckDiff(Source.Bytes, OtherSource.Bytes, FromLabel, ToLabel, Context.Output);
   Context.Output.Report('From deck version ' + Context.Snapshots.FromDeckVersion + '.');
   Context.Output.Report('To deck version ' + Context.Snapshots.ToDeckVersion + '.');
   Result := '';

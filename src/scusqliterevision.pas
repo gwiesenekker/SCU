@@ -8,7 +8,7 @@ uses
   ScuSQLiteDB, FPJSON;
 
 type
-  TRevisionIndexVisitor = procedure(const Deck, DeckRevision: string) of object;
+  TRevisionIndexVisitor = procedure(const Deck, DeckRevision: string; Deleted: Boolean) of object;
 
   TSQLiteRevisionStore = class
   private
@@ -29,7 +29,7 @@ type
     procedure CacheCopyMetadata(Sequence: Integer; const Metadata: RawByteString);
     procedure SaveMetadata(const Payload: RawByteString);
     procedure AppendRevision(Sequence: Integer;
-      const Deck, Version, DeckRevision, Payload, CopyMetadata: RawByteString);
+      const Deck, Version, DeckRevision, Payload, CopyMetadata: RawByteString; Deleted: Boolean);
   end;
 
 implementation
@@ -95,15 +95,17 @@ var
   Sequence: Int64;
 begin
   Sequence := 0;
-  Statement := FDatabase.Prepare(
-    'SELECT sequence, deck_name, deck_revision FROM deck_revisions ORDER BY sequence');
+  if FSchemaVersion >= 6 then
+    Statement := FDatabase.Prepare('SELECT sequence, deck_name, deck_revision, deleted FROM deck_revisions ORDER BY sequence')
+  else
+    Statement := FDatabase.Prepare('SELECT sequence, deck_name, deck_revision, 0 FROM deck_revisions ORDER BY sequence');
   try
     while Statement.Step do
     begin
       Inc(Sequence);
       if Statement.Int64s[0] <> Sequence then
         raise EScuError.Create('Invalid SQLite deck revision sequence.');
-      Visit(Statement.Text[1], Statement.Text[2]);
+      Visit(Statement.Text[1], Statement.Text[2], Statement.Int64s[3] <> 0);
     end;
   finally
     Statement.Free;
@@ -116,8 +118,10 @@ var
   Metadata: TJSONData;
   IndexMetadata: RawByteString;
 begin
-  if FSchemaVersion >= 5 then
-    Statement := FDatabase.Prepare('SELECT payload, copy_metadata FROM deck_revisions WHERE sequence = ?')
+  if FSchemaVersion >= 6 then
+    Statement := FDatabase.Prepare('SELECT payload, copy_metadata, deleted FROM deck_revisions WHERE sequence = ?')
+  else if FSchemaVersion >= 5 then
+    Statement := FDatabase.Prepare('SELECT payload, copy_metadata, 0 FROM deck_revisions WHERE sequence = ?')
   else
     Statement := FDatabase.Prepare('SELECT payload FROM deck_revisions WHERE sequence = ?');
   try
@@ -125,15 +129,19 @@ begin
     if not Statement.Step then
       raise EScuError.CreateFmt('SQLite library revision %d is missing.', [Sequence]);
     Result := ParseRevisionPayload(Statement.Text[0], Format('SQLite revision %d payload in "%s"', [Sequence, FDatabase.Path]));
-    if FSchemaVersion >= 5 then
-    begin
-      Metadata := Result.Find('copy_metadata');
-      IndexMetadata := Statement.Text[1];
-      if Assigned(Metadata) and (Metadata.AsJSON <> IndexMetadata) then
+    try
+      if FSchemaVersion >= 5 then
       begin
-        Result.Free;
-        raise EScuError.CreateFmt('SQLite COPY metadata does not match revision %d.', [Sequence]);
+        if RevisionPayloadDeleted(Result) <> (Statement.Int64s[2] <> 0) then
+          raise EScuError.CreateFmt('SQLite deletion flag does not match revision %d.', [Sequence]);
+        Metadata := Result.Find('copy_metadata');
+        IndexMetadata := Statement.Text[1];
+        if Assigned(Metadata) and (Metadata.AsJSON <> IndexMetadata) then
+          raise EScuError.CreateFmt('SQLite COPY metadata does not match revision %d.', [Sequence]);
       end;
+    except
+      Result.Free;
+      raise;
     end;
   finally
     Statement.Free;
@@ -174,11 +182,14 @@ end;
 function TSQLiteRevisionStore.ReadCopyMetadata(Revision: Integer): TJSONObject;
 var
   Statement: TSQLiteStatement;
-  Name: string;
+  Name, Visibility: string;
 begin
+  Visibility := '';
+  if FSchemaVersion >= 6 then
+    Visibility := ' WHERE stored.deleted = 0';
   Statement := FDatabase.Prepare('SELECT stored.deck_name, stored.copy_metadata FROM (' +
     'SELECT max(sequence) AS sequence FROM deck_revisions WHERE sequence <= ? GROUP BY deck_name' +
-    ') AS visible JOIN deck_revisions AS stored ON stored.sequence = visible.sequence');
+    ') AS visible JOIN deck_revisions AS stored ON stored.sequence = visible.sequence' + Visibility);
   try
     Statement.Bind(1, Revision);
     Result := TJSONObject.Create;
@@ -216,12 +227,12 @@ begin
 end;
 
 procedure TSQLiteRevisionStore.AppendRevision(Sequence: Integer;
-  const Deck, Version, DeckRevision, Payload, CopyMetadata: RawByteString);
+  const Deck, Version, DeckRevision, Payload, CopyMetadata: RawByteString; Deleted: Boolean);
 var
   Statement: TSQLiteStatement;
 begin
   Statement := FDatabase.Prepare('INSERT INTO deck_revisions ' +
-    '(sequence, deck_name, library_version, deck_revision, payload, copy_metadata) VALUES (?, ?, ?, ?, ?, ?)');
+    '(sequence, deck_name, library_version, deck_revision, payload, copy_metadata, deleted) VALUES (?, ?, ?, ?, ?, ?, ?)');
   try
     Statement.Bind(1, Sequence);
     Statement.Bind(2, Deck);
@@ -232,6 +243,7 @@ begin
       Statement.BindNull(6)
     else
       Statement.Bind(6, CopyMetadata);
+    Statement.Bind(7, Ord(Deleted));
     Statement.Step;
   finally
     Statement.Free;

@@ -23,7 +23,7 @@ type
     function GetCount: Integer;
     function GetEntry(Index: Integer): TLibraryRevision;
     procedure AddEntry(Entry: TLibraryRevision);
-    procedure ReadIndexEntry(const Deck, Number: string);
+    procedure ReadIndexEntry(const Deck, Number: string; Deleted: Boolean);
     procedure LoadHeader;
     procedure ValidateDeckNumbers;
     function ExportJSON(Database: TSQLiteLibrary): RawByteString;
@@ -134,9 +134,9 @@ begin
   Result := TLibraryRevision(FEntries[Index]);
 end;
 
-procedure TLibraryStore.ReadIndexEntry(const Deck, Number: string);
+procedure TLibraryStore.ReadIndexEntry(const Deck, Number: string; Deleted: Boolean);
 begin
-  AddEntry(TLibraryRevision.CreateIndex(Deck, Number, Count + 1));
+  AddEntry(TLibraryRevision.CreateIndex(Deck, Number, Count + 1, Deleted));
 end;
 
 procedure TLibraryStore.AddEntry(Entry: TLibraryRevision);
@@ -273,7 +273,7 @@ begin
   begin
     Entry := Entries[Index];
     Database.Revisions.AppendRevision(Index + 1, Entry.Name, Header.Versions.AtRevision(Index + 1),
-      FormatFixed(Entry.Number, 3), Entry.Serialized, Entry.CopyMetadataJSON);
+      FormatFixed(Entry.Number, 3), Entry.Serialized, Entry.CopyMetadataJSON, Entry.Deleted);
   end;
   Save.StateKey := Database.Revisions.StateKey;
   Save.FirstRevision := FSavedRevisionCount + 1;

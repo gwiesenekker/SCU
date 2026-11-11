@@ -95,6 +95,30 @@
       ]
     },
     {
+      "name": "delete_deck",
+      "aliases": ["deld"],
+      "summary": "Record the deletion of a deck in the open version.",
+      "arguments": [
+        {
+          "name": "deck_name",
+          "type": "string",
+          "aliases": ["deck", "dn"],
+          "value": "scu$last_modified_deck",
+          "prompt_for_default": false,
+          "description": "Name of the existing deck to delete. Defaults to the last modified deck.",
+          "completion": "deck"
+        }
+      ],
+      "options": [],
+      "help": "Append a deletion revision without removing earlier source. The deck disappears from the current snapshot and later versions until create_deck or store_deck recreates it. Locked versions cannot be changed. Existing extracted or expanded files are left in place.",
+      "examples": [
+        {
+          "command": "delete_deck main.pas",
+          "description": "Delete main.pas from the current open version while retaining its history."
+        }
+      ]
+    },
+    {
       "name": "display_command",
       "aliases": ["disc"],
       "summary": "Show a command's help and its arguments and options.",

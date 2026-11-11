@@ -50,6 +50,13 @@ begin
   Database.Execute('PRAGMA user_version = 5');
 end;
 
+procedure CreateDeletionIndex(Database: TSQLiteConnection);
+begin
+  if Database.Scalar('SELECT 1 FROM pragma_table_info(''deck_revisions'') WHERE name = ''deleted''') = '' then
+    Database.Execute('ALTER TABLE deck_revisions ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1))');
+  Database.Execute('PRAGMA user_version = 6');
+end;
+
 function EnsureLibrarySchema(Database: TSQLiteConnection; AllowCreate: Boolean): Integer;
 var
   ID: RawByteString;
@@ -58,7 +65,7 @@ begin
   if ID = ApplicationID then
   begin
     Result := StrToIntDef(Database.Scalar('PRAGMA user_version'), 0);
-    if not (Result in [1..5]) then
+    if not (Result in [1..6]) then
       raise EScuError.Create('Unsupported SQLite library schema.');
     if not Database.ReadOnly then
     begin
@@ -83,6 +90,11 @@ begin
         CreateCopyMetadata(Database);
         Result := 5;
       end;
+      if Result = 5 then
+      begin
+        CreateDeletionIndex(Database);
+        Result := 6;
+      end;
     end;
     Exit;
   end;
@@ -99,7 +111,8 @@ begin
   CreateExpansionCheckpoints(Database);
   CreateAuditState(Database);
   CreateCopyMetadata(Database);
-  Result := 5;
+  CreateDeletionIndex(Database);
+  Result := 6;
 end;
 
 end.

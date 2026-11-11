@@ -9,7 +9,7 @@ uses
 
 type
   TCompletionContext = record
-    Deck, Version, Revision, FromSnapshot, ToSnapshot: string;
+    CommandName, Deck, Version, Revision, FromSnapshot, ToSnapshot: string;
   end;
 
   TCompletionLibrary = class
@@ -83,6 +83,7 @@ var
   Slot: Integer;
 begin
   Result := Default(TCompletionContext);
+  Result.CommandName := Binder.Name;
   for Slot := Binder.Arguments.Count to Binder.Count - 1 do
     if Binder.Supplied[Slot] then
       RecordCompletionValue(Result, Binder.ParameterAt(Slot).Name, Binder.Values[Slot]);
@@ -189,6 +190,7 @@ procedure CompleteDeckValues(LibraryFile: TDeckLibrary; const Context: TCompleti
 var
   Last, Base, Index: Integer;
   DeckVersion: string;
+  Snapshot: TLibrarySnapshot;
 begin
   Last := LibraryFile.Revision;
   DeckVersion := Context.Version;
@@ -200,6 +202,11 @@ begin
   else if Context.Revision <> '' then
     Last := LibraryFile.ParseRevision(Context.Revision);
   LibraryFile.ChangedDecks(0, Last, Values);
+  if (DeckVersion = '') and (Context.FromSnapshot = '') and (Context.ToSnapshot = '') and
+    (Context.CommandName <> 'display_deck') and (Context.CommandName <> 'display_deck_diff') then
+    for Index := Values.Count - 1 downto 0 do
+      if not LibraryFile.TryDeckSnapshot(Values[Index], Last, Snapshot) then
+        Values.Delete(Index);
   if (DeckVersion <> '') or (Context.FromSnapshot <> '') or (Context.ToSnapshot <> '') then
     for Index := Values.Count - 1 downto 0 do
       if not (MatchesDeckVersion(LibraryFile, Values[Index], DeckVersion) and

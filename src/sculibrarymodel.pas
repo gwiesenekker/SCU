@@ -49,7 +49,7 @@ type
     FNumber: Integer;
     FSize: Int64;
     FPayload: TJSONObject;
-    FSourceFieldsRead: Boolean;
+    FSourceFieldsRead, FDeleted: Boolean;
     function GetLoaded: Boolean;
     function GetCommentPrefix: string;
     function GetModifiedUTC: string;
@@ -58,7 +58,7 @@ type
     procedure RequireLoaded;
     procedure ReadSourceFields;
   public
-    constructor CreateIndex(const Name, Number: string; Sequence: Integer);
+    constructor CreateIndex(const Name, Number: string; Sequence: Integer; Deleted: Boolean = False);
     constructor CreatePayload(var Payload: TJSONObject; Sequence: Integer);
     destructor Destroy; override;
     procedure LoadPayload(var Payload: TJSONObject);
@@ -69,6 +69,7 @@ type
     function Serialized: RawByteString;
     property Name: string read FName;
     property Number: Integer read FNumber;
+    property Deleted: Boolean read FDeleted;
     property Loaded: Boolean read GetLoaded;
     property CommentPrefix: string read GetCommentPrefix;
     property ModifiedUTC: string read GetModifiedUTC;
@@ -79,12 +80,13 @@ type
 function NewLibraryMetadata(const Version: string): TJSONObject;
 function NewRevisionPayload(const Name, Prefix, SHA1: string; Number: Integer;
   const Source: RawByteString): TJSONObject;
+function NewDeletionPayload(const Name, Prefix: string; Number: Integer): TJSONObject;
 function DeckName(const Name: string): string;
 
 implementation
 
 uses
-  SysUtils, DateUtils, ScuCodec, ScuCopyMetadata, ScuClock, ScuErrors, ScuJSON, ScuVersionNumbers;
+  SysUtils, DateUtils, ScuCodec, ScuCopyMetadata, ScuClock, ScuErrors, ScuJSON, ScuRevisionJSON, ScuVersionNumbers;
 
 const
   DefaultVersionIncrement = '0.01';
@@ -317,13 +319,14 @@ begin
   Result := Number;
 end;
 
-constructor TLibraryRevision.CreateIndex(const Name, Number: string; Sequence: Integer);
+constructor TLibraryRevision.CreateIndex(const Name, Number: string; Sequence: Integer; Deleted: Boolean);
 begin
   inherited Create;
   FName := Name;
   if FName <> DeckName(FName) then
     raise EScuError.CreateFmt('Invalid deck name in revision %d.', [Sequence]);
   FNumber := ParseDeckNumber(Number, Sequence);
+  FDeleted := Deleted;
 end;
 
 constructor TLibraryRevision.CreatePayload(var Payload: TJSONObject; Sequence: Integer);
@@ -335,6 +338,7 @@ begin
   FNumber := -1;
   if Assigned(Payload.Find('deck_revision')) then
     FNumber := ParseDeckNumber(Field(Payload, 'deck_revision', jtString).AsString, Sequence);
+  FDeleted := RevisionPayloadDeleted(Payload);
   FPayload := Payload;
   Payload := nil;
 end;
@@ -389,6 +393,8 @@ begin
     (not TryParseFixed(Field(Payload, 'deck_revision', jtString, Context).AsString, 3, PayloadNumber) or
     (PayloadNumber <> FNumber)) then
     raise EScuError.Create('The SQLite deck revision does not match its payload.');
+  if RevisionPayloadDeleted(Payload) <> Deleted then
+    raise EScuError.Create('The SQLite deletion flag does not match its payload.');
   Field(Payload, 'zstd_base64', jtString, Context);
   FPayload := Payload;
   Payload := nil;
@@ -463,6 +469,8 @@ function TLibraryRevision.Decode: RawByteString;
 begin
   ReadSourceFields;
   Result := DecodeDeck(FEncoded, FSHA1, FSize);
+  if Deleted and (Result <> '') then
+    raise EScuError.CreateFmt('Deletion revision for deck "%s" contains source.', [Name]);
 end;
 
 function TLibraryRevision.CloneJSON: TJSONObject;
@@ -494,6 +502,12 @@ begin
     Result.Free;
     raise;
   end;
+end;
+
+function NewDeletionPayload(const Name, Prefix: string; Number: Integer): TJSONObject;
+begin
+  Result := NewRevisionPayload(Name, Prefix, DeckSHA1(''), Number, '');
+  Result.Add('deleted', True);
 end;
 
 end.

@@ -184,10 +184,39 @@ ASCII letter or digit and can also contain `.`, `-`, and `_` after the
 first character. `create_deck` (`cred`) creates a new deck in the open version.
 Supply `from_file` (`ff`) to use a file's bytes as the initial source, or omit
 it to create an empty deck. Creating a deck with an existing name, including
-an inherited deck, is an error. `store_deck` creates a deck or adds another
+an inherited live deck, is an error. `store_deck` creates a deck or adds another
 revision. Deck writes report the library version first, followed by the
 per-deck revision and the combined deck version.
 `extract_deck` writes the original bytes with directives and macros intact.
+
+`delete_deck` (`deld`) records a deletion revision in the current open version.
+Its `deck_name` (`deck`, `dn`) defaults to `scu$last_modified_deck`. Deletion
+hides the deck from that snapshot and from later versions that inherit it;
+earlier library versions and earlier explicit revisions retain the source.
+Deleting an absent deck or changing a locked version is an error. No historical
+revision is physically removed.
+
+```sh
+scu delete_deck obsolete.pas
+scu display_deck obsolete.pas
+scu extract_deck obsolete.pas old.pas version=1.0
+scu create_deck obsolete.pas from_file=replacement.pas
+```
+
+`create_deck` or `store_deck` can recreate a deleted deck under the same name.
+Deletion and recreation both count as revisions: they advance the deck's
+revision within the current version, and the first change in a new version
+starts at `0.000`. Recreation preserves the earlier history. `display_deck`
+marks deletion revisions with a final `deleted` column. Both diff commands
+show removed or recreated source using `/dev/null` for the missing side;
+empty-deck deletions and recreations are also reported explicitly.
+
+Deletion does not remove files already extracted or expanded on disk. Bulk
+extraction and expansion skip deleted decks. Incremental expansion still
+checks their live `SCU_COPY` dependents: a reference to a deleted deck fails
+expansion and leaves the checkpoint unchanged. A successful deletion-only
+expansion can run the configured build and advance its checkpoint. Review or
+remove obsolete output files separately when your build requires it.
 
 `display_library` (alias `disl`) shows the selected library's path, current
 version, and previous locked version, or `none` if no earlier version exists.
@@ -552,7 +581,11 @@ do not use `SCU$EXPANSION_*` macros.
 ## Storage and audit
 
 SQLite stores each deck revision as JSON with a base64-encoded zstd
-frame, a SHA-1 checksum, and a byte count for the original source. SCU verifies
+frame, a SHA-1 checksum, and a byte count for the original source. Deletion
+revisions add `deleted: true` and carry an empty source. SQLite indexes the
+deletion flag so snapshot listings do not need to load source payloads. Existing
+libraries gain the index on their next write without changing the bytes covered
+by previous audit digests. SCU verifies
 the checksum and byte count on read. The revision reader extracts plain
 base64 strings before parsing the JSON metadata and uses the full parser for
 escaped JSON spellings. Decks and expanded output are limited to

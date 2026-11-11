@@ -266,8 +266,6 @@ begin
   Pending := TStringList.Create;
   Targets := TStringList.Create;
   try
-    if Visible.Count = Decks.Count then
-      Exit;
     Parents.CaseSensitive := True;
     Parents.Sorted := True;
     Parents.OwnsObjects := True;

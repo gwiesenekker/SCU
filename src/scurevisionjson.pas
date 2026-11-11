@@ -9,6 +9,7 @@ uses
 
 // The caller owns the parsed revision, including the encoded source.
 function ParseRevisionPayload(const Payload, Context: RawByteString): TJSONObject;
+function RevisionPayloadDeleted(Payload: TJSONObject): Boolean;
 
 implementation
 
@@ -98,6 +99,13 @@ begin
     Result.Free;
     raise;
   end;
+end;
+
+function RevisionPayloadDeleted(Payload: TJSONObject): Boolean;
+begin
+  Result := Assigned(Payload.Find('deleted'));
+  if Result then
+    Result := Field(Payload, 'deleted', jtBoolean).AsBoolean;
 end;
 
 end.

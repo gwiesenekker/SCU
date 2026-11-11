@@ -72,6 +72,253 @@ class ScuIntegration(unittest.TestCase):
         with closing(sqlite3.connect(path or self.library)) as database:
             return [line.encode() for line, in database.execute("SELECT line FROM audit_records ORDER BY sequence")]
 
+    def test_delete_deck_records_history_and_preserves_earlier_source(self):
+        self.store("main.pas", b"original\n", "cp=#")
+        source = self.read_library()["revisions"][0]
+        self.assertIn("Deleted main.pas version 1.0 revision 0.001", self.run_scu("deld", "dn=MAIN.PAS"))
+        self.assertEqual(self.run_scu("ddl"), "")
+        document = self.read_library()
+        self.assertEqual(document["revisions"][0], source)
+        tombstone = document["revisions"][1]
+        self.assertIs(tombstone["deleted"], True)
+        self.assertEqual(tombstone["deck_revision"], "0.001")
+        self.assertEqual(tombstone["size"], 0)
+        self.assertEqual(tombstone["comment_prefix"], "#")
+        self.assertEqual(document["header"]["last_modified_deck"], "main.pas")
+        history = self.run_scu("disd").splitlines()
+        self.assertTrue(history[0].endswith("\t1.0-0.001\tdeleted"), history)
+        self.assertTrue(history[1].endswith("\t1.0-0.000"), history)
+        for command in ("extd", "expd"):
+            self.run_scu(command, "main.pas", "output", error='does not exist in version 1.0')
+            self.assertFalse((self.root / "output").exists())
+            self.run_scu(command, "main.pas", "old", "v=1.0-0.000")
+            self.assertEqual((self.root / "old").read_bytes(), b"original\n")
+            self.run_scu(command, "main.pas", "output", "r=2", error="does not exist at revision 2")
+        self.run_scu("edid", "main.pas", error='does not exist in version 1.0')
+        before = self.read_library()
+        self.run_scu("deld", "main.pas", error='does not exist in version 1.0')
+        self.run_scu("deld", "unknown", error='does not exist in version 1.0')
+        self.assertEqual(self.read_library(), before)
+        events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
+        deletion = next(e for e in events if e.get("command") == "delete_deck")
+        self.assertEqual(deletion["parameters"], {"deck_name": "MAIN.PAS"})
+        self.run_scu("verify_audit")
+
+    def test_deleted_decks_stay_absent_until_recreated_and_follow_revision_numbering(self):
+        self.store("main", b"version one\n")
+        self.run_scu("locv", "desc=First")
+        before = self.read_library()
+        self.run_scu("deld", "main", error="Version 1.0 is locked")
+        self.assertEqual(self.read_library(), before)
+        self.run_scu("stav", "1.1")
+        self.assertIn("revision 0.000", self.run_scu("deld"))
+        self.assertEqual(self.run_scu("ddl"), "")
+        self.assertIn("main\t1.0-0.000", self.run_scu("ddl", "v=1.0"))
+        self.run_scu("extd", "main", "old", "v=1.0")
+        self.assertEqual((self.root / "old").read_bytes(), b"version one\n")
+        self.run_scu("locv", "desc=Removed")
+        self.run_scu("stav", "1.2")
+        self.assertEqual(self.run_scu("ddl"), "")
+        self.assertIn("revision 0.000", self.run_scu("cred", "main"))
+        self.assertEqual(self.run_scu("ddl"), "main\t1.2-0.000")
+        self.run_scu("deld", "main")
+        self.assertIn("revision 0.002", self.run_scu("cred", "main"))
+        self.run_scu("deld", "main")
+        self.store("main", b"recreated by store\n")
+        self.assertEqual(self.read_library()["revisions"][-1]["deck_revision"], "0.004")
+        self.assertEqual(self.run_scu("ddl", "v=1.1"), "")
+        self.run_scu("verify_audit")
+
+    def test_delete_and_recreate_require_a_new_version_at_revision_limit(self):
+        self.run_scu("conl", "ri=0.999")
+        self.store("main", b"original")
+        self.store("main", b"changed")
+        before = self.read_library()
+        self.run_scu("deld", "main", error='has reached the revision limit')
+        self.assertEqual(self.read_library(), before)
+        self.run_scu("locv", "desc=Full")
+        self.run_scu("stav", "1.1")
+        self.assertIn("revision 0.000", self.run_scu("deld", "main"))
+        self.assertIn("revision 0.999", self.run_scu("cred", "main"))
+        self.run_scu("deld", "main", error='has reached the revision limit')
+        self.run_scu("verify_audit")
+
+    def test_deletion_and_recreation_diffs_use_missing_file_endpoints(self):
+        self.store("main", b"original\n")
+        self.run_scu("cred", "empty")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("stav", "1.1")
+        self.run_scu("deld", "main")
+        self.run_scu("deld", "empty")
+        diff = self.run_scu("disdd", "main")
+        self.assertIn("--- main@1.0-0.000\n+++ /dev/null", diff)
+        self.assertIn("-original", diff)
+        self.assertEqual(self.run_scu("disdd", "empty"), "Deleted empty deck empty")
+        diff = self.run_scu("disvd")
+        self.assertIn("Only in version 1.0: empty (empty deck)", diff)
+        self.assertIn("+++ /dev/null", diff)
+        self.run_scu("locv", "desc=Removed")
+        self.run_scu("stav", "1.2")
+        self.run_scu("locv", "desc=Still absent")
+        self.run_scu("stav", "1.3")
+        self.store("main", b"returned\n")
+        self.run_scu("cred", "empty")
+        diff = self.run_scu("disdd", "main")
+        self.assertIn("--- /dev/null\n+++ main@1.3-0.000", diff)
+        self.assertIn("+returned", diff)
+        self.assertEqual(self.run_scu("disdd", "empty"), "Recreated empty deck empty")
+        self.assertIn("--- /dev/null", self.run_scu("disvd", "fv=1.1", "tv=1.3"))
+        self.assertEqual(self.run_scu("disvd", "fv=1.1", "tv=1.2"), "")
+        self.assertIn("+++ /dev/null", self.run_scu("disvd", "fv=1.3", "tv=1.1"))
+
+    def test_deletion_is_pending_until_saved_and_can_be_discarded(self):
+        self.store("main", b"original")
+        before = self.read_library()
+        with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"deld main\n")
+            self.assertIn(b"Deleted main", read_until(b"scu> "))
+            self.assertEqual(self.read_library(), before)
+            os.write(terminal, b"ddl\n")
+            self.assertNotIn(b"main\t", read_until(b"scu> "))
+            os.write(terminal, b"disd\n")
+            self.assertIn(b"\tdeleted", read_until(b"scu> "))
+            os.write(terminal, b"quit save_library=no\n")
+            self.assertEqual(process.wait(timeout=5), 0)
+        self.assertEqual(self.read_library(), before)
+        result = subprocess.run([SCU], cwd=self.root, capture_output=True, text=True,
+                                input="deld main\nsavl\nquit\n", timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.run_scu("ddl"), "")
+        self.run_scu("verify_audit")
+
+    def test_deletion_audit_failure_rolls_back_revision_header_and_audit(self):
+        self.store("main", b"original")
+        with closing(sqlite3.connect(self.library, isolation_level=None)) as database:
+            before = self.sqlite_state(database)
+            state = database.execute("SELECT * FROM audit_state").fetchall()
+            database.executescript("""
+                CREATE TRIGGER fail_deletion_audit BEFORE INSERT ON audit_records
+                WHEN json_extract(substr(NEW.line, 66), '$.phase') = 'end'
+                 AND json_extract(substr(NEW.line, 66), '$.success') = 1
+                 AND EXISTS (SELECT 1 FROM deck_revisions WHERE deleted = 1)
+                BEGIN SELECT RAISE(ABORT, 'injected deletion audit failure'); END;
+            """)
+            self.run_scu("deld", "main", error="injected deletion audit failure")
+            self.assertEqual(self.sqlite_state(database), before)
+            self.assertEqual(database.execute("SELECT * FROM audit_state").fetchall(), state)
+            database.execute("DROP TRIGGER fail_deletion_audit")
+        self.assertIn("main\t", self.run_scu("ddl"))
+        self.run_scu("deld", "main")
+        self.run_scu("verify_audit")
+
+    def test_deletion_schema_upgrade_preserves_existing_payloads_and_audit_digests(self):
+        self.store("main", b"source")
+        before = self.read_library()
+        head = self.run_scu("verify_audit")
+        with closing(sqlite3.connect(self.library, isolation_level=None)) as database:
+            payloads = database.execute("SELECT payload FROM deck_revisions").fetchall()
+            database.executescript("ALTER TABLE deck_revisions DROP COLUMN deleted; PRAGMA user_version = 5;")
+            self.assertEqual(self.run_scu("verify_audit"), head)
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (5,))
+            self.run_scu("deld", "main")
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (6,))
+            self.assertEqual(database.execute("SELECT payload FROM deck_revisions WHERE sequence = 1").fetchall(), payloads)
+            self.assertEqual(database.execute("SELECT deleted FROM deck_revisions ORDER BY sequence").fetchall(), [(0,), (1,)])
+        self.assertEqual(self.read_library()["revisions"][0], before["revisions"][0])
+        self.run_scu("verify_audit", "head=" + head.split("head=")[1])
+
+    def test_deletion_recovery_restores_history_and_rejects_invalid_markers(self):
+        self.store("main", b"original")
+        self.run_scu("deld", "main")
+        document = self.read_library()
+        recovery = self.root / "deletion-recovery.json"
+        recovery.write_text(json.dumps(document))
+        restored = self.root / "restored.sqlite"
+        self.run_scu(restored, "recl", recovery)
+        self.assertEqual(self.run_scu(restored, "ddl"), "")
+        self.assertIn("\tdeleted", self.run_scu(restored, "disd", "main"))
+        self.run_scu(restored, "extd", "main", "old", "r=1")
+        self.assertEqual((self.root / "old").read_bytes(), b"original")
+        self.run_scu(restored, "cred", "main")
+        self.run_scu(restored, "verify_audit")
+        document["revisions"][-1]["deleted"] = "yes"
+        recovery.write_text(json.dumps(document))
+        self.run_scu(self.root / "invalid.sqlite", "recl", recovery, error="deleted")
+        document["revisions"][-1] = dict(document["revisions"][0], deck_revision="0.001", deleted=True)
+        recovery.write_text(json.dumps(document))
+        self.run_scu(self.root / "source-in-deletion.sqlite", "recl", recovery,
+                     error='Deletion revision for deck "main" contains source')
+
+    def test_full_audit_detects_tampered_deletion_index(self):
+        self.store("main", b"original")
+        self.run_scu("deld", "main")
+        with closing(sqlite3.connect(self.library, isolation_level=None)) as database:
+            database.execute("UPDATE deck_revisions SET deleted = 0 WHERE sequence = 2")
+        self.run_scu("verify_audit", error="SQLite deletion flag does not match revision 2")
+
+    def test_incremental_expansion_skips_deletions_and_advances_checkpoint(self):
+        self.store("main", b"source")
+        directory = self.root / "output"
+        directory.mkdir()
+        self.run_scu("expmd", "1.0", directory)
+        self.run_scu("deld", "main")
+        self.assertIn("Wrote 0 deck(s)", self.run_scu("expmd", "1.0", directory))
+        self.assertEqual((directory / "main").read_bytes(), b"source")
+        with closing(sqlite3.connect(self.library)) as database:
+            self.assertEqual(database.execute("SELECT revision FROM expansion_checkpoints").fetchone(), (2,))
+        self.run_scu("conl", "bc=echo built >> builds")
+        self.store("main", b"recreated")
+        self.run_scu("deld", "main")
+        self.assertIn("Wrote 0 deck(s)", self.run_scu("expmd", "1.0", directory))
+        self.assertEqual((self.root / "builds").read_text(), "built\n")
+        self.run_scu("expmd", "1.0", directory)
+        self.assertEqual((self.root / "builds").read_text(), "built\n")
+        self.assertIn("Wrote 0 deck(s)", self.run_scu("extmd", "1.0", directory))
+
+    def test_deleted_copy_target_fails_expansion_without_advancing_checkpoint(self):
+        self.store("part", b"shared\n")
+        self.store("main", b"//SCU_COPY part\n")
+        directory = self.root / "output"
+        directory.mkdir()
+        self.run_scu("expmd", "1.0", directory)
+        before = self.run_scu("disec")
+        self.run_scu("deld", "part")
+        self.run_scu("expmd", "1.0", directory, error='Deck "part" does not exist')
+        self.assertEqual(self.run_scu("disec"), before)
+        self.assertEqual((directory / "main").read_bytes(), b"shared\n")
+        self.store("main", b"standalone\n")
+        self.assertIn("Wrote 1 deck(s)", self.run_scu("expmd", "1.0", directory))
+        self.assertEqual((directory / "main").read_bytes(), b"standalone\n")
+        self.run_scu("verify_audit")
+
+    def test_completion_skips_deleted_snapshots_but_keeps_history_and_old_versions(self):
+        self.store("gone", b"original")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("stav", "1.1")
+        self.run_scu("deld", "gone")
+        self.run_scu("locv", "desc=Deleted")
+        self.run_scu("stav", "1.2")
+        with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"extd v=1.0 dn=gon\t o=old\n")
+            read_until(b"scu> ")
+            self.assertEqual((self.root / "old").read_bytes(), b"original")
+            os.write(terminal, b"disd gon\t\n")
+            self.assertIn(b"\tdeleted", read_until(b"scu> "))
+            os.write(terminal, b"edid gon\t\n")
+            self.assertIn(b'Deck "gon" does not exist', read_until(b"scu> "))
+            os.write(terminal, b"cred gone\n")
+            read_until(b"scu> ")
+            prefix = b"extd dn=gone o=old v=1."
+            os.write(terminal, prefix + b"\t\t")
+            matches = read_until(b"scu> " + prefix)
+            self.assertIn(b"1.0", matches)
+            self.assertIn(b"1.2", matches)
+            self.assertNotIn(b"1.1", matches)
+            os.write(terminal, b"\x15quit\n")
+            self.assertEqual(process.wait(timeout=5), 1)
+
     def test_executor_accepts_and_audits_a_command_without_the_cli(self):
         database = self.root / "frontend.sqlite"
         subprocess.run([SCU.with_name("executor_probe"), database], cwd=self.root,
@@ -1700,7 +1947,7 @@ end.
             self.run_scu(path, "verify_audit")
             self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (1,))
             self.run_scu(path, "modify_library", "build_command=true")
-            self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (5,))
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (6,))
             source = self.root / "source"
             source.write_bytes(b"//SCU$VERSION\n")
             self.run_scu(path, "store_deck", "main", source)
@@ -1711,7 +1958,7 @@ end.
             self.run_scu(path, "verify_audit")
             self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (2,))
             self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expmd", "1.0", output))
-            self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (5,))
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (6,))
             self.assertEqual((output / "main").read_bytes(), b"1.0\n")
             self.run_scu(path, "expmd", "1.0", output, "comment_prefix=#", "build=no")
             self.assertEqual((output / "main").read_bytes(), b"//1.0\n")
@@ -2652,7 +2899,7 @@ end.
         ])
         command_names = set()
         command_verbs = {
-            "configure", "create", "display", "edit", "expand", "extract",
+            "configure", "create", "delete", "display", "edit", "expand", "extract",
             "initialize", "list", "lock", "quit", "recover", "reset", "save",
             "show", "start", "store", "verify",
         }

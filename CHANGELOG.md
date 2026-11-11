@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add delete_deck (deld) with audited deletion revisions, historical source retention, and recreation through create_deck or store_deck.
+- Respect deletions in snapshots, diffs, completion, recovery, and incremental expansion; index deletion flags without rewriting existing audit-covered payloads.
+
 - Stop command batches on the first error by default, support continue_on_error, and read nested SCU command files with !.
 
 - Document the NOS/VE command abbreviation convention and check every command's verb and standard abbreviation in the catalog regression tests.

@@ -149,7 +149,8 @@ var
   LibraryFile: TDeckLibrary;
   Version, Directory, Prefix, Name: string;
   Revision, Base, CheckpointRevision, Index: Integer;
-  Refresh, BuildPending: Boolean;
+  Refresh, BuildPending, ChangesPending: Boolean;
+  Snapshot: TLibrarySnapshot;
   Names, Destinations: TStringList;
   Expander: TDeckExpander;
   Source: TDeckSource;
@@ -200,6 +201,10 @@ begin
       Expander := TDeckExpander.Create(LibraryFile, Context.Database, Revision, Version, Prefix);
       Expander.IncludeCopyDependents(Names);
     end;
+    ChangesPending := Names.Count > 0;
+    for Index := Names.Count - 1 downto 0 do
+      if not LibraryFile.TryDeckSnapshot(Names[Index], Revision, Snapshot) then
+        Names.Delete(Index);
     Destinations := TStringList.Create;
     for Name in Names do
       Destinations.Add(OutputPath(Context, IncludeTrailingPathDelimiter(Directory) + Name));
@@ -215,7 +220,7 @@ begin
       CheckSessionInterrupt;
       AtomicWrite(Destinations[Index], Bytes, [awSourceOutput]);
     end;
-    if Expand and ((Names.Count > 0) or BuildPending) then
+    if Expand and (ChangesPending or BuildPending) then
     begin
       ScheduleBuild(Context, Directory);
       if Context.Build.Command <> '' then
@@ -223,7 +228,7 @@ begin
         Context.Build.Checkpoint := Context.Snapshots.Selected;
         Context.Build.CommentPrefix := Prefix;
       end
-      else if (Names.Count > 0) and (LibraryFile.BuildCommand = '') then
+      else if ChangesPending and (LibraryFile.BuildCommand = '') then
         Context.Database.Checkpoints.SaveExpansionCheckpoint(Version, Directory, Prefix, Revision, True);
     end;
     Result := Format('Wrote %d deck(s) for version %s', [Names.Count, Version]);

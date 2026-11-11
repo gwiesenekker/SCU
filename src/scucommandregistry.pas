@@ -20,6 +20,7 @@ begin
   case Name of
     'configure_library': Result.Run := @ConfigureLibrary;
     'create_deck': Result.Run := @CreateDeck;
+    'delete_deck': Result.Run := @DeleteDeck;
     'display_deck_diff': Result.Run := @DiffDeck;
     'display_version_diff': Result.Run := @DisplayVersionDiff;
     'display_deck': Result.Run := @DisplayDeck;
