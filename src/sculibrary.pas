@@ -11,6 +11,8 @@ const
   CurrentDeckVersionSelector = 'scu$current_deck_version';
   PreviousDeckVersionSelector = 'scu$previous_deck_version';
   LastModifiedDeckSelector = 'scu$last_modified_deck';
+  CurrentVersionSelector = 'scu$current_version';
+  PreviousVersionSelector = 'scu$previous_version';
 
 type
   TDeckRevisionFormats = set of (drLibraryRevision, drDeckVersion);
@@ -35,6 +37,8 @@ type
   private
     FStore: TLibraryStore;
     FModified: Boolean;
+    FChangeCount: QWord;
+    procedure MarkModified;
     function Versions: TVersionHistory;
     function GetRevision: Integer;
     function FindDeckRevision(const Name: string; LastRevision: Integer): Integer;
@@ -72,6 +76,9 @@ type
     procedure ListVersionNames(Dest: TStrings; const Deck: string = '');
     function ParseRevision(const Value: string): Integer;
     function ParseDeckSnapshot(const Name, Selector: string): TLibrarySnapshot;
+    function ParseLibrarySnapshot(const Selector: string): TLibrarySnapshot;
+    function TryDeckSnapshot(const Deck: string; LibraryRevision: Integer;
+      out Snapshot: TLibrarySnapshot): Boolean;
     function CurrentSnapshot: TLibrarySnapshot;
     function TryPreviousSnapshot(out Snapshot: TLibrarySnapshot): Boolean;
     function PreviousDeckSnapshot(const Name: string; AtRevision: Integer): TLibrarySnapshot;
@@ -92,6 +99,7 @@ type
     property DeckRevision[LibraryRevision: Integer]: string read DeckRevisionAt;
     property Revision: Integer read GetRevision;
     property Modified: Boolean read FModified;
+    property ChangeCount: QWord read FChangeCount;
   end;
 
 function DeckName(const Name: string): string;
@@ -110,7 +118,7 @@ constructor TDeckLibrary.CreateNew(const Path, InitialVersion: string);
 begin
   inherited Create;
   FStore := TLibraryStore.CreateNew(Path, InitialVersion);
-  FModified := True;
+  MarkModified;
 end;
 
 constructor TDeckLibrary.Load(const Path: string; Database: TSQLiteLibrary);
@@ -123,13 +131,19 @@ constructor TDeckLibrary.CreateRecovered(var Document: TJSONObject);
 begin
   inherited Create;
   FStore := TLibraryStore.CreateRecovered(Document);
-  FModified := True;
+  MarkModified;
 end;
 
 destructor TDeckLibrary.Destroy;
 begin
   FStore.Free;
   inherited Destroy;
+end;
+
+procedure TDeckLibrary.MarkModified;
+begin
+  FModified := True;
+  Inc(FChangeCount);
 end;
 
 function TDeckLibrary.Versions: TVersionHistory;
@@ -239,7 +253,7 @@ begin
     FStore.RemoveLast;
     raise;
   end;
-  FModified := True;
+  MarkModified;
   Result := Revision;
 end;
 
@@ -387,6 +401,32 @@ begin
   Result := FormatFixed(FStore[Revision - 1].Number, 3);
 end;
 
+function TDeckLibrary.ParseLibrarySnapshot(const Selector: string): TLibrarySnapshot;
+var
+  Base: Integer;
+begin
+  if SameText(Selector, CurrentVersionSelector) then
+    Exit(CurrentSnapshot);
+  if SameText(Selector, PreviousVersionSelector) then
+  begin
+    if not TryPreviousSnapshot(Result) then
+      raise EScuError.CreateFmt('No locked version precedes current version %s.', [CurrentVersion]);
+    Exit;
+  end;
+  VersionBounds(Selector, Base, Result.LibraryRevision);
+  Result.Version := Selector;
+end;
+
+function TDeckLibrary.TryDeckSnapshot(const Deck: string; LibraryRevision: Integer;
+  out Snapshot: TLibrarySnapshot): Boolean;
+begin
+  Snapshot := Default(TLibrarySnapshot);
+  Snapshot.LibraryRevision := FindDeckRevision(DeckName(Deck), LibraryRevision);
+  Result := Snapshot.LibraryRevision <> 0;
+  if Result then
+    Snapshot.Version := VersionAt(Snapshot.LibraryRevision);
+end;
+
 function TDeckLibrary.ParseDeckSnapshot(const Name, Selector: string): TLibrarySnapshot;
 var
   Separator, Base, Last, Index: Integer;
@@ -439,13 +479,13 @@ end;
 procedure TDeckLibrary.LockVersion(const Description: string);
 begin
   Versions.Lock(Description);
-  FModified := True;
+  MarkModified;
 end;
 
 procedure TDeckLibrary.StartVersion(const Name: string);
 begin
   FStore.Header.StartVersion(Name, Revision);
-  FModified := True;
+  MarkModified;
 end;
 
 function TDeckLibrary.GetVersionCount: Integer;
@@ -501,7 +541,7 @@ end;
 procedure TDeckLibrary.Configure(const Settings: TLibrarySettingsChange);
 begin
   if FStore.Header.Configure(Settings, Revision) then
-    FModified := True;
+    MarkModified;
 end;
 
 end.

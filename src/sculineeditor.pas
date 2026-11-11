@@ -680,8 +680,7 @@ begin
     end;
     Result := False;
   finally
-    if not SessionEnding then
-      WriteDiagnostic('');
+    FSession.FinishLine;
   end;
 end;
 

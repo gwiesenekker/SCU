@@ -21,6 +21,7 @@ type
     LibraryFile: TDeckLibrary;
     Database: TSQLiteLibrary;
     StagedSave: TLibrarySave;
+    LibraryChanged: Boolean;
     Output: TScuOutput;
     Snapshots: TAuditSnapshots;
     Build: TBuildRequest;

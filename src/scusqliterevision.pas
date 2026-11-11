@@ -35,7 +35,7 @@ type
 implementation
 
 uses
-  SysUtils, ScuErrors, ScuJSON;
+  SysUtils, ScuErrors, ScuJSON, ScuRevisionJSON;
 
 constructor TSQLiteRevisionStore.Create(Database: TSQLiteConnection; SchemaVersion: Integer);
 begin
@@ -124,7 +124,7 @@ begin
     Statement.Bind(1, Sequence);
     if not Statement.Step then
       raise EScuError.CreateFmt('SQLite library revision %d is missing.', [Sequence]);
-    Result := ParseObject(Statement.Text[0], Format('SQLite revision %d payload in "%s"', [Sequence, FDatabase.Path]));
+    Result := ParseRevisionPayload(Statement.Text[0], Format('SQLite revision %d payload in "%s"', [Sequence, FDatabase.Path]));
     if FSchemaVersion >= 5 then
     begin
       Metadata := Result.Find('copy_metadata');

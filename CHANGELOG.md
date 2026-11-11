@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Document the NOS/VE command abbreviation convention and check every command's verb and standard abbreviation in the catalog regression tests.
+- Enforce lazy revision guards in normal builds and mark only library-changing commands as pending save.
+- Keep background terminal reads alive when job-control signals are ignored, resume stopped background builds with fg, and finish interrupted prompts with a newline.
+- Add display_version_diff with previous/current library version defaults and inherited, added, and removed deck comparisons.
+- Rename the deck diff command to display_deck_diff with disdd as its alias.
+- Extract unescaped deck base64 before parsing revision metadata, with JSON fallback for escaped spellings and compatible audit serialization.
 - Require a description when locking a version, record its UTC lock timestamp, and add display_version_history.
 - Validate catalog commands in the CLI and retain successful outcomes when Ctrl+C arrives after commit.
 - Split executor transaction phases and completion providers into focused routines.

@@ -26,6 +26,7 @@ type
     function ReadInput(var Buffer; Size: SizeUInt; Timeout: Integer): ssize_t;
     procedure Suspend;
     procedure ResumeEditing;
+    procedure FinishLine;
     property Ready: Boolean read GetReady;
     property RawMode: Boolean read FRawMode;
   end;
@@ -37,6 +38,7 @@ uses
 
 function signalfd(Handle: cint; Mask: PSigSet; Flags: cint): cint; cdecl; external 'c';
 function sigpending(Mask: PSigSet): cint; cdecl; external 'c';
+function tcgetpgrp(Handle: cint): cint; cdecl; external 'c';
 
 constructor TRawTerminalSession.Create;
 var
@@ -100,7 +102,7 @@ function TRawTerminalSession.ReadInput(var Buffer; Size: SizeUInt; Timeout: Inte
 var
   Handles: array[0..1] of TPollFD;
   SignalData: array[0..127] of Byte;
-  PollResult: cint;
+  PollResult, Error: cint;
 begin
   Handles[0].fd := StdInputHandle;
   Handles[0].events := POLLIN;
@@ -128,14 +130,25 @@ begin
       Exit(0);
     end;
     Result := fpRead(StdInputHandle, Buffer, Size);
-  until (Result >= 0) or (fpGetErrNo <> ESysEINTR);
-  if (Result < 0) and (fpGetErrNo = ESysEIO) then
-  begin
-    NoteSessionSignal(SIGHUP);
-    Exit(0);
-  end;
-  if Result < 0 then
-    RaiseSystemError('Could not read terminal input', fpGetErrNo);
+    if Result >= 0 then
+      Exit;
+    Error := fpGetErrNo;
+    if Error = ESysEINTR then
+      Continue;
+    if Error = ESysEIO then
+    begin
+      // A background read with SIGTTIN ignored also returns EIO.
+      if ((Handles[0].revents and POLLHUP) <> 0) or
+        (tcgetpgrp(StdInputHandle) = fpGetPGrp) or (PendingSignal = SIGHUP) then
+      begin
+        NoteSessionSignal(SIGHUP);
+        Exit(0);
+      end;
+      Sleep(20);
+      Continue;
+    end;
+    RaiseSystemError('Could not read terminal input', Error);
+  until False;
 end;
 
 procedure TRawTerminalSession.Suspend;
@@ -170,6 +183,17 @@ begin
       end;
   if not SessionEnding and (TCSetAttr(StdInputHandle, TCSANOW, FEditing) = 0) then
     FEditingApplied := True;
+end;
+
+procedure TRawTerminalSession.FinishLine;
+var
+  Group: cint;
+begin
+  if PendingSignal = SIGHUP then
+    Exit;
+  Group := tcgetpgrp(StdInputHandle);
+  if not SessionEnding or (Group < 0) or (Group = fpGetPGrp) then
+    WriteDiagnostic('');
 end;
 
 end.

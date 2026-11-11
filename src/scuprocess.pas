@@ -71,12 +71,18 @@ var
     BuildMode: TermIOS;
     HasBuildMode: Boolean;
   begin
-    // Return the terminal to SCU before stopping so its shell can regain it.
-    if not RestoreTerminal or (tcgetpgrp(StdInputHandle) <> Pid) or
-      not SetForegroundGroup(ForegroundGroup) then
+    if not RestoreTerminal then
       Exit(False);
-    HasBuildMode := TCGetAttr(StdInputHandle, BuildMode) = 0;
-    TCSetAttr(StdInputHandle, TCSANOW, TerminalMode);
+    HasBuildMode := False;
+    // A foreground build returns the terminal before SCU stops. A background
+    // build stopped by SIGTTIN/SIGTTOU leaves the shell's terminal alone.
+    if tcgetpgrp(StdInputHandle) = Pid then
+    begin
+      if not SetForegroundGroup(ForegroundGroup) then
+        Exit(False);
+      HasBuildMode := TCGetAttr(StdInputHandle, BuildMode) = 0;
+      TCSetAttr(StdInputHandle, TCSANOW, TerminalMode);
+    end;
     if ForegroundGroup = fpGetPid then
       fpKill(-ForegroundGroup, SIGTSTP)
     else
@@ -126,7 +132,7 @@ begin
       begin
         if not WIfStopped(Status) then
           Break;
-        if (WStopSig(Status) = SIGTSTP) and (PendingSignal = 0) and SuspendBuild then
+        if (WStopSig(Status) in [SIGTSTP, SIGTTIN, SIGTTOU]) and (PendingSignal = 0) and SuspendBuild then
           Continue;
         // Other stops cannot be resumed through the shell's job control.
         Stopped := True;

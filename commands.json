@@ -95,60 +95,6 @@
       ]
     },
     {
-      "name": "diff_deck",
-      "aliases": ["difd"],
-      "summary": "Compare stored deck source at two revisions or versions.",
-      "arguments": [
-        {
-          "name": "deck_name",
-          "type": "string",
-          "aliases": ["deck", "dn"],
-          "value": "scu$last_modified_deck",
-          "prompt_for_default": false,
-          "description": "Name of the deck to compare in both snapshots.",
-          "completion": "deck"
-        },
-        {
-          "name": "from_snapshot",
-          "type": "string",
-          "aliases": ["from", "fs"],
-          "value": "scu$previous_deck_version",
-          "prompt_for_default": false,
-          "description": "Deck version, scu$current_deck_version, or scu$previous_deck_version. Omit to use the deck version immediately before the right endpoint.",
-          "completion": "deck_version"
-        },
-        {
-          "name": "to_snapshot",
-          "type": "string",
-          "aliases": ["to", "ts"],
-          "value": "scu$current_deck_version",
-          "prompt_for_default": false,
-          "description": "Deck version, scu$current_deck_version, or scu$previous_deck_version. Omit to use the deck's latest version.",
-          "completion": "deck_version"
-        }
-      ],
-      "options": [],
-      "help": "Compare the original deck bytes at two deck versions such as 1.04-0.007. scu$current_deck_version and scu$previous_deck_version select the latest and preceding versions of the named deck.",
-      "examples": [
-        {
-          "command": "scu diff_deck",
-          "description": "Compare the last modified deck with its prior revision."
-        },
-        {
-          "command": "scu diff_deck main.pas 1.04-0.006 1.04-0.007",
-          "description": "Compare two exact deck versions within one library version."
-        },
-        {
-          "command": "scu diff_deck main.pas 1.04-0.006 'scu$current_deck_version'",
-          "description": "Compare an exact deck version with the latest version of the deck."
-        },
-        {
-          "command": "scu diff_deck main.pas",
-          "description": "Compare the latest revision of main.pas with its preceding revision."
-        }
-      ]
-    },
-    {
       "name": "display_command",
       "aliases": ["disc"],
       "summary": "Show a command's help and its arguments and options.",
@@ -194,6 +140,60 @@
         {
           "command": "scu display_deck",
           "description": "Show the revision history of the last modified deck."
+        }
+      ]
+    },
+    {
+      "name": "display_deck_diff",
+      "aliases": ["disdd"],
+      "summary": "Compare stored deck source at two revisions or versions.",
+      "arguments": [
+        {
+          "name": "deck_name",
+          "type": "string",
+          "aliases": ["deck", "dn"],
+          "value": "scu$last_modified_deck",
+          "prompt_for_default": false,
+          "description": "Name of the deck to compare in both snapshots.",
+          "completion": "deck"
+        },
+        {
+          "name": "from_snapshot",
+          "type": "string",
+          "aliases": ["from", "fs"],
+          "value": "scu$previous_deck_version",
+          "prompt_for_default": false,
+          "description": "Deck version, scu$current_deck_version, or scu$previous_deck_version. Omit to use the deck version immediately before the right endpoint.",
+          "completion": "deck_version"
+        },
+        {
+          "name": "to_snapshot",
+          "type": "string",
+          "aliases": ["to", "ts"],
+          "value": "scu$current_deck_version",
+          "prompt_for_default": false,
+          "description": "Deck version, scu$current_deck_version, or scu$previous_deck_version. Omit to use the deck's latest version.",
+          "completion": "deck_version"
+        }
+      ],
+      "options": [],
+      "help": "Compare the original deck bytes at two deck versions such as 1.04-0.007. scu$current_deck_version and scu$previous_deck_version select the latest and preceding versions of the named deck.",
+      "examples": [
+        {
+          "command": "scu display_deck_diff",
+          "description": "Compare the last modified deck with its prior revision."
+        },
+        {
+          "command": "scu display_deck_diff main.pas 1.04-0.006 1.04-0.007",
+          "description": "Compare two exact deck versions within one library version."
+        },
+        {
+          "command": "scu display_deck_diff main.pas 1.04-0.006 'scu$current_deck_version'",
+          "description": "Compare an exact deck version with the latest version of the deck."
+        },
+        {
+          "command": "scu display_deck_diff main.pas",
+          "description": "Compare the latest revision of main.pas with its preceding revision."
         }
       ]
     },
@@ -252,6 +252,47 @@
       "arguments": [],
       "options": [],
       "help": "Show the library path, current version, and most recent locked predecessor, followed by the full configuration header, including the editor and build command. SCU also runs this command when opening an existing library at a terminal."
+    },
+    {
+      "name": "display_version_diff",
+      "aliases": ["disvd"],
+      "summary": "Compare source for all changed decks in two library versions.",
+      "arguments": [
+        {
+          "name": "from_version",
+          "type": "string",
+          "aliases": ["from", "fv"],
+          "value": "scu$previous_version",
+          "prompt_for_default": false,
+          "description": "Library version to compare from. Defaults to the locked version before the current version.",
+          "completion": "library_version"
+        },
+        {
+          "name": "to_version",
+          "type": "string",
+          "aliases": ["to", "tv"],
+          "value": "scu$current_version",
+          "prompt_for_default": false,
+          "description": "Library version to compare to. Defaults to the current library version, including pending edits.",
+          "completion": "library_version"
+        }
+      ],
+      "options": [],
+      "help": "Show unified source diffs for all decks whose contents differ between the selected versions. Include inherited decks and represent added or removed source with /dev/null. Added or removed empty decks have an explicit notice.",
+      "examples": [
+        {
+          "command": "scu display_version_diff",
+          "description": "Compare the previous locked library version with the current version."
+        },
+        {
+          "command": "scu display_version_diff 1.0 1.1",
+          "description": "Compare two named library versions."
+        },
+        {
+          "command": "scu display_version_diff 1.0 'scu$current_version'",
+          "description": "Compare a named version with the current library version."
+        }
+      ]
     },
     {
       "name": "display_version_history",

@@ -277,7 +277,7 @@ scu disd main.pas
 scu dd main.pas
 ```
 
-`display_deck`, `diff_deck`, `edit_deck`, `extract_deck`, and `expand_deck`
+`display_deck`, `display_deck_diff`, `edit_deck`, `extract_deck`, and `expand_deck`
 default to `scu$last_modified_deck` without prompting for the deck name.
 The selector uses the deck from the latest library revision, including pending
 changes in an interactive session. It can also be supplied explicitly as
@@ -294,10 +294,10 @@ before a positional value that could otherwise be parsed as an option or
 named argument.
 
 ```sh
-scu diff_deck
-scu diff_deck main.pas
-scu diff_deck main.pas 1.04-0.006 1.04-0.007
-scu diff_deck main.pas 1.04-0.006 'scu$current_deck_version'
+scu display_deck_diff
+scu display_deck_diff main.pas
+scu display_deck_diff main.pas 1.04-0.006 1.04-0.007
+scu display_deck_diff main.pas 1.04-0.006 'scu$current_deck_version'
 ```
 
 Each endpoint accepts a deck version or one of two selectors.
@@ -318,6 +318,24 @@ source produces no diff. SCU reports both resolved deck versions on standard
 error and uses them in patch labels. An inherited deck shows the label from
 the library version where it was last changed. The deck must exist at both
 endpoints.
+
+Use `display_version_diff` (alias `disvd`) to compare every deck across
+two library versions. Its `from_version` defaults to `scu$previous_version`,
+the locked version before the current version. Its `to_version` defaults to
+`scu$current_version`, including pending edits in an interactive session.
+
+```sh
+scu display_version_diff
+scu display_version_diff 1.0 1.1
+scu display_version_diff from_version=1.0 to_version='scu$current_version'
+```
+
+Only changed source produces a diff. Inherited decks participate in each
+snapshot, and added or removed source is compared against `/dev/null`.
+Added or removed empty decks have an explicit notice. Patch labels identify
+the stored deck versions. SCU reports and audits the selected library versions.
+
+`display_deck_diff` also accepts the alias `disdd`.
 
 ## Command definitions
 
@@ -354,9 +372,18 @@ and `no` or `n`, case-insensitively. Its JSON default can be `true` or `false`.
 Set `"prompt_for_default": false` to apply a configured
 default automatically in interactive mode.
 
-Full command names use `verb_noun` form. The spellings `init`, `configure`,
-and `quit` remain aliases for `initialize_library`, `configure_library`, and
-`quit_session`.
+Full command names use `verb_noun` form, with additional words where needed.
+Every command has a NOS/VE-style abbreviation: the first three letters of the
+verb followed by the first letter of each remaining word. For example,
+`create_deck` becomes `cred`, `display_deck_list` becomes `disdl`, and
+`display_deck_diff` becomes `disdd`. The catalog tests check this convention
+for every command.
+
+Additional convenience aliases are allowed: `help` lists commands through
+`display_command_list` (`discl`), while `dd` and `ddl` select `display_deck`
+and `display_deck_list`. The spellings `init`, `configure`, and `quit` remain
+aliases for `initialize_library`, `configure_library`, and `quit_session`.
+Canonical names are used when dispatching commands and recording the audit trail.
 
 ```json
 {
@@ -450,7 +477,8 @@ the inherited directory lock descriptor. For Python's `subprocess` module,
 pass the descriptor named by `SCU_BUILD_OUTPUT_LOCK_FD` via `pass_fds`.
 An SCU command launched by a build fails immediately if its output directory
 is busy, unless it can reuse the inherited lock. Use `build=no` for nested
-expansions. A build that already holds a directory lock gets an error if it invokes
+expansions. If a background build needs terminal input, SCU suspends with it
+until it is resumed with `fg`. A build that already holds a directory lock gets an error if it invokes
 `expand_modified_decks` or `reset_expansion_checkpoint` in that directory.
 
 - `SCU$DECK_VERSION` is the combined version and revision of the deck being
@@ -481,7 +509,9 @@ do not use `SCU$EXPANSION_*` macros.
 
 SQLite stores each deck revision as JSON with a base64-encoded zstd
 frame, a SHA-1 checksum, and a byte count for the original source. SCU verifies
-the checksum and byte count on read. Decks and expanded output are limited to
+the checksum and byte count on read. The revision reader extracts plain
+base64 strings before parsing the JSON metadata and uses the full parser for
+escaped JSON spellings. Decks and expanded output are limited to
 64 MiB each. New source output files respect the process's umask.
 Replacements retain the existing permission bits and group ownership.
 If SCU cannot retain the group, the replacement fails. Libraries and lock files
@@ -512,7 +542,7 @@ command, which lets the audit distinguish a supplied value from the same default
 resolved `snapshot` in their outcome, with its `version` and
 `library_revision`. This includes the default snapshot and attempts that
 fail after SCU resolves the snapshot.
-`diff_deck` records its resolved labels as `from_deck_version` and
+`display_deck_diff` records its resolved labels as `from_deck_version` and
 `to_deck_version`. Commands using `scu$last_modified_deck` record its resolved
 name as `resolved_deck`. File extraction and expansion also record the
 absolute `output_path`, or the `output_directory` for a batch.
@@ -548,8 +578,10 @@ recorded deck and header digests.
 
 Run `show_history` to display the latest 20 audited command attempts in
 chronological order, with canonical names, named parameters, and a
-tab-separated status. `pending save` describes the state when the command
-finished. A later save or discard is a separate audit event. Pass a count
+tab-separated status. `pending save` identifies a command that changed the
+library and whose changes were still unsaved when it finished.
+Read-only commands report `succeeded` even while the session has pending edits.
+A later save or discard is a separate audit event. Pass a count
 as in `show_history 50` or `show_history number_of_lines=50`.
 The displayed parameters can include sensitive values recorded in the audit log.
 

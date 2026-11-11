@@ -55,6 +55,7 @@ type
     function GetModifiedUTC: string;
     function GetSHA1: string;
     function GetCopyMetadataJSON: RawByteString;
+    procedure RequireLoaded;
     procedure ReadSourceFields;
   public
     constructor CreateIndex(const Name, Number: string; Sequence: Integer);
@@ -344,6 +345,12 @@ begin
   inherited Destroy;
 end;
 
+procedure TLibraryRevision.RequireLoaded;
+begin
+  if not Loaded then
+    raise EScuError.CreateFmt('Revision payload for deck "%s" has not been loaded.', [Name]);
+end;
+
 procedure TLibraryRevision.ReadSourceFields;
 var
   Stamp: TDateTime;
@@ -351,7 +358,7 @@ var
 begin
   if FSourceFieldsRead then
     Exit;
-  Assert(Loaded);
+  RequireLoaded;
   Context := 'Deck "' + Name + '" revision payload';
   FCommentPrefix := '';
   if Assigned(FPayload.Find('comment_prefix')) then
@@ -419,7 +426,7 @@ function TLibraryRevision.GetCopyMetadataJSON: RawByteString;
 var
   Metadata: TJSONData;
 begin
-  Assert(Loaded);
+  RequireLoaded;
   Metadata := FPayload.Find('copy_metadata');
   if Assigned(Metadata) then
     Exit(Metadata.AsJSON);
@@ -460,13 +467,13 @@ end;
 
 function TLibraryRevision.CloneJSON: TJSONObject;
 begin
-  Assert(Loaded);
+  RequireLoaded;
   Result := TJSONObject(FPayload.Clone);
 end;
 
 function TLibraryRevision.Serialized: RawByteString;
 begin
-  Assert(Loaded);
+  RequireLoaded;
   Result := FPayload.AsJSON;
 end;
 

@@ -10,7 +10,7 @@ uses
 type
   TParameterKind = (pkString, pkInteger, pkFloat, pkBoolean);
   TCompletionKind = (ckNone, ckBoolean, ckCommand, ckFile, ckDirectory, ckDeck,
-    ckVersion, ckRevision, ckDeckVersion);
+    ckVersion, ckRevision, ckDeckVersion, ckLibraryVersion);
 
   TNamedDefinition = class
   private
@@ -132,7 +132,7 @@ uses
 const
   ParameterKinds: array[TParameterKind] of string = ('string', 'integer', 'float', 'boolean');
   CompletionKinds: array[TCompletionKind] of string = ('', 'boolean', 'command', 'file',
-    'directory', 'deck', 'version', 'revision', 'deck_version');
+    'directory', 'deck', 'version', 'revision', 'deck_version', 'library_version');
 
 function TryParseYesNo(const Value: string; out Parsed: Boolean): Boolean;
 begin

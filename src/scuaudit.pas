@@ -9,7 +9,7 @@ uses
 
 type
   TAuditSnapshots = record
-    Selected: TLibrarySnapshot;
+    Selected, FromVersion, ToVersion: TLibrarySnapshot;
     ResolvedDeck, FromDeckVersion, ToDeckVersion: string;
     OutputPath, OutputDirectory: string;
   end;
@@ -382,6 +382,8 @@ begin
     if Snapshots.OutputDirectory <> '' then
       Event.Add('output_directory', Snapshots.OutputDirectory);
     AddSnapshot('snapshot', Snapshots.Selected);
+    AddSnapshot('from_snapshot', Snapshots.FromVersion);
+    AddSnapshot('to_snapshot', Snapshots.ToVersion);
     if Snapshots.FromDeckVersion <> '' then
       Event.Add('from_deck_version', Snapshots.FromDeckVersion);
     if Snapshots.ToDeckVersion <> '' then

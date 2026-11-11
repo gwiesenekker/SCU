@@ -28,6 +28,37 @@ procedure TCapturedOutput.Flush;
 begin
 end;
 
+procedure CheckUnloadedPayloadGuards;
+var
+  Entry: TLibraryRevision;
+  Operation, Rejected: Integer;
+begin
+  Entry := TLibraryRevision.CreateIndex('unloaded', '0.000', 1);
+  try
+    Rejected := 0;
+    for Operation := 0 to 3 do
+      try
+        case Operation of
+          0: Entry.Serialized;
+          1: Entry.CloneJSON.Free;
+          2: Entry.CopyMetadataJSON;
+          3: Entry.Decode;
+        end;
+      except
+        on E: EScuError do
+        begin
+          if E.Message <> 'Revision payload for deck "unloaded" has not been loaded.' then
+            raise;
+          Inc(Rejected);
+        end;
+      end;
+    if Rejected <> 4 then
+      raise Exception.Create('An unloaded payload accessor accepted an unloaded revision.');
+  finally
+    Entry.Free;
+  end;
+end;
+
 procedure CheckLazyRevision(const Path: string);
 var
   Database: TSQLiteLibrary;
@@ -115,6 +146,7 @@ begin
       (Capture.Diagnostics <> 'Using version 1.0, library revision 1.' + LineEnding) then
       raise Exception.Create('Unexpected executor output.');
     CheckLazyRevision(ParamStr(1));
+    CheckUnloadedPayloadGuards;
   finally
     Options.Free;
     Executor.Free;

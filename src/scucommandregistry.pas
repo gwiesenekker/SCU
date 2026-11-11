@@ -12,7 +12,7 @@ function CommandHandler(const Name: string): TCommandHandler;
 implementation
 
 uses
-  ScuDeckCommands, ScuErrors, ScuExpandCommands, ScuLibraryCommands;
+  ScuDeckCommands, ScuErrors, ScuExpandCommands, ScuLibraryCommands, ScuVersionDiff;
 
 function CommandHandler(const Name: string): TCommandHandler;
 begin
@@ -20,7 +20,8 @@ begin
   case Name of
     'configure_library': Result.Run := @ConfigureLibrary;
     'create_deck': Result.Run := @CreateDeck;
-    'diff_deck': Result.Run := @DiffDeck;
+    'display_deck_diff': Result.Run := @DiffDeck;
+    'display_version_diff': Result.Run := @DisplayVersionDiff;
     'display_deck': Result.Run := @DisplayDeck;
     'display_deck_list': Result.Run := @DisplayDeckList;
     'display_version_history': Result.Run := @DisplayVersionHistory;

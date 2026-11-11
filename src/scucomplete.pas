@@ -217,6 +217,7 @@ var
   Deck: string;
   Index, DeckRevisionCount: Integer;
   RevisionFormats: TDeckRevisionFormats;
+  Previous: TLibrarySnapshot;
 
   procedure AddLibraryValue(const Candidate: string);
   begin
@@ -234,8 +235,14 @@ begin
     if Deck = '' then
       Exit;
   end;
-  if Kind = ckVersion then
+  if Kind in [ckVersion, ckLibraryVersion] then
     LibraryFile.ListVersionNames(Values, Deck);
+  if Kind = ckLibraryVersion then
+  begin
+    AddLibraryValue(CurrentVersionSelector);
+    if LibraryFile.TryPreviousSnapshot(Previous) then
+      AddLibraryValue(PreviousVersionSelector);
+  end;
   if Deck <> '' then
   begin
     RevisionFormats := [];
@@ -271,7 +278,7 @@ begin
       end;
     ckCommand: SuggestNames(Commands, Value, '', Values, nil, 0, False);
     ckFile, ckDirectory: CompleteFileValues(Kind, Value, Values);
-    ckDeck, ckVersion, ckRevision, ckDeckVersion:
+    ckDeck, ckVersion, ckRevision, ckDeckVersion, ckLibraryVersion:
       begin
         LibraryFile := PendingLibrary;
         if not Assigned(LibraryFile) then

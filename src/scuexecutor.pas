@@ -308,13 +308,16 @@ function TScuExecutor.RunAuditedOperation(var Context: TCommandContext; const Ha
   Audit: TAuditLog; LibraryExists: Boolean): string;
 var
   Initializing: Boolean;
+  ChangeCount: QWord;
 begin
   Initializing := Handler.Mode = cmInitialize;
   Audit.BeginCommand(Context.Command);
   Context.Database.Execute('SAVEPOINT scu_operation');
   try
     LoadCommandLibrary(Context, Audit, LibraryExists, Initializing);
+    ChangeCount := Context.LibraryFile.ChangeCount;
     Result := Handler.Run(Context);
+    Context.LibraryChanged := Context.LibraryFile.ChangeCount <> ChangeCount;
     if not Initializing then
     begin
       if not SessionEnding then
@@ -339,7 +342,7 @@ var
   PendingSave: Boolean;
 begin
   try
-    PendingSave := FInteractive and Context.LibraryFile.Modified and
+    PendingSave := FInteractive and Context.LibraryChanged and Context.LibraryFile.Modified and
       (Handler.Mode <> cmInitialize) and not Handler.SavesLibrary;
     RecordSuccessfulCommand(Audit, Context, Detail, PendingSave);
     Context.Database.Commit;
