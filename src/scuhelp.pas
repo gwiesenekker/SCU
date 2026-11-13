@@ -7,7 +7,7 @@ interface
 uses
   ScuCommands, ScuOutput;
 
-function ParameterSyntax(Entry: TParameterDefinition; Positional: Boolean): string;
+function ParameterSyntax(Entry: TParameterDefinition): string;
 procedure RenderCommandList(Commands: TCommandDefinitions; Output: TScuOutput; Columns: SizeInt);
 procedure RenderCommandHelp(Spec: TCommandDefinition; const CatalogDirectory: string;
   Output: TScuOutput; Columns: SizeInt);
@@ -40,13 +40,11 @@ begin
     Result := Result + ', ' + Aliases;
 end;
 
-function ParameterSyntax(Entry: TParameterDefinition; Positional: Boolean): string;
+function ParameterSyntax(Entry: TParameterDefinition): string;
 var
   Aliases, Value: string;
 begin
   Result := Entry.Name;
-  if not Positional then
-    Result := '--' + Result;
   Aliases := AliasText(Entry);
   if Aliases <> '' then
     Result := Result + ' (' + Aliases + ')';
@@ -56,7 +54,10 @@ begin
     Value := 'scu$required'
   else
     Value := 'scu$optional';
-  Result := Result + ' : ' + Entry.KindName + ' = ' + Value;
+  Result := Result + ' : ' + Entry.KindName;
+  if Entry.ValueCount > 0 then
+    Result := Result + ' ' + Entry.ValuesText;
+  Result := Result + ' = ' + Value;
 end;
 
 procedure RenderCommandList(Commands: TCommandDefinitions; Output: TScuOutput; Columns: SizeInt);
@@ -136,9 +137,9 @@ var
     Output.WriteLine(FormatTerminalLines(Text, Columns, Indentation));
   end;
 
-  procedure ShowParameter(Entry: TParameterDefinition; Positional: Boolean);
+  procedure ShowParameter(Entry: TParameterDefinition);
   begin
-    ShowText(ParameterSyntax(Entry, Positional), 2);
+    ShowText(ParameterSyntax(Entry), 2);
     if Entry.Description <> '' then
       ShowText(Entry.Description, 4);
   end;
@@ -157,15 +158,10 @@ begin
   if Spec.Arguments.Count = 0 then
     ShowText('None', 2);
   for Index := 0 to Spec.Arguments.Count - 1 do
-    ShowParameter(Spec.Arguments[Index], True);
-  ShowText('Options');
-  if Spec.Options.Count = 0 then
-    ShowText('None', 2);
-  for Index := 0 to Spec.Options.Count - 1 do
-    ShowParameter(Spec.Options[Index], False);
+    ShowParameter(Spec.Arguments[Index]);
   if Spec.ExclusiveGroupCount > 0 then
   begin
-    ShowText('Mutually exclusive options (choose at most one per group)');
+    ShowText('Mutually exclusive arguments (choose at most one per group)');
     for Index := 0 to Spec.ExclusiveGroupCount - 1 do
     begin
       GroupText := '';
@@ -173,7 +169,7 @@ begin
       begin
         if MemberIndex > 0 then
           GroupText := GroupText + ', ';
-        GroupText := GroupText + '--' + Spec.ExclusiveOptions[Index, MemberIndex].Spelling;
+        GroupText := GroupText + Spec.ExclusiveArguments[Index, MemberIndex].Spelling;
       end;
       ShowText(GroupText, 2);
     end;

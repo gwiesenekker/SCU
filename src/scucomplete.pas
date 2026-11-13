@@ -84,9 +84,6 @@ var
 begin
   Result := Default(TCompletionContext);
   Result.CommandName := Binder.Name;
-  for Slot := Binder.Arguments.Count to Binder.Count - 1 do
-    if Binder.Supplied[Slot] then
-      RecordCompletionValue(Result, Binder.ParameterAt(Slot).Name, Binder.Values[Slot]);
   for Slot := 0 to Binder.Arguments.Count - 1 do
     if Binder.Supplied[Slot] then
       RecordCompletionValue(Result, Binder.ParameterAt(Slot).Name, Binder.Values[Slot]);
@@ -157,7 +154,8 @@ begin
   Result := Copy(Entry, 1, Length(Leaf)) = Leaf;
 end;
 
-procedure CompleteFileValues(Kind: TCompletionKind; const Value: string; Values: TStrings);
+procedure CompleteFileValues(Kind: TCompletionKind; const Value: string; Values: TStrings;
+  const LibraryPath: string = '');
 var
   Directory, SearchDirectory, Leaf, Name: string;
   Search: TSearchRec;
@@ -166,6 +164,12 @@ begin
   Directory := ExtractFilePath(Value);
   Leaf := ExtractFileName(Value);
   SearchDirectory := Directory;
+  if Kind = ckLibraryFile then
+  begin
+    if (Directory <> '') or (Pos('\', Value) > 0) then
+      Exit;
+    SearchDirectory := IncludeTrailingPathDelimiter(ExtractFileDir(ExpandFileName(LibraryPath)));
+  end;
   if SearchDirectory = '' then
     SearchDirectory := './';
   if FindFirst(SearchDirectory + '*', faAnyFile, Search) = 0 then
@@ -175,9 +179,9 @@ begin
         Continue;
       Name := SearchDirectory + Search.Name;
       IsDirectory := DirectoryExists(Name);
-      if IsDirectory then
+      if IsDirectory and (Kind <> ckLibraryFile) then
         Values.Add(Directory + Search.Name + DirectorySeparator)
-      else if (Kind = ckFile) and FileExists(Name) then
+      else if not IsDirectory and (Kind in [ckFile, ckLibraryFile]) and FileExists(Name) then
         Values.Add(Directory + Search.Name);
     until FindNext(Search) <> 0;
   finally
@@ -188,21 +192,22 @@ end;
 procedure CompleteDeckValues(LibraryFile: TDeckLibrary; const Context: TCompletionContext;
   const Value: string; Values: TStringList);
 var
-  Last, Base, Index: Integer;
+  Last, Index: Integer;
   DeckVersion: string;
   Snapshot: TLibrarySnapshot;
+  Selection: TDeckSelection;
 begin
   Last := LibraryFile.Revision;
   DeckVersion := Context.Version;
   if (DeckVersion <> '') and (Pos('-', DeckVersion) <= 1) then
   begin
-    LibraryFile.VersionBounds(DeckVersion, Base, Last);
+    Snapshot := LibraryFile.ParseLibrarySnapshot(DeckVersion);
+    Last := Snapshot.LibraryRevision;
     DeckVersion := '';
-  end
-  else if Context.Revision <> '' then
-    Last := LibraryFile.ParseRevision(Context.Revision);
+  end;
   LibraryFile.ChangedDecks(0, Last, Values);
   if (DeckVersion = '') and (Context.FromSnapshot = '') and (Context.ToSnapshot = '') and
+    (Context.Revision = '') and
     (Context.CommandName <> 'display_deck') and (Context.CommandName <> 'display_deck_diff') then
     for Index := Values.Count - 1 downto 0 do
       if not LibraryFile.TryDeckSnapshot(Values[Index], Last, Snapshot) then
@@ -213,6 +218,16 @@ begin
         MatchesDeckVersion(LibraryFile, Values[Index], Context.FromSnapshot) and
         MatchesDeckVersion(LibraryFile, Values[Index], Context.ToSnapshot)) then
         Values.Delete(Index);
+  if (Context.Revision <> '') and
+    ((Context.CommandName = 'extract_deck') or (Context.CommandName = 'expand_deck')) then
+    for Index := Values.Count - 1 downto 0 do
+      try
+        Selection := LibraryFile.SelectDeck(Values[Index], Context.Version, Context.Revision);
+        if Selection.RootRevision = 0 then
+          Values.Delete(Index);
+      except
+        on E: EScuError do Values.Delete(Index);
+      end;
   if SameText(Copy(Value, 1, 4), 'scu$') and
     (Values.IndexOf(LibraryFile.LastModifiedDeck) >= 0) then
     Values.Add(LastModifiedDeckSelector);
@@ -223,6 +238,7 @@ procedure CompleteSnapshotValues(LibraryFile: TDeckLibrary; Kind: TCompletionKin
 var
   Deck: string;
   Index, DeckRevisionCount: Integer;
+  Selection: TDeckSelection;
   RevisionFormats: TDeckRevisionFormats;
   Previous: TLibrarySnapshot;
 
@@ -243,9 +259,36 @@ begin
       Exit;
   end;
   if Kind in [ckVersion, ckLibraryVersion] then
-    LibraryFile.ListVersionNames(Values, Deck);
+    if (Kind = ckVersion) and (Context.Revision <> '') then
+      LibraryFile.ListVersionNames(Values)
+    else
+      LibraryFile.ListVersionNames(Values, Deck);
+  if (Kind = ckVersion) and (Context.Revision <> '') and (Deck <> '') then
+    for Index := Values.Count - 1 downto 0 do
+      try
+        Selection := LibraryFile.SelectDeck(Deck, Values[Index], Context.Revision);
+        if Selection.RootRevision = 0 then
+          Values.Delete(Index);
+      except
+        on E: EScuError do Values.Delete(Index);
+      end;
+  if Kind = ckRevision then
+  begin
+    if Deck = '' then
+      Deck := LibraryFile.LastModifiedDeck;
+    if Deck <> '' then
+      LibraryFile.ListDeckRevisionNames(Deck, Context.Version, Values);
+    Exit;
+  end;
+  if (Kind = ckVersion) and
+    ((Context.CommandName = 'expand_version') or (Context.CommandName = 'extract_deck') or
+     (Context.CommandName = 'expand_deck')) then
+    if (Context.Revision = '') or (Values.IndexOf(LibraryFile.CurrentVersion) >= 0) then
+      AddLibraryValue(CurrentVersionSelector);
   if Kind = ckLibraryVersion then
   begin
+    if Context.CommandName = 'expand_version' then
+      AddLibraryValue(LatestVersionSelector);
     AddLibraryValue(CurrentVersionSelector);
     if LibraryFile.TryPreviousSnapshot(Previous) then
       AddLibraryValue(PreviousVersionSelector);
@@ -253,8 +296,6 @@ begin
   if Deck <> '' then
   begin
     RevisionFormats := [];
-    if Kind = ckRevision then
-      Include(RevisionFormats, drLibraryRevision);
     if (Kind = ckDeckVersion) or ((Kind = ckVersion) and ((Value = '') or (Pos('-', Value) > 1))) then
       Include(RevisionFormats, drDeckVersion);
     DeckRevisionCount := LibraryFile.ListDeckRevisions(Deck, Values, RevisionFormats);
@@ -265,10 +306,7 @@ begin
       if DeckRevisionCount > 1 then
         AddLibraryValue(PreviousDeckVersionSelector);
     end;
-  end
-  else if Kind = ckRevision then
-    for Index := 0 to LibraryFile.Revision do
-      AddLibraryValue(IntToStr(Index));
+  end;
 end;
 
 procedure CollectCompletionValues(Commands: TCommandDefinitions; Kind: TCompletionKind;
@@ -278,13 +316,8 @@ var
   LibraryFile: TDeckLibrary;
 begin
   case Kind of
-    ckBoolean:
-      begin
-        Values.Add('no');
-        Values.Add('yes');
-      end;
     ckCommand: SuggestNames(Commands, Value, '', Values, nil, 0, False);
-    ckFile, ckDirectory: CompleteFileValues(Kind, Value, Values);
+    ckFile, ckDirectory, ckLibraryFile: CompleteFileValues(Kind, Value, Values, LibraryPath);
     ckDeck, ckVersion, ckRevision, ckDeckVersion, ckLibraryVersion:
       begin
         LibraryFile := PendingLibrary;
@@ -308,6 +341,7 @@ var
   Kind: TCompletionKind;
   Values: TStringList;
   Name, Suffix: string;
+  Index, AliasIndex: Integer;
 begin
   AppendCharacter := ' ';
   if RawValue then
@@ -324,7 +358,15 @@ begin
     Values.CaseSensitive := True;
     Values.Sorted := True;
     Values.Duplicates := dupIgnore;
-    CollectCompletionValues(Commands, Kind, Context, LibraryPath, Value, Values, LibraryCache, PendingLibrary);
+    if Kind = ckEnum then
+      for Index := 0 to Parameter.ValueCount - 1 do
+      begin
+        Values.Add(Parameter.Values[Index]);
+        for AliasIndex := 0 to Parameter.EnumValues[Index].AliasCount - 1 do
+          Values.Add(Parameter.EnumValues[Index].Aliases[AliasIndex]);
+      end
+    else
+      CollectCompletionValues(Commands, Kind, Context, LibraryPath, Value, Values, LibraryCache, PendingLibrary);
     for Name in Values do
     begin
       if not SameText(Copy(Name, 1, Length(Value)), Value) then
@@ -385,7 +427,7 @@ end;
 function HiddenNameSlots(const Request: TLineCompletion): TParameterSlots;
 var
   Bindings: TCommandBinder;
-  GroupIndex, MemberIndex, OptionSlot, Position, Offset: Integer;
+  GroupIndex, MemberIndex, ArgumentSlot, Position: Integer;
   Selected: Boolean;
 begin
   Bindings := WithLaterBindings(Request, -1);
@@ -394,14 +436,13 @@ begin
     SetLength(Result, Bindings.Count);
     for Position := 0 to High(Result) do
       Result[Position] := Bindings.Supplied[Position];
-    Offset := Bindings.Arguments.Count;
     for GroupIndex := 0 to Request.Spec.ExclusiveGroupCount - 1 do
     begin
       Selected := False;
       for MemberIndex := 0 to Request.Spec.ExclusiveGroupSize[GroupIndex] - 1 do
       begin
-        OptionSlot := Request.Spec.ExclusiveOptions[GroupIndex, MemberIndex].OptionIndex;
-        if Bindings.Supplied[Offset + OptionSlot] then
+        ArgumentSlot := Request.Spec.ExclusiveArguments[GroupIndex, MemberIndex].ArgumentIndex;
+        if Bindings.Supplied[ArgumentSlot] then
         begin
           Selected := True;
           Break;
@@ -410,8 +451,8 @@ begin
       if Selected then
         for MemberIndex := 0 to Request.Spec.ExclusiveGroupSize[GroupIndex] - 1 do
         begin
-          OptionSlot := Request.Spec.ExclusiveOptions[GroupIndex, MemberIndex].OptionIndex;
-          Result[Offset + OptionSlot] := True;
+          ArgumentSlot := Request.Spec.ExclusiveArguments[GroupIndex, MemberIndex].ArgumentIndex;
+          Result[ArgumentSlot] := True;
         end;
     end;
   finally
@@ -436,21 +477,17 @@ end;
 procedure SuggestParameterValues(const Request: TLineCompletion; Candidates: TStrings;
   out AppendCharacter: Char);
 var
-  Names, OptionNames: TStringList;
+  Names: TStringList;
   Hidden: TParameterSlots;
   Index, Slot: Integer;
   Name: string;
 begin
   Names := TStringList.Create;
-  OptionNames := nil;
   try
     if not Request.Earlier.PositionalOnly and (Request.Current.Text = Request.Prefix) then
     begin
       Hidden := HiddenNameSlots(Request);
-      OptionNames := TStringList.Create;
       SuggestNames(Request.Earlier.Arguments, Request.Prefix, '', Names, Hidden);
-      SuggestNames(Request.Earlier.Options, Request.Prefix, '', OptionNames, Hidden, Request.Earlier.Arguments.Count);
-      Names.AddStrings(OptionNames);
       Index := Names.IndexOf(Request.Prefix);
       if Index >= 0 then
       begin
@@ -471,7 +508,6 @@ begin
       for Name in Names do
         Candidates.Add(Name + '=');
   finally
-    OptionNames.Free;
     Names.Free;
   end;
 end;
@@ -521,7 +557,7 @@ begin
           (Request.Current.Text = Prefix) then
         begin
           Hidden := HiddenNameSlots(Request);
-          SuggestNames(Request.Earlier.Options, Prefix, '--', Candidates, Hidden, Request.Earlier.Arguments.Count);
+          SuggestNames(Request.Earlier.Arguments, Prefix, '--', Candidates, Hidden);
         end
         else
           SuggestParameterValues(Request, Candidates, AppendCharacter);

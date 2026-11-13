@@ -14,7 +14,7 @@ implementation
 uses
   Classes, ScuDiff, ScuLibrary, ScuSignals;
 
-procedure WriteChangedDeck(const Context: TCommandContext; const Deck: string);
+procedure WriteChangedDeck(const Context: TCommandContext; const Deck: string; IgnoreSpaceChanges: Boolean; Format: TDiffFormat);
 var
   FromDeck, ToDeck: TLibrarySnapshot;
   FromSource, ToSource: TDeckSource;
@@ -47,14 +47,19 @@ begin
       Context.Output.WriteLine('Only in version ' + Context.Snapshots.FromVersion.Version + ': ' + Deck + ' (empty deck)');
   end
   else
-    WriteDeckDiff(FromSource.Bytes, ToSource.Bytes, FromLabel, ToLabel, Context.Output);
+    WriteDeckDiff(FromSource.Bytes, ToSource.Bytes, FromLabel, ToLabel, Context.Output,
+      IgnoreSpaceChanges, Format, True);
 end;
 
 function DisplayVersionDiff(var Context: TCommandContext): string;
 var
   Decks: TStringList;
   Deck: string;
+  IgnoreSpaceChanges: Boolean;
+  Format: TDiffFormat;
 begin
+  IgnoreSpaceChanges := BooleanArgument(Context.Command, 'ignore_space_changes');
+  Format := ParseDiffFormat(Context.Command.Argument('output_format', 'normal'));
   Context.Snapshots.FromVersion := Context.LibraryFile.ParseLibrarySnapshot(Context.Command['from_version']);
   Context.Snapshots.ToVersion := Context.LibraryFile.ParseLibrarySnapshot(Context.Command['to_version']);
   Context.Output.Report('From version ' + Context.Snapshots.FromVersion.Version + '.');
@@ -69,7 +74,7 @@ begin
     for Deck in Decks do
     begin
       CheckSessionInterrupt;
-      WriteChangedDeck(Context, Deck);
+      WriteChangedDeck(Context, Deck, IgnoreSpaceChanges, Format);
     end;
   finally
     Decks.Free;

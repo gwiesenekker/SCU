@@ -12,9 +12,9 @@ type
   private
     FLibrary: TDeckLibrary;
     FDatabase: TSQLiteLibrary;
-    FRevision: Integer;
+    FRevision, FRootRevision: Integer;
     FPrefixOverride, FDefaultPrefix: string;
-    FVersion, FMissingDeckVersion, FExpansionUTC: string;
+    FVersion, FMissingDeckVersion, FExpansionUTC, FRootDeckVersion: string;
     FVisits: Integer;
     FSourceBytes: Int64;
     FStack: TStringList;
@@ -26,9 +26,11 @@ type
     procedure ExpandMacros(const Line: RawByteString; LineStart, LineEnd: SizeInt; const Stored: TDeckSource);
   public
     constructor Create(ALibrary: TDeckLibrary; Database: TSQLiteLibrary; ARevision: Integer; const Version, Prefix: string;
-      const MissingDeckVersion: string = '');
+      const MissingDeckVersion: string = ''; const ExpansionUTC: string = '');
     destructor Destroy; override;
-    function Expand(const Deck: string): RawByteString;
+    function Expand(const Deck: string; RootRevision: Integer = 0): RawByteString;
+    property RootDeckVersion: string read FRootDeckVersion;
+    property ExpansionUTC: string read FExpansionUTC;
     procedure IncludeCopyDependents(Decks: TStringList);
   end;
 
@@ -86,7 +88,7 @@ begin
 end;
 
 constructor TDeckExpander.Create(ALibrary: TDeckLibrary; Database: TSQLiteLibrary; ARevision: Integer; const Version, Prefix: string;
-  const MissingDeckVersion: string);
+  const MissingDeckVersion: string; const ExpansionUTC: string);
 begin
   inherited Create;
   if Prefix <> '' then
@@ -95,7 +97,9 @@ begin
   FDatabase := Database;
   FRevision := ARevision;
   FVersion := Version;
-  FExpansionUTC := UtcTimestamp(UtcNow);
+  FExpansionUTC := ExpansionUTC;
+  if FExpansionUTC = '' then
+    FExpansionUTC := UtcTimestamp(UtcNow);
   FMissingDeckVersion := MissingDeckVersion;
   FPrefixOverride := Prefix;
   FDefaultPrefix := ALibrary.DefaultCommentPrefix(Version);
@@ -188,7 +192,12 @@ begin
     Inc(FVisits);
     if FVisits > MaxVisits then
       raise EScuError.Create('Expansion exceeds 10000 deck visits.');
-    Stored := FLibrary.Extract(FDatabase, Name, FRevision, FMissingDeckVersion);
+    if (FStack.Count = 1) and (FRootRevision > 0) then
+      Stored := FLibrary.Extract(FDatabase, Name, FRootRevision, FMissingDeckVersion)
+    else
+      Stored := FLibrary.Extract(FDatabase, Name, FRevision, FMissingDeckVersion);
+    if FStack.Count = 1 then
+      FRootDeckVersion := Stored.DeckVersion;
     Prefix := EffectivePrefix(Stored);
     Source := Stored.Bytes;
     Inc(FSourceBytes, Length(Source));
@@ -238,11 +247,13 @@ begin
   end;
 end;
 
-function TDeckExpander.Expand(const Deck: string): RawByteString;
+function TDeckExpander.Expand(const Deck: string; RootRevision: Integer): RawByteString;
 begin
   FOutput.Clear;
   FVisits := 0;
   FSourceBytes := 0;
+  FRootDeckVersion := '';
+  FRootRevision := RootRevision;
   ExpandInto(Deck);
   SetLength(Result, FOutput.Size);
   if Result <> '' then

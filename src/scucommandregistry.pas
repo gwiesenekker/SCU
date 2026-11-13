@@ -12,7 +12,7 @@ function CommandHandler(const Name: string): TCommandHandler;
 implementation
 
 uses
-  ScuDeckCommands, ScuErrors, ScuExpandCommands, ScuLibraryCommands, ScuVersionDiff;
+  ScuDeckCommands, ScuErrors, ScuExpandCommands, ScuFilePatternCommands, ScuImportCommands, ScuLibraryCommands, ScuVerifyDecks, ScuVersionDiff;
 
 function CommandHandler(const Name: string): TCommandHandler;
 begin
@@ -22,6 +22,7 @@ begin
     'create_deck': Result.Run := @CreateDeck;
     'delete_deck': Result.Run := @DeleteDeck;
     'display_deck_diff': Result.Run := @DiffDeck;
+    'display_version': Result.Run := @DisplayVersion;
     'display_version_diff': Result.Run := @DisplayVersionDiff;
     'display_deck': Result.Run := @DisplayDeck;
     'display_deck_list': Result.Run := @DisplayDeckList;
@@ -33,20 +34,32 @@ begin
         Result.ReportCommitted := @ReportLibraryHeader;
       end;
     'edit_deck': Result.Run := @EditDeckCommand;
+    'edit_file_patterns': Result.Run := @EditFilePatterns;
     'expand_deck':
       begin
         Result.Run := @ExpandDeck;
         Result.ResolveOutputDirectory := @SingleDeckDirectory;
         Result.ReuseBuildLock := True;
       end;
-    'expand_modified_decks':
+    'expand_version':
       begin
-        Result.Run := @ExpandModifiedDecks;
+        Result.Run := @ExpandVersion;
         Result.ResolveOutputDirectory := @BulkExpansionDirectory;
         Result.Prepare := @PrepareBulkExpansion;
       end;
-    'extract_deck': Result.Run := @ExtractDeck;
-    'extract_modified_decks': Result.Run := @ExtractModifiedDecks;
+    'extract_deck':
+      begin
+        Result.Run := @ExtractDeck;
+        Result.ResolveOutputDirectory := @SingleDeckDirectory;
+        Result.ReuseBuildLock := True;
+      end;
+    'extract_modified_decks':
+      begin
+        Result.Run := @ExtractModifiedDecks;
+        Result.ResolveOutputDirectory := @BulkExpansionDirectory;
+        Result.ReuseBuildLock := True;
+      end;
+    'import_deck': Result.Run := @ImportDeckCommand;
     'initialize_library':
       begin
         Result.Mode := cmInitialize;
@@ -67,7 +80,6 @@ begin
     'save_library', 'quit_session':
       begin
         Result.Run := @SaveLibrary;
-        Result.SavesLibrary := True;
       end;
     'show_history':
       begin
@@ -75,9 +87,14 @@ begin
         Result.Run := @ShowHistory;
       end;
     'show_library': Result.Run := @ShowLibrary;
-    'start_version': Result.Run := @StartVersion;
-    'store_deck': Result.Run := @StoreDeck;
+    'create_version': Result.Run := @CreateVersion;
     'verify_audit': Result.Mode := cmVerifyAudit;
+    'verify_decks':
+      begin
+        Result.Run := @VerifyDecks;
+        Result.ResolveOutputDirectory := @VerificationDirectory;
+        Result.ReuseBuildLock := True;
+      end;
     else
       raise EScuError.CreateFmt('No implementation for command "%s".', [Name]);
   end;

@@ -319,8 +319,7 @@ begin
       State := 'locked'
     else
       State := 'open';
-    Dest.Add(Format('%s'#9'%s'#9'%d'#9'%d', [FEntries[Index].Name,
-      State, BaseRevision(Index), EndRevision(Index, Latest)]));
+    Dest.Add(FEntries[Index].Name + #9 + State);
   end;
 end;
 

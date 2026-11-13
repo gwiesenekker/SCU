@@ -5,7 +5,7 @@ unit ScuLibraryModel;
 interface
 
 uses
-  FPJSON, ScuVersions;
+  Classes, FPJSON, ScuVersions;
 
 const
   MaxDeckRevision = 999;
@@ -21,18 +21,23 @@ type
   private
     FSerialized: TJSONObject; // Borrowed from the store's metadata document.
     FVersions: TVersionHistory;
-    FEditor: array of string;
+    FEditor, FFilePatterns: array of string;
     FLastModifiedDeck, FBuildCommand, FVersionIncrement, FRevisionIncrement: string;
     FVersionStep, FRevisionStep: Int64;
     function GetEditorCount: Integer;
     function GetEditorArgument(Index: Integer): string;
+    function GetFilePatternCount: Integer;
+    function GetFilePattern(Index: Integer): string;
   public
     constructor Create(Header: TJSONObject; RevisionCount: Integer; const LastDeck: string);
     destructor Destroy; override;
     function Configure(const Settings: TLibrarySettingsChange; RevisionCount: Integer): Boolean;
+    function SetFilePatterns(Patterns: TStrings): Boolean;
     procedure SetLastModifiedDeck(const Deck: string);
-    procedure StartVersion(const Name: string; RevisionCount: Integer);
+    procedure CreateVersion(const Name: string; RevisionCount: Integer);
     function CloneJSON: TJSONObject;
+    // The caller owns the configuration copy; version history is excluded.
+    function CloneConfiguration: TJSONObject;
     function FormatJSON: string;
     function Digest: string;
     property Versions: TVersionHistory read FVersions;
@@ -41,6 +46,8 @@ type
     property RevisionStep: Int64 read FRevisionStep;
     property EditorCount: Integer read GetEditorCount;
     property EditorArguments[Index: Integer]: string read GetEditorArgument;
+    property FilePatternCount: Integer read GetFilePatternCount;
+    property FilePatterns[Index: Integer]: string read GetFilePattern;
   end;
 
   TLibraryRevision = class
@@ -54,6 +61,7 @@ type
     function GetCommentPrefix: string;
     function GetModifiedUTC: string;
     function GetSHA1: string;
+    function GetSourcePath: string;
     function GetCopyMetadataJSON: RawByteString;
     procedure RequireLoaded;
     procedure ReadSourceFields;
@@ -74,6 +82,7 @@ type
     property CommentPrefix: string read GetCommentPrefix;
     property ModifiedUTC: string read GetModifiedUTC;
     property SHA1: string read GetSHA1;
+    property SourcePath: string read GetSourcePath;
     property CopyMetadataJSON: RawByteString read GetCopyMetadataJSON;
   end;
 
@@ -82,6 +91,7 @@ function NewRevisionPayload(const Name, Prefix, SHA1: string; Number: Integer;
   const Source: RawByteString): TJSONObject;
 function NewDeletionPayload(const Name, Prefix: string; Number: Integer): TJSONObject;
 function DeckName(const Name: string): string;
+procedure ValidateFilePattern(const Pattern: string);
 
 implementation
 
@@ -124,6 +134,34 @@ begin
       raise EScuError.CreateFmt('%s: Editor arguments must be strings without NUL bytes.', [Source]);
 end;
 
+procedure ValidateRelativeSourcePath(const Pattern: string);
+var
+  Parts: TStringList;
+  Part: string;
+begin
+  if (Trim(Pattern) = '') or (Pos(#0, Pattern) > 0) or
+    (Pos(#10, Pattern) > 0) or (Pos(#13, Pattern) > 0) then
+    raise EScuError.Create('A file pattern must be a nonempty single line without NUL bytes.');
+  if (Pattern[1] in ['/', '\']) or ((Length(Pattern) > 1) and (Pattern[2] = ':')) then
+    raise EScuError.Create('File patterns must be relative to the library directory.');
+  Parts := TStringList.Create;
+  try
+    ExtractStrings(['/', '\'], [], PChar(Pattern), Parts);
+    for Part in Parts do
+      if Part = '..' then
+        raise EScuError.Create('File patterns cannot contain parent-directory (..) components.');
+  finally
+    Parts.Free;
+  end;
+end;
+
+procedure ValidateFilePattern(const Pattern: string);
+begin
+  ValidateRelativeSourcePath(Pattern);
+  if (Pos('/', Pattern) > 0) or (Pos('\', Pattern) > 0) then
+    raise EScuError.Create('File patterns must select files directly in the library directory; subdirectories are not supported yet.');
+end;
+
 function NewLibraryMetadata(const Version: string): TJSONObject;
 var
   Header: TJSONObject;
@@ -140,6 +178,7 @@ begin
     Header.Add('version_increment', DefaultVersionIncrement);
     Header.Add('revision_increment', DefaultRevisionIncrement);
     Header.Add('build_command', '');
+    Header.Add('file_patterns', TJSONArray.Create);
     Header.Add('comment_prefix', '//');
     Editor := TJSONArray.Create;
     Header.Add('editor', Editor);
@@ -160,7 +199,7 @@ end;
 
 constructor TLibraryHeader.Create(Header: TJSONObject; RevisionCount: Integer; const LastDeck: string);
 var
-  Entries, Editor: TJSONArray;
+  Entries, Editor, Patterns: TJSONArray;
   Index: Integer;
 begin
   inherited Create;
@@ -197,6 +236,21 @@ begin
   FLastModifiedDeck := Field(Header, 'last_modified_deck', jtString).AsString;
   if FLastModifiedDeck <> LastDeck then
     raise EScuError.Create('The last_modified_deck header does not match the revision history.');
+  // Missing in older libraries: use an empty list without changing audited JSON.
+  if Assigned(Header.Find('file_patterns')) then
+  begin
+    Patterns := TJSONArray(Field(Header, 'file_patterns', jtArray));
+    SetLength(FFilePatterns, Patterns.Count);
+    for Index := 0 to Patterns.Count - 1 do
+    begin
+      if Patterns.Items[Index].JSONType <> jtString then
+        raise EScuError.Create('Library file_patterns must contain only strings.');
+      // Preserve older selections so they can still be opened and edited.
+      // New settings and scans enforce the current directory-only policy.
+      ValidateRelativeSourcePath(Patterns.Strings[Index]);
+      FFilePatterns[Index] := Patterns.Strings[Index];
+    end;
+  end;
 end;
 
 destructor TLibraryHeader.Destroy;
@@ -215,13 +269,53 @@ begin
   Result := FEditor[Index];
 end;
 
+function TLibraryHeader.GetFilePatternCount: Integer;
+begin
+  Result := Length(FFilePatterns);
+end;
+
+function TLibraryHeader.GetFilePattern(Index: Integer): string;
+begin
+  Result := FFilePatterns[Index];
+end;
+
+function TLibraryHeader.SetFilePatterns(Patterns: TStrings): Boolean;
+var
+  Index: Integer;
+  Entries: TJSONArray;
+begin
+  Result := Patterns.Count <> Length(FFilePatterns);
+  for Index := 0 to Patterns.Count - 1 do
+  begin
+    ValidateFilePattern(Patterns[Index]);
+    if (Index >= Length(FFilePatterns)) or (Patterns[Index] <> FFilePatterns[Index]) then
+      Result := True;
+  end;
+  if not Result then
+    Exit;
+  Entries := TJSONArray.Create;
+  try
+    for Index := 0 to Patterns.Count - 1 do
+      Entries.Add(Patterns[Index]);
+    if Assigned(FSerialized.Find('file_patterns')) then
+      FSerialized.Delete('file_patterns');
+    FSerialized.Add('file_patterns', Entries);
+    Entries := nil;
+  finally
+    Entries.Free;
+  end;
+  SetLength(FFilePatterns, Patterns.Count);
+  for Index := 0 to Patterns.Count - 1 do
+    FFilePatterns[Index] := Patterns[Index];
+end;
+
 procedure TLibraryHeader.SetLastModifiedDeck(const Deck: string);
 begin
   FSerialized.Strings['last_modified_deck'] := Deck;
   FLastModifiedDeck := Deck;
 end;
 
-procedure TLibraryHeader.StartVersion(const Name: string; RevisionCount: Integer);
+procedure TLibraryHeader.CreateVersion(const Name: string; RevisionCount: Integer);
 var
   Next: string;
 begin
@@ -235,6 +329,23 @@ end;
 function TLibraryHeader.CloneJSON: TJSONObject;
 begin
   Result := TJSONObject(FSerialized.Clone);
+end;
+
+function TLibraryHeader.CloneConfiguration: TJSONObject;
+var
+  Index: Integer;
+begin
+  Result := TJSONObject.Create;
+  try
+    for Index := 0 to FSerialized.Count - 1 do
+      if FSerialized.Names[Index] <> 'versions' then
+        Result.Add(FSerialized.Names[Index], FSerialized.Items[Index].Clone);
+    if not Assigned(Result.Find('file_patterns')) then
+      Result.Add('file_patterns', TJSONArray.Create);
+  except
+    Result.Free;
+    raise;
+  end;
 end;
 
 function TLibraryHeader.FormatJSON: string;
@@ -408,6 +519,17 @@ end;
 function TLibraryRevision.GetLoaded: Boolean;
 begin
   Result := Assigned(FPayload);
+end;
+
+function TLibraryRevision.GetSourcePath: string;
+begin
+  RequireLoaded;
+  Result := Name;
+  if Assigned(FPayload.Find('source_path')) then
+  begin
+    Result := Field(FPayload, 'source_path', jtString, 'Deck "' + Name + '" revision payload').AsString;
+    ValidateRelativeSourcePath(Result);
+  end;
 end;
 
 function TLibraryRevision.GetCommentPrefix: string;

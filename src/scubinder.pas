@@ -18,10 +18,9 @@ type
     end;
   private
     FSpec: TCommandDefinition;
-    FArguments, FOptions: TParameterDefinitions;
+    FArguments: TParameterDefinitions;
     FName, FPendingSpelling: string;
     FBindings: array of TBinding;
-    FOptionOrder: array of Integer;
     FPendingSlot: Integer;
     FMode: TBindingMode;
     FPositionalOnly: Boolean;
@@ -43,7 +42,6 @@ type
     property Count: Integer read GetCount;
     property Name: string read FName;
     property Arguments: TParameterDefinitions read FArguments;
-    property Options: TParameterDefinitions read FOptions;
     property PendingSlot: Integer read FPendingSlot;
     property PositionalOnly: Boolean read FPositionalOnly;
     property Supplied[Slot: Integer]: Boolean read GetSupplied;
@@ -53,7 +51,7 @@ type
 implementation
 
 uses
-  Classes, ScuErrors;
+  ScuErrors;
 
 constructor TCommandBinder.Create(Spec: TCommandDefinition; Mode: TBindingMode);
 begin
@@ -62,9 +60,8 @@ begin
   FMode := Mode;
   FName := Spec.Name;
   FArguments := Spec.Arguments;
-  FOptions := Spec.Options;
   FPendingSlot := -1;
-  SetLength(FBindings, FArguments.Count + FOptions.Count);
+  SetLength(FBindings, FArguments.Count);
 end;
 
 function TCommandBinder.GetCount: Integer;
@@ -84,10 +81,7 @@ end;
 
 function TCommandBinder.ParameterAt(Slot: Integer): TParameterDefinition;
 begin
-  if Slot < FArguments.Count then
-    Result := FArguments[Slot]
-  else
-    Result := FOptions[Slot - FArguments.Count];
+  Result := FArguments[Slot];
 end;
 
 function TCommandBinder.NextPositional: Integer;
@@ -102,7 +96,6 @@ end;
 
 function TCommandBinder.NamedSlot(const Token: string; out EqualsAt: Integer): Integer;
 var
-  OptionSlot: Integer;
   Key: string;
 begin
   Result := -1;
@@ -118,7 +111,7 @@ begin
       Key := Copy(Token, 3, EqualsAt - 3)
     else
       Key := Copy(Token, 3, MaxInt);
-    OptionSlot := FOptions.FindIndex(Key);
+    Result := FArguments.FindIndex(Key);
   end
   else
   begin
@@ -126,10 +119,7 @@ begin
       Exit;
     Key := Copy(Token, 1, EqualsAt - 1);
     Result := FArguments.FindIndex(Key);
-    OptionSlot := FOptions.FindIndex(Key);
   end;
-  if OptionSlot >= 0 then
-    Result := FArguments.Count + OptionSlot;
 end;
 
 function TCommandBinder.PendingAccepts(const Token: string): Boolean;
@@ -148,9 +138,7 @@ begin
   if (FMode <> bmExecution) or not Supplied[Slot] then
     Exit;
   Key := ParameterAt(Slot).Name;
-  if Slot < FArguments.Count then
-    raise EScuError.CreateFmt('Duplicate argument %s.', [Key]);
-  raise EScuError.CreateFmt('Duplicate option --%s.', [Key]);
+  raise EScuError.CreateFmt('Duplicate argument %s.', [Key]);
 end;
 
 procedure TCommandBinder.Bind(Slot: Integer; const Value: string; Provided: Boolean);
@@ -159,12 +147,7 @@ begin
   // The catalog validates defaults, and the CLI validates answers at the prompt.
   if (FMode = bmExecution) and Provided then
     ParameterAt(Slot).Validate(Value);
-  if (Slot >= FArguments.Count) and not Supplied[Slot] then
-  begin
-    SetLength(FOptionOrder, Length(FOptionOrder) + 1);
-    FOptionOrder[High(FOptionOrder)] := Slot;
-  end;
-  FBindings[Slot].Value := Value;
+  FBindings[Slot].Value := ParameterAt(Slot).CanonicalValue(Value);
   FBindings[Slot].Supplied := True;
   FBindings[Slot].Provided := Provided;
 end;
@@ -203,7 +186,7 @@ begin
   else if not FPositionalOnly and (Copy(Token, 1, 2) = '--') then
   begin
     if FMode = bmExecution then
-      raise EScuError.CreateFmt('Unknown option %s for %s.', [Token, FName]);
+      raise EScuError.CreateFmt('Unknown argument %s for %s.', [Token, FName]);
   end
   else
   begin
@@ -234,7 +217,6 @@ begin
   Result := TCommandBinder.Create(FSpec, FMode);
   try
     Result.FBindings := Copy(FBindings);
-    Result.FOptionOrder := Copy(FOptionOrder);
     Result.FPositionalOnly := FPositionalOnly;
     if Slot >= 0 then
       Result.FBindings[Slot].Supplied := True;
@@ -247,25 +229,21 @@ end;
 function TCommandBinder.CreateCommand: TScuCommand;
 var
   BoundArguments: TScuArguments;
-  BoundOptions: TStringList;
-  Slot: Integer;
+  Slot, BoundCount: Integer;
 begin
+  BoundArguments := nil;
   SetLength(BoundArguments, FArguments.Count);
-  for Slot := 0 to High(BoundArguments) do
-  begin
-    BoundArguments[Slot].Name := ParameterAt(Slot).Name;
-    BoundArguments[Slot].Value := Values[Slot];
-    BoundArguments[Slot].Provided := FBindings[Slot].Provided;
-  end;
-  BoundOptions := TStringList.Create;
-  try
-    BoundOptions.CaseSensitive := True;
-    for Slot in FOptionOrder do
-      BoundOptions.Add(ParameterAt(Slot).Name + '=' + Values[Slot]);
-    Result := TScuCommand.Create(FName, BoundArguments, BoundOptions);
-  finally
-    BoundOptions.Free;
-  end;
+  BoundCount := 0;
+  for Slot := 0 to FArguments.Count - 1 do
+    if Supplied[Slot] then
+    begin
+      BoundArguments[BoundCount].Name := ParameterAt(Slot).Name;
+      BoundArguments[BoundCount].Value := Values[Slot];
+      BoundArguments[BoundCount].Provided := FBindings[Slot].Provided;
+      Inc(BoundCount);
+    end;
+  SetLength(BoundArguments, BoundCount);
+  Result := TScuCommand.Create(FName, BoundArguments);
 end;
 
 end.

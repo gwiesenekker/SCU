@@ -100,7 +100,7 @@ var
   Recovery: TJSONObject;
   FormatValue: TJSONData;
 begin
-  BasePath := Command.Option('base_library');
+  BasePath := Command.Argument('base_library');
   Path := Command['recovery_file'];
   Recovery := ParseObject(ReadBytes(Path, High(SizeInt)), 'Recovery file "' + Path + '"');
   try

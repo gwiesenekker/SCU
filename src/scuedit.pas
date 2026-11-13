@@ -7,6 +7,8 @@ interface
 uses
   ScuLibrary, ScuSQLite;
 
+function EditTextFile(LibraryFile: TDeckLibrary; const Name: string;
+  const Original: RawByteString; Limit: Int64): RawByteString;
 function EditDeck(LibraryFile: TDeckLibrary; Database: TSQLiteLibrary; const Deck: string): Integer;
 
 implementation
@@ -76,21 +78,17 @@ begin
   RemoveDir(Path);
 end;
 
-function EditDeck(LibraryFile: TDeckLibrary; Database: TSQLiteLibrary; const Deck: string): Integer;
+function EditTextFile(LibraryFile: TDeckLibrary; const Name: string;
+  const Original: RawByteString; Limit: Int64): RawByteString;
 var
-  Name, TempDir, Path: string;
-  Source: TDeckSource;
-  Updated: RawByteString;
+  TempDir, Path: string;
   Editor: TProcess;
   Index, Status: Integer;
 begin
-  LibraryFile.RequireOpenVersion;
-  Name := DeckName(Deck);
-  Source := LibraryFile.Extract(Database, Name, LibraryFile.Revision, LibraryFile.CurrentVersion);
   TempDir := MakeTempDirectory('scu-edit');
   Path := IncludeTrailingPathDelimiter(TempDir) + Name;
   try
-    AtomicWrite(Path, Source.Bytes);
+    AtomicWrite(Path, Original);
     Editor := TProcess.Create(nil);
     try
       Editor.Executable := EditorPath(LibraryFile.EditorArguments[0]);
@@ -107,14 +105,26 @@ begin
     end;
     if not RegularFileExists(Path) then
       raise EScuError.Create('The editor removed the working file.');
-    Updated := ReadBytes(Path, MaxDeckSize);
-    if Updated = Source.Bytes then
-      Result := 0
-    else
-      Result := LibraryFile.Store(Database, Name, Updated);
+    Result := ReadBytes(Path, Limit);
   finally
     RemoveWorkingDirectory(TempDir);
   end;
+end;
+
+function EditDeck(LibraryFile: TDeckLibrary; Database: TSQLiteLibrary; const Deck: string): Integer;
+var
+  Name: string;
+  Source: TDeckSource;
+  Updated: RawByteString;
+begin
+  LibraryFile.RequireOpenVersion;
+  Name := DeckName(Deck);
+  Source := LibraryFile.Extract(Database, Name, LibraryFile.Revision, LibraryFile.CurrentVersion);
+  Updated := EditTextFile(LibraryFile, Name, Source.Bytes, MaxDeckSize);
+  if Updated = Source.Bytes then
+    Result := 0
+  else
+    Result := LibraryFile.Store(Database, Name, Updated);
 end;
 
 end.

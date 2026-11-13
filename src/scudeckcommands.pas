@@ -9,7 +9,6 @@ uses
 
 function CreateDeck(var Context: TCommandContext): string;
 function DeleteDeck(var Context: TCommandContext): string;
-function StoreDeck(var Context: TCommandContext): string;
 function EditDeckCommand(var Context: TCommandContext): string;
 function DisplayDeck(var Context: TCommandContext): string;
 function DisplayDeckList(var Context: TCommandContext): string;
@@ -18,7 +17,7 @@ function DiffDeck(var Context: TCommandContext): string;
 implementation
 
 uses
-  Classes, SysUtils, ScuCodec, ScuDiff, ScuEdit, ScuFiles, ScuLibrary, ScuVersions;
+  Classes, SysUtils, ScuCodec, ScuErrors, ScuDiff, ScuLibraryDisplay, ScuEdit, ScuFiles, ScuLibrary, ScuTerminal, ScuVersions;
 
 function DeckWriteReport(LibraryFile: TDeckLibrary; const Deck: string; StoredRevision: Integer): string;
 begin
@@ -38,22 +37,17 @@ begin
   Deck := ResolveDeck(Context);
   Context.LibraryFile.RequireOpenVersion;
   Deck := DeckName(Deck);
-  Path := Context.Command[FileArgument];
+  Path := Context.Command.Argument(FileArgument);
   Bytes := '';
   if not CreateOnly or (Path <> '') then
     Bytes := ReadBytes(Path, MaxDeckSize);
-  Revision := Context.LibraryFile.Store(Context.Database, Deck, Bytes, CreateOnly, PrefixOption(Context.Command));
+  Revision := Context.LibraryFile.Store(Context.Database, Deck, Bytes, CreateOnly, PrefixArgument(Context.Command));
   Result := DeckWriteReport(Context.LibraryFile, Deck, Revision);
 end;
 
 function CreateDeck(var Context: TCommandContext): string;
 begin
   Result := WriteDeck(Context, 'from_file', True);
-end;
-
-function StoreDeck(var Context: TCommandContext): string;
-begin
-  Result := WriteDeck(Context, 'source_file', False);
 end;
 
 function DeleteDeck(var Context: TCommandContext): string;
@@ -76,36 +70,26 @@ end;
 
 function DisplayDeck(var Context: TCommandContext): string;
 var
-  Rows: TStringList;
-  Row: string;
+  Rows: TDeckHistoryEntries;
+  Limit: Int64;
+  Deck: string;
 begin
-  Rows := TStringList.Create;
-  try
-    Context.LibraryFile.ListDeckHistory(Context.Database, ResolveDeck(Context), Rows);
-    for Row in Rows do
-      Context.Output.WriteLine(Row);
-  finally
-    Rows.Free;
-  end;
+  if not TryStrToInt64(Context.Command.Argument('limit', '10'), Limit) or (Limit < 0) then
+    raise EScuError.Create('Expected a nonnegative integer for limit; use 0 for the complete deck history.');
+  Deck := DeckName(ResolveDeck(Context));
+  Rows := Context.LibraryFile.DeckHistory(Context.Database, Deck, Limit);
+  Context.Output.WriteLine(FormatTerminalLines(Format('Deck "%s".', [Deck]),
+    TerminalColumns(StdOutputHandle)));
+  WriteDeckHistory(Rows, Context.Output);
   Result := '';
 end;
 
 function DisplayDeckList(var Context: TCommandContext): string;
-var
-  Rows: TStringList;
-  Row: string;
 begin
-  Rows := TStringList.Create;
-  try
-    Context.Snapshots.Selected := ResolveSnapshot(Context);
-    Context.LibraryFile.List(Context.Snapshots.Selected.LibraryRevision, Rows);
-    Rows.Sort;
-    for Row in Rows do
-      Context.Output.WriteLine(Row);
-    ReportSnapshot(Context);
-  finally
-    Rows.Free;
-  end;
+  Context.Snapshots.Selected := ResolveSnapshot(Context);
+  WriteDeckList(Context.LibraryFile.DeckList(Context.Snapshots.Selected.LibraryRevision),
+    Context.Output);
+  ReportSnapshot(Context);
   Result := '';
 end;
 
@@ -115,9 +99,12 @@ var
   LibraryFile: TDeckLibrary;
   FromSnapshot, ToSnapshot: TLibrarySnapshot;
   Source, OtherSource: TDeckSource;
-  UsePriorDeckRevision: Boolean;
+  UsePriorDeckRevision, IgnoreSpaceChanges: Boolean;
+  Format: TDiffFormat;
 begin
   LibraryFile := Context.LibraryFile;
+  IgnoreSpaceChanges := BooleanArgument(Context.Command, 'ignore_space_changes');
+  Format := ParseDiffFormat(Context.Command.Argument('output_format', 'normal'));
   Deck := DeckName(ResolveDeck(Context));
   FromSelector := Context.Command['from_snapshot'];
   UsePriorDeckRevision := not Context.Command.Provided['from_snapshot'] and
@@ -150,7 +137,8 @@ begin
       Context.Output.WriteLine('Recreated empty deck ' + Deck);
   end
   else
-    WriteDeckDiff(Source.Bytes, OtherSource.Bytes, FromLabel, ToLabel, Context.Output);
+    WriteDeckDiff(Source.Bytes, OtherSource.Bytes, FromLabel, ToLabel, Context.Output,
+      IgnoreSpaceChanges, Format);
   Context.Output.Report('From deck version ' + Context.Snapshots.FromDeckVersion + '.');
   Context.Output.Report('To deck version ' + Context.Snapshots.ToDeckVersion + '.');
   Result := '';

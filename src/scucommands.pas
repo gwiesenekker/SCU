@@ -8,9 +8,9 @@ uses
   Contnrs;
 
 type
-  TParameterKind = (pkString, pkInteger, pkFloat, pkBoolean);
-  TCompletionKind = (ckNone, ckBoolean, ckCommand, ckFile, ckDirectory, ckDeck,
-    ckVersion, ckRevision, ckDeckVersion, ckLibraryVersion);
+  TParameterKind = (pkString, pkInteger, pkFloat, pkEnum);
+  TCompletionKind = (ckNone, ckCommand, ckFile, ckDirectory, ckDeck,
+    ckVersion, ckRevision, ckDeckVersion, ckLibraryVersion, ckEnum, ckLibraryFile);
 
   TNamedDefinition = class
   private
@@ -30,10 +30,21 @@ type
     FKind: TParameterKind;
     FCompletion: TCompletionKind;
     FDescription, FDefaultValue: string;
+    FValues: TObjectList;
     FRequired, FHasDefault, FPromptForDefault: Boolean;
+    function GetEnumValue(Index: Integer): TNamedDefinition;
+    function GetValue(Index: Integer): string;
+    function GetValueCount: Integer;
+    function GetValuesText: string;
     function GetKindName: string;
   public
+    destructor Destroy; override;
     procedure Validate(const Value: string);
+    function CanonicalValue(const Value: string): string;
+    property EnumValues[Index: Integer]: TNamedDefinition read GetEnumValue;
+    property ValueCount: Integer read GetValueCount;
+    property Values[Index: Integer]: string read GetValue;
+    property ValuesText: string read GetValuesText;
     property KindName: string read GetKindName;
     property Completion: TCompletionKind read FCompletion;
     property Description: string read FDescription;
@@ -68,28 +79,27 @@ type
     Command, Description: string;
   end;
 
-  TExclusiveOption = record
-    OptionIndex: Integer;
+  TExclusiveArgument = record
+    ArgumentIndex: Integer;
     Spelling: string;
   end;
 
   TCommandDefinition = class(TNamedDefinition)
   private
-    FArguments, FOptions: TParameterDefinitions;
+    FArguments: TParameterDefinitions;
     FSummary, FHelpText, FHelpFile: string;
     FHasHelpText, FHasHelpFile: Boolean;
     FExamples: array of TCommandExample;
-    FExclusiveGroups: array of array of TExclusiveOption;
+    FExclusiveGroups: array of array of TExclusiveArgument;
     function GetExampleCount: Integer;
     function GetExample(Index: Integer): TCommandExample;
     function GetExclusiveGroupCount: Integer;
     function GetExclusiveGroupSize(Group: Integer): Integer;
-    function GetExclusiveOption(Group, Member: Integer): TExclusiveOption;
+    function GetExclusiveArgument(Group, Member: Integer): TExclusiveArgument;
   public
     constructor Create;
     destructor Destroy; override;
     property Arguments: TParameterDefinitions read FArguments;
-    property Options: TParameterDefinitions read FOptions;
     property Summary: string read FSummary;
     property HasHelpText: Boolean read FHasHelpText;
     property HelpText: string read FHelpText;
@@ -99,7 +109,7 @@ type
     property Examples[Index: Integer]: TCommandExample read GetExample;
     property ExclusiveGroupCount: Integer read GetExclusiveGroupCount;
     property ExclusiveGroupSize[Group: Integer]: Integer read GetExclusiveGroupSize;
-    property ExclusiveOptions[Group, Member: Integer]: TExclusiveOption read GetExclusiveOption;
+    property ExclusiveArguments[Group, Member: Integer]: TExclusiveArgument read GetExclusiveArgument;
   end;
 
   TCommandDefinitions = class(TDefinitionList)
@@ -112,15 +122,15 @@ type
   TCommandCatalog = class
   private
     FCommands: TCommandDefinitions;
-    FLibraryOption: TParameterDefinition;
+    FLibraryArgument: TParameterDefinition;
     FLibraryDefault: string;
-    FBatchOption: TParameterDefinition;
+    FBatchArgument: TParameterDefinition;
   public
     constructor Create(const Path: string);
     destructor Destroy; override;
     property Commands: TCommandDefinitions read FCommands;
-    property LibraryOption: TParameterDefinition read FLibraryOption;
-    property BatchOption: TParameterDefinition read FBatchOption;
+    property LibraryArgument: TParameterDefinition read FLibraryArgument;
+    property BatchArgument: TParameterDefinition read FBatchArgument;
     property LibraryDefault: string read FLibraryDefault;
   end;
 
@@ -132,9 +142,9 @@ uses
   SysUtils, Math, FPJSON, ScuErrors, ScuFiles, ScuJSON;
 
 const
-  ParameterKinds: array[TParameterKind] of string = ('string', 'integer', 'float', 'boolean');
-  CompletionKinds: array[TCompletionKind] of string = ('', 'boolean', 'command', 'file',
-    'directory', 'deck', 'version', 'revision', 'deck_version', 'library_version');
+  ParameterKinds: array[TParameterKind] of string = ('string', 'integer', 'float', 'enum');
+  CompletionKinds: array[TCompletionKind] of string = ('', 'command', 'file',
+    'directory', 'deck', 'version', 'revision', 'deck_version', 'library_version', 'enum', 'library_file');
 
 function TryParseYesNo(const Value: string; out Parsed: Boolean): Boolean;
 begin
@@ -169,21 +179,83 @@ begin
   Result := ParameterKinds[FKind];
 end;
 
+function TParameterDefinition.GetValue(Index: Integer): string;
+begin
+  Result := EnumValues[Index].Name;
+end;
+
+function TParameterDefinition.GetValueCount: Integer;
+begin
+  Result := 0;
+  if Assigned(FValues) then
+    Result := FValues.Count;
+end;
+
+destructor TParameterDefinition.Destroy;
+begin
+  FValues.Free;
+  inherited Destroy;
+end;
+
+function TParameterDefinition.GetEnumValue(Index: Integer): TNamedDefinition;
+begin
+  Result := TNamedDefinition(FValues[Index]);
+end;
+
+function TParameterDefinition.CanonicalValue(const Value: string): string;
+var
+  Index: Integer;
+begin
+  if FKind = pkEnum then
+    for Index := 0 to ValueCount - 1 do
+      if EnumValues[Index].Matches(Value) then
+        Exit(EnumValues[Index].Name);
+  Result := Value;
+end;
+
+function TParameterDefinition.GetValuesText: string;
+var
+  Index, AliasIndex: Integer;
+  Entry: TNamedDefinition;
+begin
+  Result := '[';
+  for Index := 0 to ValueCount - 1 do
+  begin
+    if Index > 0 then
+      Result := Result + ', ';
+    Entry := EnumValues[Index];
+    Result := Result + Entry.Name;
+    if Entry.AliasCount > 0 then
+    begin
+      Result := Result + ' (';
+      for AliasIndex := 0 to Entry.AliasCount - 1 do
+      begin
+        if AliasIndex > 0 then
+          Result := Result + ', ';
+        Result := Result + Entry.Aliases[AliasIndex];
+      end;
+      Result := Result + ')';
+    end;
+  end;
+  Result := Result + ']';
+end;
+
 procedure TParameterDefinition.Validate(const Value: string);
 var
   Index: SizeInt;
   IntegerValue: Int64;
   FloatValue: Extended;
   Settings: TFormatSettings;
-  Valid, Parsed: Boolean;
+  Valid: Boolean;
 begin
   case FKind of
     pkString: Exit;
-    pkBoolean:
+    pkEnum:
       begin
-        if not TryParseYesNo(Value, Parsed) then
-          raise EScuError.CreateFmt('Expected yes/y or no/n for %s.', [Name]);
-        Exit;
+        for Index := 0 to ValueCount - 1 do
+          if EnumValues[Index].Matches(Value) then
+            Exit;
+        raise EScuError.CreateFmt('Expected one of %s for %s.', [ValuesText, Name]);
       end;
     pkInteger:
       begin
@@ -278,12 +350,10 @@ constructor TCommandDefinition.Create;
 begin
   inherited Create;
   FArguments := TParameterDefinitions.Create;
-  FOptions := TParameterDefinitions.Create;
 end;
 
 destructor TCommandDefinition.Destroy;
 begin
-  FOptions.Free;
   FArguments.Free;
   inherited Destroy;
 end;
@@ -308,7 +378,7 @@ begin
   Result := Length(FExclusiveGroups[Group]);
 end;
 
-function TCommandDefinition.GetExclusiveOption(Group, Member: Integer): TExclusiveOption;
+function TCommandDefinition.GetExclusiveArgument(Group, Member: Integer): TExclusiveArgument;
 begin
   Result := FExclusiveGroups[Group][Member];
 end;
@@ -378,31 +448,87 @@ begin
   raise EScuError.CreateFmt('Unknown completion kind "%s" for %s in commands.json.', [Kind, Name]);
 end;
 
+procedure LoadEnumValues(Entry: TJSONObject; Parameter: TParameterDefinition);
+var
+  Values: TJSONArray;
+  Index, AliasIndex, AliasIndexCheck: Integer;
+  Choice, Previous: TNamedDefinition;
+
+  procedure CheckValue(const Value: string);
+  var
+    Character: Char;
+    PreviousIndex: Integer;
+  begin
+    if (Value = '') or (Trim(Value) <> Value) then
+      raise EScuError.CreateFmt('Expected a nonempty enum value without surrounding whitespace for %s.', [Parameter.Name]);
+    for Character in Value do
+      if Character < #32 then
+        raise EScuError.CreateFmt('Enum values must be on one line for %s.', [Parameter.Name]);
+    for PreviousIndex := 0 to Parameter.ValueCount - 1 do
+    begin
+      Previous := Parameter.EnumValues[PreviousIndex];
+      if Previous.Matches(Value) then
+        raise EScuError.CreateFmt('Duplicate enum value or alias "%s" for %s.', [Value, Parameter.Name]);
+    end;
+  end;
+
+begin
+  Values := TJSONArray(OptionalField(Entry, 'values', jtArray));
+  if Parameter.FKind <> pkEnum then
+  begin
+    if Assigned(Values) then
+      raise EScuError.CreateFmt('Allowed values require enum type for %s.', [Parameter.Name]);
+    Exit;
+  end;
+  if not Assigned(Values) or (Values.Count = 0) then
+    raise EScuError.CreateFmt('Expected nonempty enum values for %s.', [Parameter.Name]);
+  Parameter.FValues := TObjectList.Create(True);
+  for Index := 0 to Values.Count - 1 do
+  begin
+    Choice := TNamedDefinition.Create;
+    try
+      case Values.Items[Index].JSONType of
+        jtString: Choice.FName := Values.Strings[Index];
+        jtObject: LoadNames(TJSONObject(Values.Items[Index]), Choice);
+        else raise EScuError.CreateFmt('Expected an enum string or definition object for %s.', [Parameter.Name]);
+      end;
+      CheckValue(Choice.Name);
+      for AliasIndex := 0 to Choice.AliasCount - 1 do
+      begin
+        CheckValue(Choice.Aliases[AliasIndex]);
+        if SameText(Choice.Name, Choice.Aliases[AliasIndex]) then
+          raise EScuError.CreateFmt('Duplicate enum value or alias "%s" for %s.', [Choice.Aliases[AliasIndex], Parameter.Name]);
+        for AliasIndexCheck := 0 to AliasIndex - 1 do
+          if SameText(Choice.Aliases[AliasIndexCheck], Choice.Aliases[AliasIndex]) then
+            raise EScuError.CreateFmt('Duplicate enum value or alias "%s" for %s.', [Choice.Aliases[AliasIndex], Parameter.Name]);
+      end;
+      Parameter.FValues.Add(Choice);
+      Choice := nil;
+    finally
+      Choice.Free;
+    end;
+  end;
+end;
+
 procedure LoadDefault(Parameter: TParameterDefinition; Value: TJSONData);
 begin
   if not Assigned(Value) then
     Exit;
   if Parameter.Required then
     raise EScuError.CreateFmt('Required argument %s cannot have a default value.', [Parameter.Name]);
+  if (Parameter.FKind = pkEnum) and (Value.JSONType <> jtString) then
+    raise EScuError.CreateFmt('Expected a string default for enum %s.', [Parameter.Name]);
   case Value.JSONType of
     jtString: Parameter.FDefaultValue := Value.AsString;
     jtNumber: Parameter.FDefaultValue := Value.AsJSON;
-    jtBoolean:
-      begin
-        if Parameter.FKind <> pkBoolean then
-          raise EScuError.CreateFmt('Boolean default requires boolean type for %s.', [Parameter.Name]);
-        if Value.AsBoolean then
-          Parameter.FDefaultValue := 'yes'
-        else
-          Parameter.FDefaultValue := 'no';
-      end;
-    else raise EScuError.CreateFmt('Expected a string, number, or Boolean default for %s.', [Parameter.Name]);
+    else raise EScuError.CreateFmt('Expected a string or number default for %s.', [Parameter.Name]);
   end;
   Parameter.Validate(Parameter.DefaultValue);
+  Parameter.FDefaultValue := Parameter.CanonicalValue(Parameter.DefaultValue);
   Parameter.FHasDefault := True;
 end;
 
-function LoadParameter(Entry, Defaults: TJSONObject; Positional: Boolean): TParameterDefinition;
+function LoadParameter(Entry, Defaults: TJSONObject): TParameterDefinition;
 var
   Rule, Value: TJSONData;
 begin
@@ -410,17 +536,21 @@ begin
   try
     LoadNames(Entry, Result);
     Result.FKind := ParseParameterKind(Field(Entry, 'type', jtString).AsString, Result.Name);
+    LoadEnumValues(Entry, Result);
     Result.FDescription := OptionalText(Entry, 'description');
     Value := OptionalField(Entry, 'completion', jtString);
     if Assigned(Value) then
       Result.FCompletion := ParseCompletionKind(Value.AsString, Result.Name)
-    else if Result.FKind = pkBoolean then
-      Result.FCompletion := ckBoolean;
+    else if Result.FKind = pkEnum then
+      Result.FCompletion := ckEnum;
+    if ((Result.FKind = pkEnum) and (Result.FCompletion <> ckEnum)) or
+      ((Result.FKind <> pkEnum) and (Result.FCompletion = ckEnum)) then
+      raise EScuError.CreateFmt('Enum completion requires enum type and values for %s.', [Result.Name]);
     Value := OptionalField(Entry, 'prompt_for_default', jtBoolean);
     Result.FPromptForDefault := not Assigned(Value) or Value.AsBoolean;
 
     Rule := Entry.Find('value');
-    Result.FRequired := Positional;
+    Result.FRequired := False;
     if Assigned(Rule) then
     begin
       Result.FRequired := (Rule.JSONType = jtString) and (Rule.AsString = 'scu$required');
@@ -437,12 +567,12 @@ begin
 end;
 
 procedure LoadParameters(Entries: TJSONArray; Defaults: TJSONObject;
-  List: TParameterDefinitions; Positional: Boolean);
+  List: TParameterDefinitions);
 var
   Index: Integer;
 begin
   for Index := 0 to Entries.Count - 1 do
-    List.Add(LoadParameter(ObjectAt(Entries, Index), Defaults, Positional));
+    List.Add(LoadParameter(ObjectAt(Entries, Index), Defaults));
 end;
 
 procedure LoadExclusiveGroups(Entry: TJSONObject; Definition: TCommandDefinition);
@@ -451,26 +581,26 @@ var
   GroupIndex, MemberIndex, Slot: Integer;
   Spelling: string;
 begin
-  Groups := TJSONArray(OptionalField(Entry, 'exclusive_options', jtArray));
+  Groups := TJSONArray(OptionalField(Entry, 'exclusive_arguments', jtArray));
   if not Assigned(Groups) then
     Exit;
   SetLength(Definition.FExclusiveGroups, Groups.Count);
   for GroupIndex := 0 to Groups.Count - 1 do
   begin
     if not (Groups.Items[GroupIndex] is TJSONArray) then
-      raise EScuError.Create('Expected an array of names in exclusive_options.');
+      raise EScuError.Create('Expected an array of names in exclusive_arguments.');
     Group := TJSONArray(Groups.Items[GroupIndex]);
     SetLength(Definition.FExclusiveGroups[GroupIndex], Group.Count);
     for MemberIndex := 0 to Group.Count - 1 do
     begin
       if Group.Items[MemberIndex].JSONType <> jtString then
-        raise EScuError.Create('Expected an option name in exclusive_options.');
+        raise EScuError.Create('Expected an argument name in exclusive_arguments.');
       Spelling := Group.Strings[MemberIndex];
-      Slot := Definition.Options.FindIndex(Spelling);
+      Slot := Definition.Arguments.FindIndex(Spelling);
       if Slot < 0 then
-        raise EScuError.CreateFmt('Unknown option "%s" in exclusive_options for %s.',
+        raise EScuError.CreateFmt('Unknown argument "%s" in exclusive_arguments for %s.',
           [Spelling, Definition.Name]);
-      Definition.FExclusiveGroups[GroupIndex][MemberIndex].OptionIndex := Slot;
+      Definition.FExclusiveGroups[GroupIndex][MemberIndex].ArgumentIndex := Slot;
       Definition.FExclusiveGroups[GroupIndex][MemberIndex].Spelling := Spelling;
     end;
   end;
@@ -505,10 +635,7 @@ begin
   begin
     Name := Defaults.Names[Index];
     Slot := Definition.Arguments.FindIndex(Name);
-    if (Slot >= 0) and (Definition.Arguments[Slot].Name = Name) then
-      Continue;
-    Slot := Definition.Options.FindIndex(Name);
-    if (Slot < 0) or (Definition.Options[Slot].Name <> Name) then
+    if (Slot < 0) or (Definition.Arguments[Slot].Name <> Name) then
       raise EScuError.CreateFmt('Unknown parameter "%s" in default_values for %s.', [Name, Definition.Name]);
   end;
 end;
@@ -516,10 +643,11 @@ end;
 function LoadCommand(Entry: TJSONObject): TCommandDefinition;
 var
   Defaults: TJSONObject;
-  Index: Integer;
 begin
   Result := TCommandDefinition.Create;
   try
+    if Assigned(Entry.Find('options')) then
+      raise EScuError.Create('Use a single arguments list; options is not supported in commands.json.');
     LoadNames(Entry, Result);
     Result.FSummary := OptionalText(Entry, 'summary');
     Result.FHelpText := OptionalText(Entry, 'help');
@@ -527,10 +655,7 @@ begin
     Result.FHasHelpText := Assigned(Entry.Find('help'));
     Result.FHasHelpFile := Assigned(Entry.Find('help_file'));
     Defaults := TJSONObject(OptionalField(Entry, 'default_values', jtObject));
-    LoadParameters(TJSONArray(Field(Entry, 'arguments', jtArray)), Defaults, Result.Arguments, True);
-    LoadParameters(TJSONArray(Field(Entry, 'options', jtArray)), Defaults, Result.Options, False);
-    for Index := 0 to Result.Options.Count - 1 do
-      CheckNames(Result.Arguments, Result.Options[Index]);
+    LoadParameters(TJSONArray(Field(Entry, 'arguments', jtArray)), Defaults, Result.Arguments);
     CheckDefaultNames(Defaults, Result);
     LoadExclusiveGroups(Entry, Result);
     LoadExamples(Entry, Result);
@@ -551,14 +676,14 @@ begin
   try
     Definitions := ParseObject(ReadBytes(Path, 1024 * 1024));
     try
-      if IntegerField(Definitions, 'format') <> 3 then
-        raise EScuError.Create('Unsupported commands.json format. Expected format 3.');
-      LibraryEntry := TJSONObject(Field(Definitions, 'library_option', jtObject));
-      FLibraryOption := LoadParameter(LibraryEntry, nil, False);
+      if IntegerField(Definitions, 'format') <> 4 then
+        raise EScuError.Create('Unsupported commands.json format. Expected format 4.');
+      LibraryEntry := TJSONObject(Field(Definitions, 'library_argument', jtObject));
+      FLibraryArgument := LoadParameter(LibraryEntry, nil);
       FLibraryDefault := Field(LibraryEntry, 'default', jtString).AsString;
-      FLibraryOption.Validate(FLibraryDefault);
-      if Assigned(Definitions.Find('batch_option')) then
-        FBatchOption := LoadParameter(TJSONObject(Field(Definitions, 'batch_option', jtObject)), nil, False);
+      FLibraryArgument.Validate(FLibraryDefault);
+      if Assigned(Definitions.Find('batch_argument')) then
+        FBatchArgument := LoadParameter(TJSONObject(Field(Definitions, 'batch_argument', jtObject)), nil);
       Entries := TJSONArray(Field(Definitions, 'commands', jtArray));
       for Index := 0 to Entries.Count - 1 do
         FCommands.Add(LoadCommand(ObjectAt(Entries, Index)));
@@ -573,8 +698,8 @@ end;
 
 destructor TCommandCatalog.Destroy;
 begin
-  FBatchOption.Free;
-  FLibraryOption.Free;
+  FBatchArgument.Free;
+  FLibraryArgument.Free;
   FCommands.Free;
   inherited Destroy;
 end;

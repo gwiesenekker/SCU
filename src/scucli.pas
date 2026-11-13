@@ -18,7 +18,7 @@ type
     FExecutor: TScuExecutor;
     FContinueOnError: Boolean;
     FInitialFile: string;
-    procedure SelectBatchOptions(Tokens: TStrings; Index: Integer);
+    procedure SelectBatchArguments(Tokens: TStrings; Index: Integer);
     procedure ValidateCatalog(const CatalogPath: string);
     function Definition(const Name: string): TCommandDefinition;
     function SelectLibrary(Tokens: TStrings): Integer;
@@ -29,10 +29,8 @@ type
     procedure ExecuteCommand(Command: TScuCommand);
     function ParseSessionLine(const Line: string; Tokens: TStrings;
       Files: TCommandFiles; BatchLine: Boolean): TScuCommand;
-    procedure SaveStoppedBatch;
     procedure RunInteractive(Tokens: TStrings);
     procedure RunInteractiveSession(Tokens: TStrings);
-    procedure RecoverPendingLibrary;
   public
     constructor Create;
     destructor Destroy; override;
@@ -140,7 +138,7 @@ begin
     if Copy(Name, 1, 2) = '--' then
       Delete(Name, 1, 2);
     if ((EqualsAt > 0) or (Copy(First, 1, 2) = '--')) and
-      FCatalog.LibraryOption.Matches(Name) then
+      FCatalog.LibraryArgument.Matches(Name) then
     begin
       Result := 1;
       if EqualsAt > 0 then
@@ -167,17 +165,17 @@ begin
     end;
   end;
   if Result > 0 then
-    FCatalog.LibraryOption.Validate(FLibraryPath);
+    FCatalog.LibraryArgument.Validate(FLibraryPath);
   if FLibraryPath = '' then
     raise EScuError.Create('Expected a library name.');
 end;
 
-procedure TScuCLI.SelectBatchOptions(Tokens: TStrings; Index: Integer);
+procedure TScuCLI.SelectBatchArguments(Tokens: TStrings; Index: Integer);
 var
   Name, Value: string;
   EqualsAt: SizeInt;
 begin
-  while Assigned(FCatalog.BatchOption) and (Index < Tokens.Count) do
+  while Assigned(FCatalog.BatchArgument) and (Index < Tokens.Count) do
   begin
     Name := Tokens[Index];
     EqualsAt := Pos('=', Name);
@@ -185,19 +183,20 @@ begin
       Name := Copy(Name, 1, EqualsAt - 1);
     if Copy(Name, 1, 2) = '--' then
       Delete(Name, 1, 2);
-    if not FCatalog.BatchOption.Matches(Name) then
+    if not FCatalog.BatchArgument.Matches(Name) then
       Exit;
     if EqualsAt > 0 then
       Value := Copy(Tokens[Index], EqualsAt + 1, MaxInt)
     else
     begin
       if Index + 1 >= Tokens.Count then
-        raise EScuError.Create('Expected yes/y or no/n for continue_on_error.');
+        raise EScuError.CreateFmt('Expected a value for %s: %s.',
+          [FCatalog.BatchArgument.Name, FCatalog.BatchArgument.ValuesText]);
       Value := Tokens[Index + 1];
       Tokens.Delete(Index + 1);
     end;
-    FCatalog.BatchOption.Validate(Value);
-    TryParseYesNo(Value, FContinueOnError);
+    FCatalog.BatchArgument.Validate(Value);
+    TryParseYesNo(FCatalog.BatchArgument.CanonicalValue(Value), FContinueOnError);
     Tokens.Delete(Index);
   end;
 end;
@@ -209,7 +208,6 @@ type
     Parameter: TParameterDefinition;
     Context: TCompletionContext;
     LibraryPath: string;
-    PendingLibrary: TDeckLibrary;
     LibraryCache: TCompletionLibrary;
     procedure Complete(const Before, Prefix, After: string; Candidates: TStrings;
       out AppendCharacter: Char);
@@ -222,7 +220,7 @@ begin
   if After <> '' then
     Exit;
   CompleteValue(Commands, Parameter, Context, LibraryPath, Before + Prefix, Prefix,
-    #0, True, Candidates, AppendCharacter, LibraryCache, PendingLibrary);
+    #0, True, Candidates, AppendCharacter, LibraryCache, nil);
 end;
 
 function TScuCLI.ParseCommand(Tokens: TStrings; CommandIndex: Integer; Spec: TCommandDefinition;
@@ -232,7 +230,7 @@ var
   Index: Integer;
   Value: string;
 
-  function CompleteParameter(Entry: TParameterDefinition; Positional: Boolean; out Argument: string): Boolean;
+  function CompleteParameter(Entry: TParameterDefinition; out Argument: string): Boolean;
   var
     ParameterName, Description, Prompt, DefaultValue: string;
     Columns: SizeInt;
@@ -255,7 +253,7 @@ var
     Columns := TerminalColumns(TextRec(StdErr).Handle);
     if Columns > 0 then
       UseTerminalLocale;
-    Prompt := FormatTerminalLines(ParameterSyntax(Entry, Positional), Columns) + LineEnding;
+    Prompt := FormatTerminalLines(ParameterSyntax(Entry), Columns) + LineEnding;
     Description := Entry.Description;
     if Description <> '' then
       Prompt := Prompt + FormatTerminalLines(Description, Columns) + LineEnding;
@@ -268,7 +266,6 @@ var
       Completer.Parameter := Entry;
       Completer.Context := CompletionContext(Binder);
       Completer.LibraryPath := FLibraryPath;
-      Completer.PendingLibrary := FExecutor.PendingLibrary;
       Completer.LibraryCache := FCompletionLibrary;
       repeat
         if not ReadCommandLine(Prompt, Argument, @Completer.Complete) then
@@ -303,7 +300,7 @@ begin
     Binder.FinishTokens;
     for Index := 0 to Binder.Count - 1 do
       if not Binder.Supplied[Index] and
-        CompleteParameter(Binder.ParameterAt(Index), Index < Binder.Arguments.Count, Value) then
+        CompleteParameter(Binder.ParameterAt(Index), Value) then
         Binder.Bind(Index, Value, False);
     Result := Binder.CreateCommand;
   finally
@@ -315,7 +312,7 @@ procedure TScuCLI.CompleteInteractiveLine(const Before, Prefix, After: string; C
   out AppendCharacter: Char);
 begin
   CompleteLine(FCatalog.Commands, FLibraryPath, Before, Prefix, After, Candidates, AppendCharacter,
-    FCompletionLibrary, FExecutor.PendingLibrary);
+    FCompletionLibrary, nil);
 end;
 
 procedure TScuCLI.ExecuteCommand(Command: TScuCommand);
@@ -353,20 +350,6 @@ begin
   end;
 end;
 
-procedure TScuCLI.RecoverPendingLibrary;
-var
-  Path: string;
-begin
-  try
-    Path := FExecutor.RecoverPendingLibrary;
-    if Path <> '' then
-      WriteDiagnostic('scu: Saved pending changes in ' + Path);
-  except
-    on E: Exception do
-      WriteDiagnostic('scu: Could not recover pending changes: ' + E.Message);
-  end;
-end;
-
 function TScuCLI.ParseSessionLine(const Line: string; Tokens: TStrings;
   Files: TCommandFiles; BatchLine: Boolean): TScuCommand;
 var
@@ -397,28 +380,6 @@ begin
   end;
 end;
 
-procedure TScuCLI.SaveStoppedBatch;
-var
-  QuitCommand: TScuCommand;
-begin
-  if not Assigned(FExecutor.PendingLibrary) then
-    Exit;
-  QuitCommand := TScuCommand.CreateSessionExit;
-  try
-    try
-      ExecuteCommand(QuitCommand);
-    except
-      on E: Exception do
-      begin
-        WriteDiagnostic('scu: Could not save batch changes: ' + E.Message);
-        RecoverPendingLibrary;
-      end;
-    end;
-  finally
-    QuitCommand.Free;
-  end;
-end;
-
 procedure TScuCLI.RunInteractiveSession(Tokens: TStrings);
 var
   Line, Prompt, Location: string;
@@ -433,7 +394,6 @@ var
     if Prompt <> '' then
       Exit;
     EndOfInput := True;
-    SaveStoppedBatch;
   end;
 
 begin
@@ -495,7 +455,7 @@ begin
             Command := TScuCommand.CreateSessionExit;
           end;
         end;
-        if Command.SessionExit and not Assigned(FExecutor.PendingLibrary) then
+        if Command.SessionExit then
           Exit;
         ExecuteCommand(Command);
         if Command.SessionExit then
@@ -515,8 +475,6 @@ begin
             WriteDiagnostic('scu: ' + Location + ': ' + E.Message)
           else
             WriteDiagnostic('scu: ' + E.Message);
-          if EndOfInput and SessionEnding then
-            RecoverPendingLibrary;
           ExitCode := 1;
           StopBatch;
         end;
@@ -540,11 +498,11 @@ begin
   try
     for Index := 1 to ParamCount do
       Tokens.Add(ParamStr(Index));
-    if Assigned(FCatalog.BatchOption) and FCatalog.BatchOption.HasDefault then
-      TryParseYesNo(FCatalog.BatchOption.DefaultValue, FContinueOnError);
-    SelectBatchOptions(Tokens, 0);
+    if Assigned(FCatalog.BatchArgument) and FCatalog.BatchArgument.HasDefault then
+      TryParseYesNo(FCatalog.BatchArgument.DefaultValue, FContinueOnError);
+    SelectBatchArguments(Tokens, 0);
     CommandIndex := SelectLibrary(Tokens);
-    SelectBatchOptions(Tokens, CommandIndex);
+    SelectBatchArguments(Tokens, CommandIndex);
     if (CommandIndex < Tokens.Count) and (Copy(Tokens[CommandIndex], 1, 1) = '!') then
     begin
       FInitialFile := Copy(Tokens[CommandIndex], 2, MaxInt);

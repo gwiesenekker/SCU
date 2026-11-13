@@ -21,7 +21,6 @@ type
     LibraryFile: TDeckLibrary;
     Database: TSQLiteLibrary;
     StagedSave: TLibrarySave;
-    LibraryChanged: Boolean;
     Output: TScuOutput;
     Snapshots: TAuditSnapshots;
     Build: TBuildRequest;
@@ -40,52 +39,37 @@ type
     ResolveOutputDirectory: TResolveOutputDirectory;
     Prepare: TPrepareCommand;
     ReportCommitted: TReportCommand;
-    SavesLibrary, ReuseBuildLock: Boolean;
+    ReuseBuildLock: Boolean;
   end;
 
-function PrefixOption(Command: TScuCommand): string;
-function ResolveSnapshot(const Context: TCommandContext; const Deck: string = '';
-  AllowDeckVersion: Boolean = False): TLibrarySnapshot;
+function BooleanArgument(Command: TScuCommand; const Name: string; const Default: string = 'yes'): Boolean;
+function PrefixArgument(Command: TScuCommand): string;
+function ResolveSnapshot(const Context: TCommandContext): TLibrarySnapshot;
 function ResolveLastModifiedDeck(LibraryFile: TDeckLibrary): string;
 function ResolveDeck(var Context: TCommandContext): string;
-procedure ReportSnapshot(const Context: TCommandContext);
+procedure ReportSnapshot(const Context: TCommandContext; const DeckVersion: string = ''; const Deck: string = '');
 
 implementation
 
 uses
-  SysUtils, ScuErrors, ScuVersions;
+  SysUtils, ScuCommands, ScuErrors, ScuVersions;
 
-function PrefixOption(Command: TScuCommand): string;
+function BooleanArgument(Command: TScuCommand; const Name: string; const Default: string): Boolean;
 begin
-  Result := Command.Option('comment-prefix');
-  if Command.HasOption('comment-prefix') then
+  if not TryParseYesNo(Command.Argument(Name, Default), Result) then
+    raise EScuError.CreateFmt('Expected yes/y or no/n for %s.', [Name]);
+end;
+
+function PrefixArgument(Command: TScuCommand): string;
+begin
+  Result := Command.Argument('comment-prefix');
+  if Command.HasArgument('comment-prefix') then
     ValidateCommentPrefix(Result);
 end;
 
-function ResolveSnapshot(const Context: TCommandContext; const Deck: string;
-  AllowDeckVersion: Boolean): TLibrarySnapshot;
-var
-  Version: string;
-  Base, Revision: Integer;
+function ResolveSnapshot(const Context: TCommandContext): TLibrarySnapshot;
 begin
-  if Context.Command.HasOption('version') then
-  begin
-    if Context.Command.HasOption('revision') then
-      raise EScuError.Create('Choose either --version or --revision.');
-    Version := Context.Command.Option('version');
-    if AllowDeckVersion and (Pos('-', Version) > 0) then
-      Exit(Context.LibraryFile.ParseDeckSnapshot(DeckName(Deck), Version));
-    Context.LibraryFile.VersionBounds(Version, Base, Revision);
-  end
-  else if Context.Command.HasOption('revision') then
-  begin
-    Revision := Context.LibraryFile.ParseRevision(Context.Command.Option('revision'));
-    Version := Context.LibraryFile.VersionAt(Revision);
-  end
-  else
-    Exit(Context.LibraryFile.CurrentSnapshot);
-  Result.Version := Version;
-  Result.LibraryRevision := Revision;
+  Result := Context.LibraryFile.ParseLibrarySnapshot(Context.Command.Argument('version', CurrentVersionSelector));
 end;
 
 function ResolveLastModifiedDeck(LibraryFile: TDeckLibrary): string;
@@ -105,10 +89,13 @@ begin
   end;
 end;
 
-procedure ReportSnapshot(const Context: TCommandContext);
+procedure ReportSnapshot(const Context: TCommandContext; const DeckVersion: string; const Deck: string);
 begin
-  Context.Output.Report(Format('Using version %s, library revision %d.',
-    [Context.Snapshots.Selected.Version, Context.Snapshots.Selected.LibraryRevision]));
+  if DeckVersion <> '' then
+    Context.Output.Report(Format('Using library version %s, deck "%s", deck_version %s.',
+      [Context.Snapshots.Selected.Version, Deck, DeckVersion]))
+  else
+    Context.Output.Report(Format('Using library version %s.', [Context.Snapshots.Selected.Version]));
 end;
 
 end.

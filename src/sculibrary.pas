@@ -12,6 +12,7 @@ const
   PreviousDeckVersionSelector = 'scu$previous_deck_version';
   LastModifiedDeckSelector = 'scu$last_modified_deck';
   CurrentVersionSelector = 'scu$current_version';
+  LatestVersionSelector = 'scu$latest_version';
   PreviousVersionSelector = 'scu$previous_version';
 
 type
@@ -22,14 +23,37 @@ type
     LibraryRevision: Integer;
   end;
 
+  TDeckSelection = record
+    Snapshot: TLibrarySnapshot;
+    RootRevision: Integer;
+  end;
+
   TDeckSource = record
     Bytes: RawByteString;
     LibraryRevision: Integer;
     ModifiedUTC: string;
     DeckVersion: string;
     CommentPrefix: string;
+    SourcePath: string;
     Deleted: Boolean;
   end;
+
+  TDeckListEntry = record
+    Name, DeckVersion: string;
+  end;
+  TDeckListEntries = array of TDeckListEntry;
+
+  TVersionDeckEntry = record
+    Name, DeckVersion, ModifiedUTC: string;
+    Deleted: Boolean;
+  end;
+  TVersionDeckEntries = array of TVersionDeckEntry;
+
+  TDeckHistoryEntry = record
+    DeckVersion, ModifiedUTC: string;
+    Deleted: Boolean;
+  end;
+  TDeckHistoryEntries = array of TDeckHistoryEntry;
 
   TLibrarySave = ScuLibraryStore.TLibrarySave;
   TLibrarySettingsChange = ScuLibraryModel.TLibrarySettingsChange;
@@ -49,6 +73,8 @@ type
     function RevisionDeletedAt(Sequence: Integer): Boolean;
     function GetEditorCount: Integer;
     function GetEditorArgument(Index: Integer): string;
+    function GetFilePatternCount: Integer;
+    function GetFilePattern(Index: Integer): string;
     function GetBuildCommand: string;
     function GetVersionCount: Integer;
     function GetVersionEntry(Index: Integer): TVersionEntry;
@@ -64,22 +90,27 @@ type
     procedure AcceptSave(const Staged: TLibrarySave);
     function ExportRecoveryJSON: RawByteString;
     function CreateSavedContents(const Staged: TLibrarySave): TJSONObject;
+    // The caller owns this configuration snapshot, without version history.
+    function CreateHeaderConfiguration: TJSONObject;
     function HeaderDigest: string;
     function RevisionDigest(Sequence: Integer; Database: TSQLiteLibrary): string;
     function Store(Database: TSQLiteLibrary; const Deck: string; const Source: RawByteString;
-      CreateOnly: Boolean = False; const Prefix: string = ''): Integer;
+      CreateOnly: Boolean = False; const Prefix: string = ''; const SourcePath: string = ''): Integer;
+    function DeckSourcePath(Database: TSQLiteLibrary; const Deck: string): string;
     function Delete(Database: TSQLiteLibrary; const Deck: string): Integer;
     function Extract(Database: TSQLiteLibrary; const Deck: string; LibraryRevision: Integer;
       const SelectedVersion: string = ''; AllowDeleted: Boolean = False): TDeckSource;
     procedure RequireOpenVersion;
-    procedure List(LibraryRevision: Integer; Dest: TStrings);
-    procedure ListDeckHistory(Database: TSQLiteLibrary; const Deck: string; Dest: TStrings);
+    function DeckList(LibraryRevision: Integer): TDeckListEntries;
+    function VersionDecks(Database: TSQLiteLibrary; const Version: string): TVersionDeckEntries;
+    function DeckHistory(Database: TSQLiteLibrary; const Deck: string; Limit: Int64 = 0): TDeckHistoryEntries;
     function ListDeckRevisions(const Deck: string; Dest: TStrings; Formats: TDeckRevisionFormats): Integer;
     procedure ChangedDecks(Base, Last: Integer; Dest: TStrings);
     procedure VersionBounds(const Name: string; out Base, Last: Integer);
     procedure ListVersions(Dest: TStrings);
     procedure ListVersionNames(Dest: TStrings; const Deck: string = '');
-    function ParseRevision(const Value: string): Integer;
+    function SelectDeck(const Deck, Version, DeckRevision: string): TDeckSelection;
+    procedure ListDeckRevisionNames(const Deck, Version: string; Dest: TStrings);
     function ParseDeckSnapshot(const Name, Selector: string): TLibrarySnapshot;
     function ParseLibrarySnapshot(const Selector: string): TLibrarySnapshot;
     function TryDeckSnapshot(const Deck: string; LibraryRevision: Integer;
@@ -88,16 +119,19 @@ type
     function TryPreviousSnapshot(out Snapshot: TLibrarySnapshot): Boolean;
     function PreviousDeckSnapshot(const Name: string; AtRevision: Integer): TLibrarySnapshot;
     procedure LockVersion(const Description: string);
-    procedure StartVersion(const Name: string);
+    procedure CreateVersion(const Name: string);
     function CurrentVersion: string;
     function VersionAt(Revision: Integer): string;
     function DefaultCommentPrefix(const Version: string): string;
     procedure Configure(const Settings: TLibrarySettingsChange);
+    procedure SetFilePatterns(Patterns: TStrings);
     property VersionCount: Integer read GetVersionCount;
     property VersionHistory[Index: Integer]: TVersionEntry read GetVersionEntry;
     property HeaderJSON: string read GetHeaderJSON;
     property EditorCount: Integer read GetEditorCount;
     property EditorArguments[Index: Integer]: string read GetEditorArgument;
+    property FilePatternCount: Integer read GetFilePatternCount;
+    property FilePatterns[Index: Integer]: string read GetFilePattern;
     property BuildCommand: string read GetBuildCommand;
     property LastModifiedDeck: string read GetLastModifiedDeck;
     property DeckVersion[LibraryRevision: Integer]: string read DeckVersionAt;
@@ -113,7 +147,7 @@ function DeckName(const Name: string): string;
 implementation
 
 uses
-  SysUtils, ScuCodec, ScuErrors, ScuSignals, ScuVersionNumbers;
+  SysUtils, FGL, ScuCodec, ScuErrors, ScuSignals, ScuVersionNumbers;
 
 function DeckName(const Name: string): string;
 begin
@@ -190,6 +224,11 @@ begin
   Result := FStore.CreateSavedContents(Staged);
 end;
 
+function TDeckLibrary.CreateHeaderConfiguration: TJSONObject;
+begin
+  Result := FStore.Header.CloneConfiguration;
+end;
+
 function TDeckLibrary.HeaderDigest: string;
 begin
   Result := FStore.Header.Digest;
@@ -212,11 +251,11 @@ begin
 end;
 
 function TDeckLibrary.Store(Database: TSQLiteLibrary; const Deck: string; const Source: RawByteString;
-  CreateOnly: Boolean; const Prefix: string): Integer;
+  CreateOnly: Boolean; const Prefix: string; const SourcePath: string): Integer;
 var
   Payload: TJSONObject;
   Previous: TLibraryRevision;
-  Name, CommentPrefix, Digest: string;
+  Name, CommentPrefix, Digest, StoredPath: string;
   PreviousRevision, Number: Integer;
 begin
   RequireOpenVersion;
@@ -227,6 +266,11 @@ begin
   Previous := nil;
   if PreviousRevision > 0 then
     Previous := FStore.PayloadAt(PreviousRevision - 1, Database);
+  StoredPath := SourcePath;
+  if (StoredPath = '') and Assigned(Previous) then
+    StoredPath := Previous.SourcePath;
+  if StoredPath = '' then
+    StoredPath := Name;
   CommentPrefix := Prefix;
   if (CommentPrefix = '') and Assigned(Previous) then
     CommentPrefix := Previous.CommentPrefix;
@@ -235,13 +279,24 @@ begin
   ValidateCommentPrefix(CommentPrefix);
   Digest := DeckSHA1(Source);
   if Assigned(Previous) and not Previous.Deleted and
-    (VersionAt(PreviousRevision) = CurrentVersion) and
+    (StoredPath = Previous.SourcePath) and
     (CommentPrefix = Previous.CommentPrefix) and (Digest = Previous.SHA1) and
     (Previous.Decode = Source) then
     Exit(0);
   Number := NextDeckNumber(Name, PreviousRevision);
   Payload := NewRevisionPayload(Name, CommentPrefix, Digest, Number, Source);
+  Payload.Add('source_path', StoredPath);
   Result := AppendDeckRevision(Name, Payload);
+end;
+
+function TDeckLibrary.DeckSourcePath(Database: TSQLiteLibrary; const Deck: string): string;
+var
+  Sequence: Integer;
+begin
+  Sequence := FindDeckRevision(DeckName(Deck), Revision);
+  if Sequence = 0 then
+    Exit(DeckName(Deck));
+  Result := FStore.PayloadAt(Sequence - 1, Database).SourcePath;
 end;
 
 function TDeckLibrary.NextDeckNumber(const Name: string; PreviousRevision: Integer): Integer;
@@ -272,6 +327,7 @@ begin
   if Prefix = '' then
     Prefix := DefaultCommentPrefix(CurrentVersion);
   Payload := NewDeletionPayload(Name, Prefix, NextDeckNumber(Name, PreviousRevision));
+  Payload.Add('source_path', FStore.PayloadAt(PreviousRevision - 1, Database).SourcePath);
   Result := AppendDeckRevision(Name, Payload);
 end;
 
@@ -317,17 +373,19 @@ begin
   Result.Deleted := Entry.Deleted;
   Result.LibraryRevision := StoredRevision;
   Result.CommentPrefix := Entry.CommentPrefix;
+  Result.SourcePath := Entry.SourcePath;
   Result.ModifiedUTC := Entry.ModifiedUTC;
   Result.DeckVersion := DeckVersionAt(StoredRevision);
   Result.Bytes := Entry.Decode;
 end;
 
-procedure TDeckLibrary.List(LibraryRevision: Integer; Dest: TStrings);
+function TDeckLibrary.DeckList(LibraryRevision: Integer): TDeckListEntries;
 var
   Seen: TStringList;
-  Index: Integer;
+  Index, Count, StoredIndex: Integer;
   Name: string;
 begin
+  Result := nil;
   Seen := TStringList.Create;
   try
     Seen.Sorted := True;
@@ -337,36 +395,93 @@ begin
       Name := FStore[Index].Name;
       if Seen.IndexOf(Name) >= 0 then
         Continue;
-      Seen.Add(Name);
-      if not FStore[Index].Deleted then
-        Dest.Add(Name + #9 + DeckVersionAt(Index + 1));
+      // Objects holds revision indices only; Seen does not own objects.
+      Seen.AddObject(Name, TObject(PtrInt(Index)));
     end;
+    SetLength(Result, Seen.Count);
+    Count := 0;
+    for Index := 0 to Seen.Count - 1 do
+    begin
+      StoredIndex := PtrInt(Seen.Objects[Index]);
+      if FStore[StoredIndex].Deleted then
+        Continue;
+      Result[Count].Name := Seen[Index];
+      Result[Count].DeckVersion := DeckVersionAt(StoredIndex + 1);
+      Inc(Count);
+    end;
+    SetLength(Result, Count);
   finally
     Seen.Free;
   end;
 end;
 
-procedure TDeckLibrary.ListDeckHistory(Database: TSQLiteLibrary; const Deck: string; Dest: TStrings);
+function TDeckLibrary.VersionDecks(Database: TSQLiteLibrary; const Version: string): TVersionDeckEntries;
+type
+  TDeckIndex = specialize TFPGMap<string, Integer>;
+var
+  Decks: TDeckIndex;
+  Base, Last, Index, StoredIndex: Integer;
+  Entry: TLibraryRevision;
+begin
+  Result := nil;
+  VersionBounds(Version, Base, Last);
+  Decks := TDeckIndex.Create;
+  try
+    Decks.Sorted := True;
+    for Index := Last - 1 downto Base do
+    begin
+      CheckSessionInterrupt;
+      Entry := FStore[Index];
+      if Decks.IndexOf(Entry.Name) < 0 then
+        Decks.Add(Entry.Name, Index);
+    end;
+    SetLength(Result, Decks.Count);
+    for Index := 0 to Decks.Count - 1 do
+    begin
+      CheckSessionInterrupt;
+      StoredIndex := Decks.Data[Index];
+      Entry := FStore[StoredIndex];
+      Result[Index].Name := Entry.Name;
+      Result[Index].DeckVersion := DeckVersionAt(StoredIndex + 1);
+      Result[Index].ModifiedUTC := FStore.PayloadAt(StoredIndex, Database).ModifiedUTC;
+      Result[Index].Deleted := Entry.Deleted;
+    end;
+  finally
+    Decks.Free;
+  end;
+end;
+
+function TDeckLibrary.DeckHistory(Database: TSQLiteLibrary; const Deck: string; Limit: Int64): TDeckHistoryEntries;
 var
   Name: string;
-  Index, InitialCount: Integer;
+  Index, Count: Integer;
   Entry: TLibraryRevision;
 begin
   Name := DeckName(Deck);
-  InitialCount := Dest.Count;
+  Count := 0;
+  for Index := 0 to Revision - 1 do
+    if FStore[Index].Name = Name then
+      Inc(Count);
+  if Count = 0 then
+    raise EScuError.CreateFmt('Deck "%s" does not exist.', [Name]);
+  if (Limit > 0) and (Limit < Count) then
+    Count := Integer(Limit);
+  Result := nil;
+  SetLength(Result, Count);
+  Count := 0;
   for Index := Revision - 1 downto 0 do
   begin
     Entry := FStore[Index];
     if Entry.Name = Name then
     begin
-      Dest.Add(Format('%d'#9'%s'#9'%s'#9'%s', [Index + 1, VersionAt(Index + 1),
-        FStore.PayloadAt(Index, Database).ModifiedUTC, DeckVersionAt(Index + 1)]));
-      if Entry.Deleted then
-        Dest[Dest.Count - 1] := Dest[Dest.Count - 1] + #9 + 'deleted';
+      Result[Count].DeckVersion := DeckVersionAt(Index + 1);
+      Result[Count].ModifiedUTC := FStore.PayloadAt(Index, Database).ModifiedUTC;
+      Result[Count].Deleted := Entry.Deleted;
+      Inc(Count);
+      if Count = Length(Result) then
+        Break;
     end;
   end;
-  if Dest.Count = InitialCount then
-    raise EScuError.CreateFmt('Deck "%s" does not exist.', [Name]);
 end;
 
 procedure TDeckLibrary.ChangedDecks(Base, Last: Integer; Dest: TStrings);
@@ -425,11 +540,61 @@ begin
   end;
 end;
 
-function TDeckLibrary.ParseRevision(const Value: string): Integer;
+function TDeckLibrary.SelectDeck(const Deck, Version, DeckRevision: string): TDeckSelection;
+var
+  Name, SelectedVersion: string;
+  Stored: TLibrarySnapshot;
+  Number: Int64;
 begin
-  if not TryStrToInt(Value, Result) or
-    (Result < 0) or (Result > Revision) then
-    raise EScuError.CreateFmt('Expected a revision between 0 and %d.', [Revision]);
+  Name := DeckName(Deck);
+  SelectedVersion := Version;
+  if SelectedVersion = '' then
+    SelectedVersion := CurrentVersionSelector;
+  if Pos('-', SelectedVersion) > 0 then
+  begin
+    if DeckRevision <> '' then
+      raise EScuError.Create('Use a library version with revision, or a complete deck version without revision.');
+    Stored := ParseDeckSnapshot(Name, SelectedVersion);
+    Result.Snapshot := ParseLibrarySnapshot(Stored.Version);
+    Result.RootRevision := Stored.LibraryRevision;
+  end
+  else
+  begin
+    Result.Snapshot := ParseLibrarySnapshot(SelectedVersion);
+    if DeckRevision = '' then
+      Result.RootRevision := FindDeckRevision(Name, Result.Snapshot.LibraryRevision)
+    else
+    begin
+      if not TryParseFixed(DeckRevision, 3, Number) or (Number > MaxDeckRevision) then
+        raise EScuError.Create('Expected a deck revision from 0.000 to 0.999.');
+      Stored := ParseDeckSnapshot(Name, Result.Snapshot.Version + '-' + FormatFixed(Number, 3));
+      Result.RootRevision := Stored.LibraryRevision;
+    end;
+  end;
+  if ((DeckRevision <> '') or (Pos('-', SelectedVersion) > 0)) and
+    RevisionDeletedAt(Result.RootRevision) then
+    raise EScuError.CreateFmt('Deck "%s" is deleted at deck version %s.',
+      [Name, DeckVersionAt(Result.RootRevision)]);
+end;
+
+procedure TDeckLibrary.ListDeckRevisionNames(const Deck, Version: string; Dest: TStrings);
+var
+  Name, SelectedVersion: string;
+  Snapshot: TLibrarySnapshot;
+  Base, Last, Index, Separator: Integer;
+begin
+  Name := DeckName(Deck);
+  SelectedVersion := Version;
+  if SelectedVersion = '' then
+    SelectedVersion := CurrentVersionSelector;
+  Separator := Pos('-', SelectedVersion);
+  if Separator > 0 then
+    SelectedVersion := Copy(SelectedVersion, 1, Separator - 1);
+  Snapshot := ParseLibrarySnapshot(SelectedVersion);
+  VersionBounds(Snapshot.Version, Base, Last);
+  for Index := Base to Last - 1 do
+    if (FStore[Index].Name = Name) and not FStore[Index].Deleted then
+      Dest.Add(DeckRevisionAt(Index + 1));
 end;
 
 function TDeckLibrary.CurrentSnapshot: TLibrarySnapshot;
@@ -487,7 +652,7 @@ begin
   begin
     Result.LibraryRevision := FindDeckRevision(Name, Revision);
     if Result.LibraryRevision = 0 then
-      raise EScuError.CreateFmt('Deck "%s" does not exist at revision %d.', [Name, Revision]);
+      raise EScuError.CreateFmt('Deck "%s" does not exist in version %s.', [Name, CurrentVersion]);
     Result.Version := VersionAt(Result.LibraryRevision);
     Exit;
   end;
@@ -518,7 +683,7 @@ var
 begin
   StoredRevision := FindDeckRevision(Name, AtRevision);
   if StoredRevision = 0 then
-    raise EScuError.CreateFmt('Deck "%s" does not exist at revision %d.', [Name, AtRevision]);
+    raise EScuError.CreateFmt('Deck "%s" does not exist in version %s.', [Name, VersionAt(AtRevision)]);
   Result.LibraryRevision := FindDeckRevision(Name, StoredRevision - 1);
   if Result.LibraryRevision = 0 then
     raise EScuError.CreateFmt('Deck "%s" has no earlier revision to compare with. Store an edit before comparing.', [Name]);
@@ -531,9 +696,9 @@ begin
   MarkModified;
 end;
 
-procedure TDeckLibrary.StartVersion(const Name: string);
+procedure TDeckLibrary.CreateVersion(const Name: string);
 begin
-  FStore.Header.StartVersion(Name, Revision);
+  FStore.Header.CreateVersion(Name, Revision);
   MarkModified;
 end;
 
@@ -585,6 +750,22 @@ end;
 function TDeckLibrary.GetBuildCommand: string;
 begin
   Result := FStore.Header.BuildCommand;
+end;
+
+function TDeckLibrary.GetFilePatternCount: Integer;
+begin
+  Result := FStore.Header.FilePatternCount;
+end;
+
+function TDeckLibrary.GetFilePattern(Index: Integer): string;
+begin
+  Result := FStore.Header.FilePatterns[Index];
+end;
+
+procedure TDeckLibrary.SetFilePatterns(Patterns: TStrings);
+begin
+  if FStore.Header.SetFilePatterns(Patterns) then
+    MarkModified;
 end;
 
 procedure TDeckLibrary.Configure(const Settings: TLibrarySettingsChange);

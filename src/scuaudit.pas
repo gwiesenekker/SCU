@@ -10,7 +10,7 @@ uses
 type
   TAuditSnapshots = record
     Selected, FromVersion, ToVersion: TLibrarySnapshot;
-    ResolvedDeck, FromDeckVersion, ToDeckVersion: string;
+    ResolvedDeck, DeckVersion, FromDeckVersion, ToDeckVersion: string;
     OutputPath, OutputDirectory: string;
   end;
 
@@ -307,7 +307,7 @@ end;
 
 procedure TAuditLog.BeginCommand(Command: TScuCommand);
 var
-  Event, Parameters, Named: TJSONObject;
+  Event, Parameters: TJSONObject;
   Args, Provided: TJSONArray;
   Index: Integer;
   Argument: TScuArgument;
@@ -319,25 +319,18 @@ begin
     Event.Add('uid', Int64(fpGetEUID));
     Args := TJSONArray.Create;
     Event.Add('arguments', Args);
-    if Command.ArgumentCount > 0 then
+    Parameters := TJSONObject.Create;
+    Event.Add('parameters', Parameters);
+    Provided := TJSONArray.Create;
+    Event.Add('provided_arguments', Provided);
+    for Index := 0 to Command.ArgumentCount - 1 do
     begin
-      Parameters := TJSONObject.Create;
-      Event.Add('parameters', Parameters);
-      Provided := TJSONArray.Create;
-      Event.Add('provided_arguments', Provided);
-      for Index := 0 to Command.ArgumentCount - 1 do
-      begin
-        Argument := Command.Arguments[Index];
-        Args.Add(Argument.Value);
-        Parameters.Add(Argument.Name, Argument.Value);
-        if Argument.Provided then
-          Provided.Add(Argument.Name);
-      end;
+      Argument := Command.Arguments[Index];
+      Args.Add(Argument.Value);
+      Parameters.Add(Argument.Name, Argument.Value);
+      if Argument.Provided then
+        Provided.Add(Argument.Name);
     end;
-    Named := TJSONObject.Create;
-    Event.Add('options', Named);
-    for Index := 0 to Command.OptionCount - 1 do
-      Named.Add(Command.OptionNames[Index], Command.OptionValues[Index]);
     Append(Event);
   finally
     Event.Free;
@@ -377,6 +370,8 @@ begin
       Event.Add('detail', Detail);
     if Snapshots.ResolvedDeck <> '' then
       Event.Add('resolved_deck', Snapshots.ResolvedDeck);
+    if Snapshots.DeckVersion <> '' then
+      Event.Add('deck_version', Snapshots.DeckVersion);
     if Snapshots.OutputPath <> '' then
       Event.Add('output_path', Snapshots.OutputPath);
     if Snapshots.OutputDirectory <> '' then

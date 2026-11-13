@@ -33,7 +33,7 @@ class ScuIntegration(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
         self.library = self.root / "library.sqlite"
-        self.run_scu(self.library, "init")
+        self.run_scu(self.library, "inil")
 
     def run_scu(self, *arguments, error=None, executable=SCU):
         result = subprocess.run(
@@ -46,10 +46,25 @@ class ScuIntegration(unittest.TestCase):
             self.assertIn(error, result.stderr)
         return result.stdout.strip()
 
+    @staticmethod
+    def table_data(output):
+        """Read aligned table cells for tests concerned with command semantics."""
+        lines = output.splitlines()
+        if not lines or lines[0] == "No expansion checkpoints.":
+            return output
+        columns = re.split(r" {2,}", lines[0])
+        positions, start = [], 0
+        for column in columns:
+            start = lines[0].index(column, start)
+            positions.append(start)
+            start += len(column)
+        return "\n".join("\t".join(line[start:end].rstrip() for start, end in
+                         zip(positions, positions[1:] + [None])) for line in lines[1:])
+
     def store(self, name, source, *options):
         path = self.root / "input"
         path.write_bytes(source)
-        self.run_scu("store_deck", name, path, *options)
+        self.run_scu("import_deck", name, path.name, *options)
 
     def read_library(self):
         with closing(sqlite3.connect(self.library)) as database:
@@ -72,11 +87,222 @@ class ScuIntegration(unittest.TestCase):
         with closing(sqlite3.connect(path or self.library)) as database:
             return [line.encode() for line, in database.execute("SELECT line FROM audit_records ORDER BY sequence")]
 
+    def run_import(self, archive, library, *options, success=True):
+        importer = Path(__file__).resolve().parents[1] / "tools/import_versions.py"
+        result = subprocess.run([sys.executable, importer, archive, library, "--scu", SCU, *options],
+                                cwd=self.root, capture_output=True, text=True, timeout=30)
+        if success:
+            self.assertEqual(result.returncode, 0, result.stderr)
+        else:
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+        return result
+
+    def test_initialize_library_accepts_a_custom_initial_version(self):
+        path = self.root / "custom.sqlite"
+        self.assertEqual(self.run_scu(path, "inil", "v=0.003"), "Initialized version 0.003")
+        self.run_scu(path, "cred", "main")
+        self.assertEqual(self.table_data(self.run_scu(path, "disdl")), "main\t0.003-0.000")
+        self.run_scu(path, "verify_audit")
+        self.run_scu(self.root / "invalid.sqlite", "inil", "v=invalid", error="Invalid version")
+
+    def test_directory_import_preserves_snapshots_history_deletions_and_original_names(self):
+        archive = self.root / "source archive"
+        archive.mkdir()
+        (archive / ".COMMENT").write_text("#\n")
+        expected = {
+            "0.003": {"main.c": b"first\n", "obsolete": b"gone later",
+                      "Makefile": b"build", "nested/source file": b"\0\xffbinary",
+                      "A.c": b"upper", "a.c": b"lower", "scu-import-manifest.json": b"original file"},
+            "0.0031": {"main.c": b"second\n", "Makefile": b"build"},
+            "0.004": {"main.c": b"third\n", "obsolete": b"recreated"},
+        }
+        for version in reversed(expected):
+            for relative, data in expected[version].items():
+                path = archive / version / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+        (archive / "HISTORY").write_text(
+            "Preamble and TODOs\n\nRevision: 0.003\nDate: original date\n"
+            'Description: First "release"\nsecond line with \'quotes\' and \\backslash\n\n'
+            "Revision: 0.0031 based on 0.003\nDate: next date\nDescription: First entry\nline two\n\n"
+            "Revision: 0.0031\nDate: another date\nDescription: Second entry\n")
+        library = self.root / "imported.sqlite"
+        result = self.run_import(archive, library)
+        self.assertIn("3 versions", result.stdout)
+        self.assertIn("Audit verified:", result.stdout)
+        with closing(sqlite3.connect(library)) as database:
+            metadata = json.loads(database.execute("SELECT payload FROM library").fetchone()[0])
+            header = metadata["header"]
+            self.assertEqual(header["comment_prefix"], "#")
+            self.assertEqual([v["name"] for v in header["versions"]], list(expected))
+            self.assertTrue(all(v["locked"] and v["locked_utc"] for v in header["versions"]))
+            self.assertEqual(header["versions"][0]["description"],
+                             'First "release"\nsecond line with \'quotes\' and \\backslash')
+            self.assertEqual(header["versions"][1]["description"], "First entry\nline two\n\nSecond entry")
+            self.assertEqual(header["versions"][2]["description"],
+                             "No HISTORY description found for version 0.004.")
+        for version, files in expected.items():
+            self.run_scu(library, "extd", "scu-import-manifest.json", "manifest", "v=" + version)
+            manifest = json.loads((self.root / "manifest").read_bytes())
+            self.assertEqual(manifest["version"], version)
+            self.assertEqual({row["path"] for row in manifest["files"]}, set(files))
+            actual_decks = {row.split("\t")[0] for row in self.table_data(self.run_scu(library, "disdl", "v=" + version)).splitlines()}
+            self.assertEqual(actual_decks, {row["deck_name"] for row in manifest["files"]} | {"scu-import-manifest.json"})
+            for row in manifest["files"]:
+                data = files[row["path"]]
+                self.assertEqual(row["sha1"], hashlib.sha1(data).hexdigest())
+                self.assertEqual(row["size"], len(data))
+                self.run_scu(library, "extd", row["deck_name"], "extracted", "v=" + version)
+                self.assertEqual((self.root / "extracted").read_bytes(), data)
+        self.assertIn("  deleted", self.run_scu(library, "disd", "obsolete"))
+        self.run_scu(library, "verify_audit")
+        self.assertEqual(list(self.root.glob(".scu-import-*")), [])
+
+    def test_directory_import_inherits_exact_unchanged_files_and_recreates_removed_files(self):
+        archive = self.root / "archive"
+        versions = {
+            "1.0": {"stable": b"\0stable", "main": b"first", "gone": b"gone", "revived": b"same", "empty": b""},
+            "1.1": {"stable": b"\0stable", "main": b"other", "empty": b""},
+            "1.2": {"stable": b"\0stable", "main": b"other", "revived": b"same", "empty": b""},
+        }
+        for version, files in versions.items():
+            (archive / version).mkdir(parents=True)
+            for name, content in files.items():
+                path = archive / version / name
+                path.write_bytes(content)
+                os.utime(path, ns=(1234567890000000000, 1234567890000000000))
+        (archive / "HISTORY").write_text("".join(
+            f"Revision: {version}\nDescription: Version {version}\n" for version in versions))
+        library = self.root / "imported.sqlite"
+        result = self.run_import(archive, library)
+        self.assertIn("1.1: 3 files, 2 deletions, 1 stored, 2 inherited", result.stdout)
+        self.assertIn("1.2: 4 files, 0 deletions, 1 stored, 3 inherited", result.stdout)
+        with closing(sqlite3.connect(library)) as database:
+            rows = database.execute("SELECT deck_name, library_version, deck_revision, deleted "
+                                    "FROM deck_revisions ORDER BY sequence").fetchall()
+        self.assertEqual([row[1:] for row in rows if row[0] == "stable"], [("1.0", "0.000", 0)])
+        self.assertEqual([row[1:] for row in rows if row[0] == "empty"], [("1.0", "0.000", 0)])
+        self.assertEqual([row[1:] for row in rows if row[0] == "main"],
+                         [("1.0", "0.000", 0), ("1.1", "0.000", 0)])
+        self.assertEqual([row[1:] for row in rows if row[0] == "revived"],
+                         [("1.0", "0.000", 0), ("1.1", "0.000", 1), ("1.2", "0.000", 0)])
+        for version, files in versions.items():
+            self.run_scu(library, "extd", "scu-import-manifest.json", "manifest", "v=" + version)
+            manifest = json.loads((self.root / "manifest").read_bytes())
+            self.assertEqual({row["path"] for row in manifest["files"]}, set(files))
+            for name, content in files.items():
+                self.run_scu(library, "extd", name, "result", "v=" + version)
+                self.assertEqual((self.root / "result").read_bytes(), content)
+                self.assertEqual((archive / version / name).read_bytes(), content)
+        listing = self.table_data(self.run_scu(library, "disdl", "v=1.2"))
+        self.assertIn("stable\t1.0-0.000", listing)
+        self.assertIn("main\t1.1-0.000", listing)
+        self.assertIn("revived\t1.2-0.000", listing)
+        changed = self.run_scu(library, "disv", "1.2")
+        self.assertNotIn("stable", changed)
+        self.assertNotIn("main ", changed)
+        self.assertIn("revived", changed)
+        self.run_scu(library, "verify_audit")
+
+    def test_directory_import_skips_hidden_files_and_hidden_directory_trees(self):
+        archive = self.root / "archive"
+        for version in ("1.0", "1.1"):
+            directory = archive / version
+            (directory / "visible").mkdir(parents=True)
+            (directory / ".git" / "nested").mkdir(parents=True)
+            (directory / "visible" / ".cache").mkdir()
+            (directory / "main.c").write_bytes(b"unchanged")
+            (directory / "visible" / "source file.c").write_bytes(b"nested")
+            (directory / ".SHA1SUM").write_text(version)
+            (directory / ".scu-exports.json").write_text("not an export manifest")
+            (directory / ".git" / "nested" / "config").write_text("hidden tree")
+            (directory / "visible" / ".cache" / "data").write_text("hidden nested tree")
+            (directory / "visible" / ".secret").write_text("hidden nested file")
+            (directory / ".hidden-link").symlink_to("missing")
+            (directory / ".hidden-dir-link").symlink_to("visible", target_is_directory=True)
+        (archive / "HISTORY").write_text(
+            "Revision: 1.0\nDescription: First\nRevision: 1.1\nDescription: Second\n")
+        library = self.root / "imported.sqlite"
+        preview = self.run_import(archive, library, "--dry-run")
+        self.assertIn("4 file snapshots", preview.stdout)
+        self.assertIn("Plan 1.1: 2 files, 0 deletions", preview.stdout)
+        result = self.run_import(archive, library)
+        self.assertIn("1.1: 2 files, 0 deletions, 0 stored, 2 inherited", result.stdout)
+        for version in ("1.0", "1.1"):
+            self.run_scu(library, "extd", "scu-import-manifest.json", "manifest", "v=" + version)
+            manifest = json.loads((self.root / "manifest").read_bytes())
+            self.assertEqual({row["path"] for row in manifest["files"]},
+                             {"main.c", "visible/source file.c"})
+            self.assertTrue(all(not part.startswith(".") for row in manifest["files"]
+                                for part in Path(row["path"]).parts))
+        with closing(sqlite3.connect(library)) as database:
+            names = [row[0] for row in database.execute("SELECT DISTINCT deck_name FROM deck_revisions")]
+            self.assertEqual(len(names), 3)  # Two visible sources and the import manifest.
+            self.assertNotIn("import-file-" + hashlib.sha256(b".SHA1SUM").hexdigest(), names)
+        self.assertTrue((archive / "1.0" / ".SHA1SUM").exists())
+        self.run_scu(library, "verify_audit")
+
+    def test_directory_import_dry_run_validation_and_destination_protection(self):
+        archive = self.root / "archive"
+        (archive / "8.10").mkdir(parents=True)
+        (archive / "8.0031").mkdir()
+        (archive / "8.0031/main").write_bytes(b"source")
+        (archive / "HISTORY").write_text("Revision: 8.0031\nDescription: First\n")
+        library = self.root / "imported.sqlite"
+        result = self.run_import(archive, library, "--dry-run")
+        self.assertLess(result.stdout.index("Plan 8.0031"), result.stdout.index("Plan 8.10"))
+        self.assertIn("[missing HISTORY description]", result.stdout)
+        self.assertFalse(library.exists())
+        self.assertEqual(list(self.root.glob(".scu-import-*")), [])
+        result = self.run_import(archive, library, "--strict-history", success=False)
+        self.assertIn("No HISTORY description found for version 8.10", result.stderr)
+        self.assertFalse(library.exists())
+        (archive / "8.100").mkdir()
+        result = self.run_import(archive, library, "--dry-run", success=False)
+        self.assertIn("Duplicate numeric version", result.stderr)
+        (archive / "8.100").rmdir()
+        result = self.run_import(archive, archive / "inside.sqlite", success=False)
+        self.assertIn("outside the source archive", result.stderr)
+        sidecar = Path(str(library) + "-wal")
+        sidecar.write_bytes(b"existing WAL")
+        result = self.run_import(archive, library, success=False)
+        self.assertIn("Destination already exists", result.stderr)
+        self.assertEqual(sidecar.read_bytes(), b"existing WAL")
+        self.assertFalse(library.exists())
+        sidecar.unlink()
+        library.write_bytes(b"existing contents")
+        result = self.run_import(archive, library, success=False)
+        self.assertIn("Destination already exists", result.stderr)
+        self.assertEqual(library.read_bytes(), b"existing contents")
+
+    def test_directory_import_rejects_links_and_does_not_publish_on_scu_failure(self):
+        archive = self.root / "archive"
+        (archive / "1.0").mkdir(parents=True)
+        (archive / "HISTORY").write_text("Revision: 1.0\nDescription: First\n")
+        (archive / "1.0/main").write_bytes(b"source")
+        link = archive / "1.0/link"
+        link.symlink_to("main")
+        library = self.root / "imported.sqlite"
+        result = self.run_import(archive, library, success=False)
+        self.assertIn("Symbolic links", result.stderr)
+        link.unlink()
+        wrapper = self.root / "failing-scu"
+        wrapper.write_text(
+            "#!" + sys.executable + "\nimport os, sys\n"
+            "if 'lock_version' in sys.argv:\n print('injected failure', file=sys.stderr); sys.exit(9)\n"
+            "os.execv(" + repr(str(SCU)) + ", [" + repr(str(SCU)) + ", *sys.argv[1:]])\n")
+        wrapper.chmod(0o700)
+        result = self.run_import(archive, library, "--scu", str(wrapper), success=False)
+        self.assertIn("injected failure", result.stderr)
+        self.assertFalse(library.exists())
+        self.assertEqual(list(self.root.glob(".scu-import-*")), [])
+        self.assertEqual((archive / "1.0/main").read_bytes(), b"source")
+
     def test_delete_deck_records_history_and_preserves_earlier_source(self):
         self.store("main.pas", b"original\n", "cp=#")
         source = self.read_library()["revisions"][0]
         self.assertIn("Deleted main.pas version 1.0 revision 0.001", self.run_scu("deld", "dn=MAIN.PAS"))
-        self.assertEqual(self.run_scu("ddl"), "")
+        self.assertEqual(self.table_data(self.run_scu("disdl")), "")
         document = self.read_library()
         self.assertEqual(document["revisions"][0], source)
         tombstone = document["revisions"][1]
@@ -86,14 +312,14 @@ class ScuIntegration(unittest.TestCase):
         self.assertEqual(tombstone["comment_prefix"], "#")
         self.assertEqual(document["header"]["last_modified_deck"], "main.pas")
         history = self.run_scu("disd").splitlines()
-        self.assertTrue(history[0].endswith("\t1.0-0.001\tdeleted"), history)
-        self.assertTrue(history[1].endswith("\t1.0-0.000"), history)
+        self.assertTrue(history[2].startswith("1.0-0.001 ") and history[2].endswith("  deleted"), history)
+        self.assertTrue(history[3].startswith("1.0-0.000 "), history)
         for command in ("extd", "expd"):
             self.run_scu(command, "main.pas", "output", error='does not exist in version 1.0')
             self.assertFalse((self.root / "output").exists())
             self.run_scu(command, "main.pas", "old", "v=1.0-0.000")
             self.assertEqual((self.root / "old").read_bytes(), b"original\n")
-            self.run_scu(command, "main.pas", "output", "r=2", error="does not exist at revision 2")
+            self.run_scu(command, "main.pas", "output", "r=0.001", error="is deleted at deck version 1.0-0.001")
         self.run_scu("edid", "main.pas", error='does not exist in version 1.0')
         before = self.read_library()
         self.run_scu("deld", "main.pas", error='does not exist in version 1.0')
@@ -110,23 +336,23 @@ class ScuIntegration(unittest.TestCase):
         before = self.read_library()
         self.run_scu("deld", "main", error="Version 1.0 is locked")
         self.assertEqual(self.read_library(), before)
-        self.run_scu("stav", "1.1")
+        self.run_scu("crev", "1.1")
         self.assertIn("revision 0.000", self.run_scu("deld"))
-        self.assertEqual(self.run_scu("ddl"), "")
-        self.assertIn("main\t1.0-0.000", self.run_scu("ddl", "v=1.0"))
+        self.assertEqual(self.table_data(self.run_scu("disdl")), "")
+        self.assertIn("main\t1.0-0.000", self.table_data(self.run_scu("disdl", "v=1.0")))
         self.run_scu("extd", "main", "old", "v=1.0")
         self.assertEqual((self.root / "old").read_bytes(), b"version one\n")
         self.run_scu("locv", "desc=Removed")
-        self.run_scu("stav", "1.2")
-        self.assertEqual(self.run_scu("ddl"), "")
+        self.run_scu("crev", "1.2")
+        self.assertEqual(self.table_data(self.run_scu("disdl")), "")
         self.assertIn("revision 0.000", self.run_scu("cred", "main"))
-        self.assertEqual(self.run_scu("ddl"), "main\t1.2-0.000")
+        self.assertEqual(self.table_data(self.run_scu("disdl")), "main\t1.2-0.000")
         self.run_scu("deld", "main")
         self.assertIn("revision 0.002", self.run_scu("cred", "main"))
         self.run_scu("deld", "main")
         self.store("main", b"recreated by store\n")
         self.assertEqual(self.read_library()["revisions"][-1]["deck_revision"], "0.004")
-        self.assertEqual(self.run_scu("ddl", "v=1.1"), "")
+        self.assertEqual(self.table_data(self.run_scu("disdl", "v=1.1")), "")
         self.run_scu("verify_audit")
 
     def test_delete_and_recreate_require_a_new_version_at_revision_limit(self):
@@ -137,7 +363,7 @@ class ScuIntegration(unittest.TestCase):
         self.run_scu("deld", "main", error='has reached the revision limit')
         self.assertEqual(self.read_library(), before)
         self.run_scu("locv", "desc=Full")
-        self.run_scu("stav", "1.1")
+        self.run_scu("crev", "1.1")
         self.assertIn("revision 0.000", self.run_scu("deld", "main"))
         self.assertIn("revision 0.999", self.run_scu("cred", "main"))
         self.run_scu("deld", "main", error='has reached the revision limit')
@@ -147,49 +373,49 @@ class ScuIntegration(unittest.TestCase):
         self.store("main", b"original\n")
         self.run_scu("cred", "empty")
         self.run_scu("locv", "desc=First")
-        self.run_scu("stav", "1.1")
+        self.run_scu("crev", "1.1")
         self.run_scu("deld", "main")
         self.run_scu("deld", "empty")
-        diff = self.run_scu("disdd", "main")
+        diff = self.run_scu("disdd", "main", "output_format=unified")
         self.assertIn("--- main@1.0-0.000\n+++ /dev/null", diff)
         self.assertIn("-original", diff)
-        self.assertEqual(self.run_scu("disdd", "empty"), "Deleted empty deck empty")
-        diff = self.run_scu("disvd")
+        self.assertEqual(self.run_scu("disdd", "empty", "output_format=unified"), "Deleted empty deck empty")
+        diff = self.run_scu("disvd", "output_format=unified")
         self.assertIn("Only in version 1.0: empty (empty deck)", diff)
         self.assertIn("+++ /dev/null", diff)
         self.run_scu("locv", "desc=Removed")
-        self.run_scu("stav", "1.2")
+        self.run_scu("crev", "1.2")
         self.run_scu("locv", "desc=Still absent")
-        self.run_scu("stav", "1.3")
+        self.run_scu("crev", "1.3")
         self.store("main", b"returned\n")
         self.run_scu("cred", "empty")
-        diff = self.run_scu("disdd", "main")
+        diff = self.run_scu("disdd", "main", "output_format=unified")
         self.assertIn("--- /dev/null\n+++ main@1.3-0.000", diff)
         self.assertIn("+returned", diff)
-        self.assertEqual(self.run_scu("disdd", "empty"), "Recreated empty deck empty")
-        self.assertIn("--- /dev/null", self.run_scu("disvd", "fv=1.1", "tv=1.3"))
-        self.assertEqual(self.run_scu("disvd", "fv=1.1", "tv=1.2"), "")
-        self.assertIn("+++ /dev/null", self.run_scu("disvd", "fv=1.3", "tv=1.1"))
+        self.assertEqual(self.run_scu("disdd", "empty", "output_format=unified"), "Recreated empty deck empty")
+        self.assertIn("--- /dev/null", self.run_scu("disvd", "fv=1.1", "tv=1.3", "output_format=unified"))
+        self.assertEqual(self.run_scu("disvd", "fv=1.1", "tv=1.2", "output_format=unified"), "")
+        self.assertIn("+++ /dev/null", self.run_scu("disvd", "fv=1.3", "tv=1.1", "output_format=unified"))
 
-    def test_deletion_is_pending_until_saved_and_can_be_discarded(self):
+    def test_deletion_is_saved_immediately_and_survives_quit(self):
         self.store("main", b"original")
         before = self.read_library()
         with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
             read_until(b"scu> ")
             os.write(terminal, b"deld main\n")
             self.assertIn(b"Deleted main", read_until(b"scu> "))
-            self.assertEqual(self.read_library(), before)
-            os.write(terminal, b"ddl\n")
+            self.assertTrue(self.read_library()["revisions"][-1]["deleted"])
+            os.write(terminal, b'disdl\n')
             self.assertNotIn(b"main\t", read_until(b"scu> "))
             os.write(terminal, b"disd\n")
-            self.assertIn(b"\tdeleted", read_until(b"scu> "))
-            os.write(terminal, b"quit save_library=no\n")
+            self.assertIn(b"  deleted", read_until(b"scu> "))
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
-        self.assertEqual(self.read_library(), before)
+        self.assertTrue(self.read_library()["revisions"][-1]["deleted"])
         result = subprocess.run([SCU], cwd=self.root, capture_output=True, text=True,
-                                input="deld main\nsavl\nquit\n", timeout=20)
+                                input="savl\nquis\n", timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.run_scu("ddl"), "")
+        self.assertEqual(self.table_data(self.run_scu("disdl")), "")
         self.run_scu("verify_audit")
 
     def test_deletion_audit_failure_rolls_back_revision_header_and_audit(self):
@@ -208,7 +434,7 @@ class ScuIntegration(unittest.TestCase):
             self.assertEqual(self.sqlite_state(database), before)
             self.assertEqual(database.execute("SELECT * FROM audit_state").fetchall(), state)
             database.execute("DROP TRIGGER fail_deletion_audit")
-        self.assertIn("main\t", self.run_scu("ddl"))
+        self.assertIn("main\t", self.table_data(self.run_scu("disdl")))
         self.run_scu("deld", "main")
         self.run_scu("verify_audit")
 
@@ -236,9 +462,9 @@ class ScuIntegration(unittest.TestCase):
         recovery.write_text(json.dumps(document))
         restored = self.root / "restored.sqlite"
         self.run_scu(restored, "recl", recovery)
-        self.assertEqual(self.run_scu(restored, "ddl"), "")
-        self.assertIn("\tdeleted", self.run_scu(restored, "disd", "main"))
-        self.run_scu(restored, "extd", "main", "old", "r=1")
+        self.assertEqual(self.table_data(self.run_scu(restored, "disdl")), "")
+        self.assertIn("  deleted", self.run_scu(restored, "disd", "main"))
+        self.run_scu(restored, "extd", "main", "old", "r=0.000")
         self.assertEqual((self.root / "old").read_bytes(), b"original")
         self.run_scu(restored, "cred", "main")
         self.run_scu(restored, "verify_audit")
@@ -261,18 +487,18 @@ class ScuIntegration(unittest.TestCase):
         self.store("main", b"source")
         directory = self.root / "output"
         directory.mkdir()
-        self.run_scu("expmd", "1.0", directory)
+        self.run_scu("expv", "1.0", directory)
         self.run_scu("deld", "main")
-        self.assertIn("Wrote 0 deck(s)", self.run_scu("expmd", "1.0", directory))
+        self.assertIn("Wrote 0 deck(s)", self.run_scu("expv", "1.0", directory))
         self.assertEqual((directory / "main").read_bytes(), b"source")
         with closing(sqlite3.connect(self.library)) as database:
             self.assertEqual(database.execute("SELECT revision FROM expansion_checkpoints").fetchone(), (2,))
         self.run_scu("conl", "bc=echo built >> builds")
         self.store("main", b"recreated")
         self.run_scu("deld", "main")
-        self.assertIn("Wrote 0 deck(s)", self.run_scu("expmd", "1.0", directory))
+        self.assertIn("Wrote 0 deck(s)", self.run_scu("expv", "1.0", directory))
         self.assertEqual((self.root / "builds").read_text(), "built\n")
-        self.run_scu("expmd", "1.0", directory)
+        self.run_scu("expv", "1.0", directory)
         self.assertEqual((self.root / "builds").read_text(), "built\n")
         self.assertIn("Wrote 0 deck(s)", self.run_scu("extmd", "1.0", directory))
 
@@ -281,31 +507,31 @@ class ScuIntegration(unittest.TestCase):
         self.store("main", b"//SCU_COPY part\n")
         directory = self.root / "output"
         directory.mkdir()
-        self.run_scu("expmd", "1.0", directory)
-        before = self.run_scu("disec")
+        self.run_scu("expv", "1.0", directory)
+        before = self.table_data(self.run_scu("disec"))
         self.run_scu("deld", "part")
-        self.run_scu("expmd", "1.0", directory, error='Deck "part" does not exist')
-        self.assertEqual(self.run_scu("disec"), before)
+        self.run_scu("expv", "1.0", directory, error='Deck "part" does not exist')
+        self.assertEqual(self.table_data(self.run_scu("disec")), before)
         self.assertEqual((directory / "main").read_bytes(), b"shared\n")
         self.store("main", b"standalone\n")
-        self.assertIn("Wrote 1 deck(s)", self.run_scu("expmd", "1.0", directory))
+        self.assertIn("Wrote 1 deck(s)", self.run_scu("expv", "1.0", directory))
         self.assertEqual((directory / "main").read_bytes(), b"standalone\n")
         self.run_scu("verify_audit")
 
     def test_completion_skips_deleted_snapshots_but_keeps_history_and_old_versions(self):
         self.store("gone", b"original")
         self.run_scu("locv", "desc=First")
-        self.run_scu("stav", "1.1")
+        self.run_scu("crev", "1.1")
         self.run_scu("deld", "gone")
         self.run_scu("locv", "desc=Deleted")
-        self.run_scu("stav", "1.2")
+        self.run_scu("crev", "1.2")
         with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
             read_until(b"scu> ")
             os.write(terminal, b"extd v=1.0 dn=gon\t o=old\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "old").read_bytes(), b"original")
             os.write(terminal, b"disd gon\t\n")
-            self.assertIn(b"\tdeleted", read_until(b"scu> "))
+            self.assertIn(b"  deleted", read_until(b"scu> "))
             os.write(terminal, b"edid gon\t\n")
             self.assertIn(b'Deck "gon" does not exist', read_until(b"scu> "))
             os.write(terminal, b"cred gone\n")
@@ -316,8 +542,382 @@ class ScuIntegration(unittest.TestCase):
             self.assertIn(b"1.0", matches)
             self.assertIn(b"1.2", matches)
             self.assertNotIn(b"1.1", matches)
-            os.write(terminal, b"\x15quit\n")
+            os.write(terminal, b'\x15quis\n')
             self.assertEqual(process.wait(timeout=5), 1)
+
+    def test_all_command_parameters_share_one_ordered_argument_list(self):
+        catalog = json.loads(SCU.with_name("commands.json").read_bytes())
+        self.assertEqual(catalog["format"], 4)
+        for command in catalog["commands"]:
+            self.assertNotIn("options", command)
+            self.assertNotIn("exclusive_options", command)
+        self.store("main", b"first\n")
+        self.store("main", b"second\n")
+        self.run_scu("expd", "main", "expanded", "n")
+        event = json.loads(self.audit_lines()[-2].split(b" ", 1)[1])
+        self.assertEqual(event["parameters"], {"deck_name": "main", "output_file": "expanded", "build": "no", "version": "scu$current_version"})
+        self.assertNotIn("options", event)
+        self.assertEqual(event["provided_arguments"], ["deck_name", "output_file", "build"])
+        self.run_scu("extd", "main", "original", "0.000")
+        self.assertEqual((self.root / "original").read_bytes(), b"first\n")
+        self.run_scu("extd", "--dn", "main", "--output_file", "named", "--revision=0.000")
+        self.assertEqual((self.root / "named").read_bytes(), b"first\n")
+        self.run_scu("extd", "main", "bad", "0.999", "version=1.0", error="has no deck version")
+        self.assertFalse((self.root / "bad").exists())
+        self.run_scu("conl", "true")
+        self.assertEqual(json.loads(self.run_scu("shol"))["build_command"], "true")
+        self.run_scu("verify_audit")
+
+    def test_optional_arguments_are_absent_but_explicit_empty_values_and_defaults_are_audited(self):
+        self.run_scu("cred", "main")
+        event = json.loads(self.audit_lines()[-2].split(b" ", 1)[1])
+        self.assertEqual(event["parameters"], {"deck_name": "main"})
+        self.assertEqual(event["provided_arguments"], ["deck_name"])
+        self.run_scu("cred", "empty", "")
+        event = json.loads(self.audit_lines()[-2].split(b" ", 1)[1])
+        self.assertEqual(event["parameters"], {"deck_name": "empty", "from_file": ""})
+        self.assertEqual(event["provided_arguments"], ["deck_name", "from_file"])
+        self.run_scu("expd", "main", "out")
+        event = json.loads(self.audit_lines()[-2].split(b" ", 1)[1])
+        self.assertEqual(event["parameters"]["build"], "yes")
+        self.assertNotIn("build", event["provided_arguments"])
+        self.assertNotIn("revision", event["parameters"])
+        self.assertEqual(event["parameters"]["version"], "scu$current_version")
+        self.run_scu("verify_audit")
+
+    def test_catalog_rejects_options_and_resolves_exclusive_argument_aliases(self):
+        executable = self.root / "scu"
+        shutil.copy2(SCU, executable)
+        catalog = json.loads(SCU.with_name("commands.json").read_bytes())
+        command = next(c for c in catalog["commands"] if c["name"] == "extract_deck")
+        command["options"] = []
+        path = self.root / "commands.json"
+        path.write_text(json.dumps(catalog))
+        self.run_scu("help", executable=executable, error="Use a single arguments list")
+        del command["options"]
+        command["exclusive_arguments"] = [["v", "r"]]
+        path.write_text(json.dumps(catalog))
+        help_text = self.run_scu("disc", "extd", executable=executable)
+        self.assertIn("Mutually exclusive arguments", help_text)
+        self.assertIn("\n  v, r\n", help_text)
+        self.assertNotIn("\nOptions\n", help_text)
+
+    def test_deck_history_has_headers_deck_versions_and_aligned_status_columns(self):
+        self.store("main", b"original")
+        self.store("main", b"edited")
+        self.run_scu("deld", "main")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("crev", "123456789.1234567890")
+        self.run_scu("cred", "main")
+        before = self.read_library()
+        result = self.run_scu("disd", "main")
+        self.assertNotIn("\t", result)
+        self.assertNotIn("Library revision", result)
+        self.assertEqual(result.splitlines()[0], 'Deck "main".')
+        lines = result.splitlines()[1:]
+        rows = [re.split(r" {2,}", line) for line in lines]
+        self.assertEqual(rows[0], ["Deck version", "Modified (UTC)", "Status"])
+        self.assertEqual([row[0] for row in rows[1:]],
+                         ["123456789.1234567890-0.000", "1.0-0.002", "1.0-0.001", "1.0-0.000"])
+        self.assertEqual([row[2] for row in rows[1:]], ["stored", "deleted", "stored", "stored"])
+        for index, payload in enumerate(reversed(before["revisions"]), start=1):
+            self.assertEqual(rows[index][1], payload["modified_utc"])
+        for column in (1, 2):
+            positions = [line.index(row[column]) for line, row in zip(lines, rows)]
+            self.assertEqual(len(set(positions)), 1)
+        self.assertEqual(self.read_library(), before)
+        self.run_scu("verify_audit")
+
+    def test_display_version_lists_latest_changes_only_in_the_selected_version(self):
+        for name in ("inherited", "main", "removed", "recreated"):
+            self.store(name, b"original")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("crev", "1.1")
+        self.store("main", b"changed")
+        self.store("main", b"original")  # A recorded edit still counts after reverting bytes.
+        self.run_scu("deld", "removed")
+        self.run_scu("deld", "recreated")
+        self.run_scu("cred", "recreated")
+        self.store("new", b"new")
+        self.run_scu("cred", "transient")
+        self.run_scu("deld", "transient")
+        before = self.read_library()
+        output = self.run_scu("disv")
+        title, table = output.split("\n", 1)
+        self.assertEqual(title, 'Version "1.1".')
+        self.assertNotIn("\t", output)
+        self.assertEqual(re.split(r" {2,}", table.splitlines()[0]),
+                         ["Deck name", "Deck version", "Modified (UTC)", "Status"])
+        rows = [row.split("\t") for row in self.table_data(table).splitlines()]
+        self.assertEqual([(r[0], r[1], r[3]) for r in rows], [
+            ("main", "1.1-0.001", "stored"),
+            ("new", "1.1-0.000", "stored"),
+            ("recreated", "1.1-0.001", "stored"),
+            ("removed", "1.1-0.000", "deleted"),
+            ("transient", "1.1-0.001", "deleted"),
+        ])
+        for row in rows:
+            revision = next(r for r in reversed(before["revisions"]) if r["deck"] == row[0])
+            self.assertEqual(row[2], revision["modified_utc"])
+        for arguments in (("display_version", "1.1"), ("disv", "v=1.1"),
+                          ("disv", "--version", "1.1")):
+            self.assertEqual(self.run_scu(*arguments), output)
+        self.assertEqual(self.read_library(), before)
+        self.run_scu("locv", "desc=Second")
+        self.run_scu("crev", "1.2")
+        self.run_scu("cred", "removed")
+        self.assertEqual(self.run_scu("disv", "1.1"), output)
+        self.assertEqual(self.run_scu("disv", "v=scu$previous_version"), output)
+        self.assertNotIn("inherited", self.run_scu("disv"))
+        self.run_scu("verify_audit")
+
+    def test_display_version_default_empty_versions_errors_help_and_audit(self):
+        output = self.run_scu("disv")
+        self.assertEqual(output, 'Version "1.0".\nDeck name  Deck version  Modified (UTC)  Status')
+        begin, end = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()[-2:]]
+        self.assertEqual(begin["command"], "display_version")
+        self.assertEqual(begin["parameters"], {"version": "scu$current_version"})
+        self.assertEqual(begin["provided_arguments"], [])
+        self.assertEqual(end["snapshot"], {"version": "1.0", "library_revision": 0})
+        help_text = self.run_scu("disc", "disv")
+        self.assertIn("display_version, disv", help_text)
+        self.assertIn("version (v) : string = scu$current_version", help_text)
+        self.run_scu("locv", "desc=Empty")
+        self.run_scu("crev", "1.1")
+        self.assertEqual(self.run_scu("disv"), output.replace('"1.0"', '"1.1"'))
+        self.assertEqual(self.run_scu("disv", "9.9", error='Version "9.9" does not exist'), "")
+        self.run_scu("verify_audit")
+
+    def test_display_version_sees_automatically_saved_edits_without_prompting(self):
+        (self.root / "source").write_bytes(b"pending")
+        result = subprocess.run([SCU], cwd=self.root, capture_output=True, text=True, timeout=10,
+                                input="import_deck pending source\ndisv\nquis\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Version "1.0".', result.stdout)
+        self.assertRegex(result.stdout, r"pending +1.0-0.000 +[^\n]+ +stored")
+        self.assertEqual(self.read_library()["revisions"][0]["deck"], "pending")
+        events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
+        index = next(i for i, event in enumerate(events) if event.get("command") == "display_version")
+        self.assertFalse(events[index + 1].get("pending_save", False))
+        self.assertEqual(events[index + 1]["snapshot"], {"version": "1.0", "library_revision": 1})
+        self.run_scu("verify_audit")
+
+    def test_display_version_completes_library_versions_and_selectors(self):
+        self.run_scu("locv", "desc=First")
+        self.run_scu("crev", "1.1")
+        with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"disv v=scu$cur\t\n")
+            self.assertIn(b'Version "1.1".', read_until(b"scu> "))
+            os.write(terminal, b"disv v=scu$pre\t\n")
+            self.assertIn(b'Version "1.0".', read_until(b"scu> "))
+            os.write(terminal, b"disv --v\t1.0\n")
+            self.assertIn(b'Version "1.0".', read_until(b"scu> "))
+            os.write(terminal, b"quis\n")
+            self.assertEqual(process.wait(timeout=5), 0)
+
+    def test_create_version_canonical_name_abbreviation_and_retired_names(self):
+        for retired in ("start_version", "stav"):
+            before = self.audit_lines()
+            self.run_scu(retired, "1.1", error="Unknown command")
+            self.assertEqual(self.audit_lines(), before)
+        self.run_scu("locv", "desc=First")
+        self.assertEqual(self.run_scu("create_version", "v=1.1"), "Created version 1.1")
+        self.run_scu("locv", "desc=Second")
+        self.assertEqual(self.run_scu("crev"), "Created version 1.11")
+        self.assertEqual(self.read_library()["header"]["current_version"], "1.11")
+        self.assertIn("create_version, crev", self.run_scu("disc", "crev"))
+        events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
+        creates = [event for event in events if event.get("command") == "create_version"]
+        self.assertEqual(len(creates), 2)
+        self.assertEqual(creates[0]["parameters"], {"version": "1.1"})
+        self.assertEqual(creates[1]["parameters"], {})
+        self.run_scu("verify_audit")
+
+    def test_deck_history_identifies_explicit_default_and_deleted_decks(self):
+        self.store("main.pas", b"main")
+        self.store("other.pas", b"other")
+        self.assertEqual(self.run_scu("disd", "dn=MAIN.PAS").splitlines()[0], 'Deck "main.pas".')
+        self.assertEqual(self.run_scu("disd").splitlines()[0], 'Deck "other.pas".')
+        self.run_scu("deld", "main.pas")
+        history = self.run_scu("disd")
+        self.assertEqual(history.splitlines()[0], 'Deck "main.pas".')
+        self.assertIn("deleted", history)
+        self.assertEqual(self.run_scu("disd", "missing", error='does not exist'), "")
+        self.run_scu("verify_audit")
+
+    def test_deck_list_has_aligned_headers_inherited_versions_and_empty_snapshots(self):
+        self.assertEqual(self.run_scu("disdl"), "Deck name  Deck version")
+        self.store("a", b"first")
+        self.store("long-deck-name.pas", b"second")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("crev", "123456789.1234567890")
+        self.store("a", b"changed")
+        self.run_scu("cred", "gone")
+        self.run_scu("deld", "gone")
+        result = self.run_scu("disdl")
+        self.assertEqual(result.splitlines(), [
+            "Deck name           Deck version",
+            "a                   123456789.1234567890-0.000",
+            "long-deck-name.pas  1.0-0.000",
+        ])
+        self.run_scu("disdl", "--revision", "0", error="Unknown argument")
+        inherited = self.run_scu("disdl", "v=1.0")
+        self.assertIn("a                   1.0-0.000", inherited)
+        self.assertNotIn("\t", result)
+        self.run_scu("verify_audit")
+
+    def test_deck_history_limit_defaults_aliases_boundaries_and_auditing(self):
+        for revision in range(12):
+            self.store("main", str(revision).encode())
+        self.run_scu("deld", "main")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("crev", "1.1")
+        self.run_scu("cred", "main")
+        full = self.run_scu("disd", "main", "limit=0").splitlines()
+        self.assertEqual(len(full), 16)
+        self.assertEqual(full[2].split()[0], "1.1-0.000")
+        self.assertIn("deleted", full[3])
+        self.assertEqual(self.run_scu("disd").splitlines(), full[:12])
+        for arguments in (("main", "3"), ("dn=main", "l=3"),
+                          ("--deck_name", "main", "--limit", "3")):
+            self.assertEqual(self.run_scu("disd", *arguments).splitlines(), full[:5])
+        self.assertEqual(self.run_scu("disd", "main", "l=9223372036854775807").splitlines(), full)
+        self.run_scu("disd", "main", "l=-1", error="nonnegative integer for limit")
+        self.run_scu("disd", "main", "l=bad", error="Expected integer value for limit")
+        help_text = self.run_scu("disc", "disd")
+        self.assertIn("limit (l) : integer = 10", help_text)
+        self.run_scu("disd")
+        event = json.loads(self.audit_lines()[-2].split(b" ", 1)[1])
+        self.assertEqual(event["parameters"], {"deck_name": "scu$last_modified_deck", "limit": "10"})
+        self.assertNotIn("limit", event["provided_arguments"])
+        self.run_scu("verify_audit")
+
+    def test_deck_tables_wrap_long_names_to_terminal_width_without_truncating(self):
+        name = "import-file-" + "a" * 64
+        self.store("a", b"short")
+        self.store(name, b"long")
+        raw = self.run_scu("disv")
+        self.assertIn(name, raw)
+        self.assertGreater(max(map(len, raw.splitlines())), 80)
+        for columns in (80, 60, 32, 8, 1):
+            with self.subTest(columns=columns), self.terminal_session(
+                    TERM="dumb", columns=columns, rows=200) as (process, terminal, read_until):
+                read_until(b"scu> ")
+                for command in ("disdl", "disv", "disd"):
+                    os.write(terminal, command.encode() + b"\n")
+                    lines = read_until(b"scu> ").decode().splitlines()[1:-1]
+                    lines = [line for line in lines if not line.startswith("Using library version ")]
+                    self.assertTrue(all(len(line) <= columns for line in lines), (command, columns, lines))
+                    if columns >= 60 and command in ("disdl", "disv"):
+                        header = next(line for line in lines if line.startswith("Deck name "))
+                        width = header.index("Deck version") - 2
+                        start = next(i for i, line in enumerate(lines) if line.startswith(name[:width]))
+                        count = (len(name) + width - 1) // width
+                        self.assertEqual("".join(line[:width].rstrip() for line in lines[start:start + count]), name)
+                os.write(terminal, b"quis\n")
+                self.assertEqual(process.wait(timeout=5), 0)
+
+    def test_current_version_is_the_single_bulk_expansion_variable(self):
+        self.store("main", b"source")
+        help_text = self.run_scu("disc", "expv")
+        self.assertIn("version (v) : string = scu$current_version", help_text)
+        self.assertNotIn("scu$current_library_version", help_text)
+        self.run_scu("expv", "build=no")
+        begin = json.loads(self.audit_lines()[-2].split(b" ", 1)[1])
+        self.assertEqual(begin["parameters"]["version"], "scu$current_version")
+        self.assertEqual((self.root / "main").read_bytes(), b"source")
+        with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"expv v=scu$cur\t build=no\n")
+            self.assertIn(b"Wrote 0 deck(s) for version 1.0", read_until(b"scu> "))
+            os.write(terminal, b"quis\n")
+            self.assertEqual(process.wait(timeout=5), 0)
+        self.run_scu("verify_audit")
+
+    def test_expand_and_extract_report_the_resolved_root_deck_name(self):
+        self.store("part", b"part")
+        self.store("main", b"//SCU_COPY part\n")
+        for command in ("expd", "extd"):
+            for arguments in (("MAIN", "output"), ()):
+                with self.subTest(command=command, arguments=arguments):
+                    result = subprocess.run([SCU, command, *arguments], cwd=self.root,
+                                            capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stderr,
+                                     'Using library version 1.0, deck "main", deck_version 1.0-0.000.\n')
+        self.run_scu("verify_audit")
+
+    def test_library_versions_are_columns_and_do_not_change_stored_configuration(self):
+        def check(version, previous):
+            before = self.read_library()["header"]
+            summary, output = self.run_scu("disl").split("\n", 1)
+            self.assertEqual(summary, f'Library "{self.library}".')
+            attributes = dict(re.split(r" {2,}", line, maxsplit=1)
+                              for line in output.splitlines()[1:])
+            self.assertEqual(attributes["current_version"], version)
+            self.assertEqual(attributes["previous_locked_version"], previous)
+            self.assertNotIn("versions", attributes)
+            self.assertEqual(self.read_library()["header"], before)
+            self.assertNotIn("previous_locked_version", before)
+        check("1.0", "none")
+        self.run_scu("locv", "desc=First")
+        check("1.0", "none")
+        self.run_scu("crev", "1.1")
+        check("1.1", "1.0")
+        self.run_scu("locv", "desc=Second")
+        check("1.1", "1.0")
+        self.run_scu("crev", "1.2")
+        check("1.2", "1.1")
+        self.run_scu("verify_audit")
+
+    def test_other_listings_use_headers_and_aligned_spaces(self):
+        self.store("main", b"source")
+        self.run_scu("expv", "build=no")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("crev", "123456789.1234567890")
+        cases = [
+            (("lisv",), ["Version", "Status"]),
+            (("disec",), ["Version", "Output directory", "Last built library revision", "Status",
+                           "Last successful build (UTC)", "Checkpoint library revision"]),
+            (("shoh", "5"), ["Command", "Status"]),
+        ]
+        for arguments, headings in cases:
+            with self.subTest(command=arguments[0]):
+                output = self.run_scu(*arguments)
+                self.assertNotIn("\t", output)
+                lines = output.splitlines()
+                self.assertEqual(re.split(r" {2,}", lines[0]), headings)
+                starts = [lines[0].index(heading) for heading in headings]
+                for line in lines[1:]:
+                    self.assertTrue(all(line[start - 2:start] == "  " for start in starts[1:]))
+                    self.assertTrue(all(line[start:start + 1] != " " for start in starts))
+        self.run_scu("verify_audit")
+
+    def test_only_nos_command_abbreviations_and_documented_convenience_aliases_are_shipped(self):
+        catalog = json.loads(SCU.with_name("commands.json").read_bytes())
+        for command in catalog["commands"]:
+            words = command["name"].split("_")
+            abbreviation = words[0][:3] + "".join(word[0] for word in words[1:])
+            expected = [abbreviation] + {"display_command_list": ["help"], "quit_session": ["quit"]}.get(command["name"], [])
+            self.assertEqual(command["aliases"], sorted(expected), command["name"])
+        before = self.audit_lines()
+        for spelling in ("dd", "deck_history", "ddl", "list_decks", "init", "configure", "modify_library",
+                         "q", "verify_audit_trail", "--help", "-h"):
+            with self.subTest(spelling=spelling):
+                self.run_scu(spelling, error=f'Unknown command "{spelling}"')
+        self.assertEqual(self.audit_lines(), before)
+        self.assertEqual(self.run_scu("help"), self.run_scu("discl"))
+
+    def test_quit_alias_exits_the_session_and_keeps_committed_changes(self):
+        self.assertEqual(self.run_scu("disc", "quit"), self.run_scu("disc", "quis"))
+        self.assertIn("quit_session, quis, quit", self.run_scu("disc", "quit"))
+        result = subprocess.run([SCU], cwd=self.root, capture_output=True, text=True,
+                                input="cred saved\nquit\ncred after-quit\n", timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.table_data(self.run_scu("disdl")), "saved\t1.0-0.000")
+        self.run_scu("quit", error="quit_session is only available in interactive mode")
+        self.run_scu("verify_audit")
 
     def test_executor_accepts_and_audits_a_command_without_the_cli(self):
         database = self.root / "frontend.sqlite"
@@ -326,9 +926,9 @@ class ScuIntegration(unittest.TestCase):
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines(database)]
         creation = events[2]
         self.assertEqual(creation["command"], "create_deck")
-        self.assertEqual(creation["parameters"], {"deck_name": "example.pas", "from_file": ""})
-        self.assertEqual(creation["provided_arguments"], ["deck_name"])
-        self.assertEqual(creation["options"], {"comment-prefix": "#"})
+        self.assertEqual(creation["parameters"], {"deck_name": "example.pas", "from_file": "", "comment-prefix": "#"})
+        self.assertEqual(creation["provided_arguments"], ["deck_name", "comment-prefix"])
+        self.assertNotIn("options", creation)
         self.assertIn("records=6 interrupted=0", self.run_scu(database, "verify_audit"))
 
     def test_expand_commands_run_the_configured_build_after_writing_outputs(self):
@@ -345,17 +945,17 @@ class ScuIntegration(unittest.TestCase):
             f'{shlex.quote(str(SCU))} verify_audit >/dev/null\n'
         )
         command = 'sh build-script "$1"'
-        self.run_scu("modify_library", f"build_command={command}")
+        self.run_scu("configure_library", f"build_command={command}")
         self.assertEqual(json.loads(self.run_scu("show_library"))["build_command"], command)
         self.run_scu("expand_deck", "main.pas", "expanded file")
         self.run_scu("expand_deck", "main.pas", "export only", "build=n")
-        self.run_scu("expand_modified_decks", "1.0", "batch outputs")
-        self.run_scu("expand_modified_decks", "1.0", "batch outputs", "build=no")
+        self.run_scu("expand_version", "1.0", "batch outputs")
+        self.run_scu("expand_version", "1.0", "batch outputs", "build=no")
         targets = (self.root / "build-targets").read_text().splitlines()
         self.assertEqual(targets, [str(self.root / "expanded file"), str(self.root / "batch outputs")])
         self.assertEqual((self.root / "export only").read_bytes(), b"main\n")
 
-        self.run_scu("modify_library", "build_command=exit 7")
+        self.run_scu("configure_library", "build_command=exit 7")
         self.run_scu("expand_deck", "main.pas", "failed build", error="Build command failed with exit status 7")
         self.assertEqual((self.root / "failed build").read_bytes(), b"main\n")
         records = self.audit_lines()
@@ -366,7 +966,7 @@ class ScuIntegration(unittest.TestCase):
         self.assertEqual([event["output_path"] for event in builds], targets + [str(self.root / "failed build")])
         self.assertEqual(builds[-1]["expansion"], records[-2].split(b" ", 1)[0].decode())
         self.assertIn("interrupted=0", self.run_scu("verify_audit"))
-        self.run_scu("modify_library", "--build_command", "")
+        self.run_scu("configure_library", "--build_command", "")
         self.assertEqual(json.loads(self.run_scu("show_library"))["build_command"], "")
 
     def test_review_safe_output_defaults_and_redirected_commands(self):
@@ -376,8 +976,8 @@ class ScuIntegration(unittest.TestCase):
         working.write_bytes(b"unsaved work\n")
         self.run_scu("extd", "shared.inc", "output_file=", error="Expected a file path")
         self.run_scu("expd", "shared.inc", "output_file=", "build=no", error="Expected a file path")
-        self.run_scu("extd", "shared.inc", "--revision=+01")
-        self.assertEqual((self.root / "shared.inc").read_bytes(), b"shared\n")
+        self.run_scu("extd", "shared.inc", "--revision=0.000")
+        self.assertEqual((self.root / "shared.inc.scu").read_bytes(), b"shared\n")
         self.assertEqual(working.read_bytes(), b"unsaved work\n")
         self.run_scu("lock_verison", error='Unknown command "lock_verison"')
         self.run_scu("extrct_deck", "main.pas", "x.pas", error='Unknown command "extrct_deck"')
@@ -390,7 +990,7 @@ class ScuIntegration(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("Missing required argument deck_name", result.stderr)
         self.assertEqual((self.root / "build-input").read_bytes(), b"")
-        self.assertIn("after-build\t", self.run_scu("ddl"))
+        self.assertIn("after-build\t", self.table_data(self.run_scu("disdl")))
         self.run_scu("conl", "bc=")
         self.assertEqual(json.loads(self.run_scu("show_library"))["build_command"], "")
 
@@ -436,13 +1036,13 @@ class ScuIntegration(unittest.TestCase):
 
     def test_review_version_order_noop_stores_and_output_modes(self):
         self.store("main", b"same\n")
-        self.assertEqual(self.run_scu("store_deck", "main", "input"), "No changes to main")
+        self.assertEqual(self.run_scu("import_deck", "main", "input"), "Imported 0 new, 0 changed, 0 deleted; 1 unchanged.")
         self.assertEqual(len(self.read_library()["revisions"]), 1)
         self.run_scu("lock_version", "Test version")
-        self.run_scu("start_version", "1.1")
+        self.run_scu("create_version", "1.1")
         self.run_scu("lock_version", "Test version")
-        self.run_scu("start_version", "1.02", error="must be greater")
-        self.assertEqual(self.run_scu("start_version"), "Started version 1.11")
+        self.run_scu("create_version", "1.02", error="must be greater")
+        self.assertEqual(self.run_scu("create_version"), "Created version 1.11")
         output = self.root / "mode-output"
         result = subprocess.run([SCU, "extd", "main", output], cwd=self.root, umask=0o027,
                                 capture_output=True, text=True, timeout=20)
@@ -464,24 +1064,24 @@ class ScuIntegration(unittest.TestCase):
                          ["0.000", "0.000", "0.333", "0.666", "0.999"])
         unchanged = self.read_library()
         (self.root / "input").write_bytes(b"beyond the revision limit\n")
-        self.run_scu("store_deck", "main.pas", "input", error="has reached the revision limit")
+        self.run_scu("import_deck", "main.pas", "input", error="has reached the revision limit")
         self.assertEqual(self.read_library(), unchanged)
         self.run_scu("lock_version", "Test version")
-        self.assertEqual(self.run_scu("start_version"), "Started version 1.03")
-        self.assertTrue(self.run_scu("dd", "main.pas").splitlines()[0].endswith("1.0-0.999"))
+        self.assertEqual(self.run_scu("create_version"), "Created version 1.03")
+        self.assertTrue(self.run_scu("disd", "main.pas").splitlines()[2].startswith("1.0-0.999 "))
         self.store("main.pas", b"new release\n")
-        self.assertTrue(self.run_scu("dd", "main.pas").splitlines()[0].endswith("1.03-0.000"))
+        self.assertTrue(self.run_scu("disd", "main.pas").splitlines()[2].startswith("1.03-0.000 "))
         expected_patch = "-old release\n+new release"
-        self.assertIn(expected_patch, self.run_scu("display_deck_diff"))
-        self.assertIn(expected_patch, self.run_scu("display_deck_diff", "main.pas", "1.0-0.999", "1.03-0.000"))
+        self.assertIn(expected_patch, self.run_scu("display_deck_diff", "output_format=unified"))
+        self.assertIn(expected_patch, self.run_scu("display_deck_diff", "main.pas", "1.0-0.999", "1.03-0.000", "output_format=unified"))
         self.run_scu("extract_deck", "main.pas", "old", "version=1.0-0.999")
         self.assertEqual((self.root / "old").read_bytes(), b"old release\n")
         self.run_scu("configure_library", "ri=0.002")
         self.store("main.pas", b"next edit\n")
-        history = self.run_scu("dd", "main.pas").splitlines()
-        self.assertEqual([line.split("\t")[-1] for line in history[:3]],
+        history = self.run_scu("disd", "main.pas").splitlines()
+        self.assertEqual([line.split()[0] for line in history[2:5]],
                          ["1.03-0.002", "1.03-0.000", "1.0-0.999"])
-        self.assertEqual(self.run_scu("ddl"), "main.pas\t1.03-0.002\nother\t1.0-0.000")
+        self.assertEqual(self.table_data(self.run_scu("disdl")), "main.pas\t1.03-0.002\nother\t1.0-0.000")
 
     def test_deck_versions_are_inferred_for_legacy_entries(self):
         self.store("main", b"old\n")
@@ -494,7 +1094,7 @@ class ScuIntegration(unittest.TestCase):
             del entry["deck_revision"]
         self.write_library(document)
         original = self.read_library()
-        self.assertEqual([line.split("\t")[-1] for line in self.run_scu("dd", "main").splitlines()],
+        self.assertEqual([line.split()[0] for line in self.run_scu("disd", "main").splitlines()[2:]],
                          ["1.0-0.001", "1.0-0.000"])
         self.assertEqual(self.read_library(), original)
         self.store("main", b"new\n")
@@ -509,14 +1109,14 @@ class ScuIntegration(unittest.TestCase):
         self.store("main.pas", b"old\n")
         self.store("other.pas", b"unrelated\n")
         self.run_scu("lock_version", "Test version")
-        self.run_scu("start_version", "1.1")
+        self.run_scu("create_version", "1.1")
         self.assertEqual(self.read_library()["header"]["last_modified_deck"], "other.pas")
         self.store("MAIN.PAS", b"new\n//SCU$VERSION\n")
         self.assertEqual(self.read_library()["header"]["last_modified_deck"], "main.pas")
 
         self.assertEqual(self.run_scu("display_deck"), self.run_scu("display_deck", "main.pas"))
-        self.assertTrue(self.run_scu("dd", "dn=SCU$LAST_MODIFIED_DECK").startswith("3\t1.1\t"))
-        self.assertIn("--- main.pas@1.0-0.000\n+++ main.pas@1.1-0.000", self.run_scu("display_deck_diff"))
+        self.assertTrue(self.run_scu("disd", "dn=SCU$LAST_MODIFIED_DECK").splitlines()[2].startswith("1.1-0.000 "))
+        self.assertIn("--- main.pas@1.0-0.000\n+++ main.pas@1.1-0.000", self.run_scu("display_deck_diff", "output_format=unified"))
         begin, outcome = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()[-2:]]
         self.assertEqual(begin["parameters"]["deck_name"], "scu$last_modified_deck")
         self.assertEqual(outcome["resolved_deck"], "main.pas")
@@ -524,10 +1124,10 @@ class ScuIntegration(unittest.TestCase):
         self.run_scu("extd", "output_file=last-source")
         self.assertEqual((self.root / "last-source").read_bytes(), b"new\n//SCU$VERSION\n")
         self.run_scu("extd")
-        self.assertEqual((self.root / "main.pas").read_bytes(), b"new\n//SCU$VERSION\n")
+        self.assertEqual((self.root / "main.pas.scu").read_bytes(), b"new\n//SCU$VERSION\n")
         begin, outcome = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()[-2:]]
         self.assertEqual(begin["parameters"], {"deck_name": "scu$last_modified_deck",
-                                              "output_file": "scu$deck_name"})
+                                              "output_file": "scu$deck_name.scu", "version": "scu$current_version"})
         self.assertEqual(outcome["resolved_deck"], "main.pas")
         self.run_scu("expd", "output_file=last-expanded")
         self.assertEqual((self.root / "last-expanded").read_bytes(), b"new\n1.1\n")
@@ -535,7 +1135,7 @@ class ScuIntegration(unittest.TestCase):
         self.assertEqual((self.root / "main.pas").read_bytes(), b"new\n1.1\n")
         begin, outcome = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()[-2:]]
         self.assertEqual(begin["parameters"], {"deck_name": "scu$last_modified_deck",
-                                              "output_file": "scu$deck_name"})
+                                              "output_file": "scu$deck_name", "build": "yes", "version": "scu$current_version"})
         self.assertEqual(outcome["resolved_deck"], "main.pas")
         self.run_scu("expd", "other.pas")
         self.assertEqual((self.root / "other.pas").read_bytes(), b"unrelated\n")
@@ -550,26 +1150,26 @@ class ScuIntegration(unittest.TestCase):
             read_until(b"scu> ")
             os.write(terminal, b"create_deck pending.pas\n")
             self.assertIn(b"pending.pas version 1.1 revision 0.000", read_until(b"scu> "))
-            os.write(terminal, b"dd\n")
-            self.assertIn(b"4\t1.1\t", read_until(b"scu> "))
-            os.write(terminal, b"dd dn=scu$last\t\n")
-            self.assertIn(b"4\t1.1\t", read_until(b"scu> "))
+            os.write(terminal, b'disd\n')
+            self.assertIn(b"1.1-0.000 ", read_until(b"scu> "))
+            os.write(terminal, b'disd dn=scu$last\t\n')
+            self.assertIn(b"1.1-0.000 ", read_until(b"scu> "))
             os.write(terminal, b"edid\n")
             self.assertIn(b"No changes to pending.pas", read_until(b"scu> "))
             os.write(terminal, b"extd\n")
             response = read_until(b"scu> ")
             self.assertNotIn(b"deck_name= ", response)
             self.assertNotIn(b"output_file= ", response)
-            self.assertEqual((self.root / "pending.pas").read_bytes(), b"")
-            (self.root / "pending.pas").unlink()
+            self.assertEqual((self.root / "pending.pas.scu").read_bytes(), b"")
+            (self.root / "pending.pas.scu").unlink()
             os.write(terminal, b"expd\n")
             response = read_until(b"scu> ")
             self.assertNotIn(b"deck_name= ", response)
             self.assertNotIn(b"output_file= ", response)
             self.assertEqual((self.root / "pending.pas").read_bytes(), b"")
-            os.write(terminal, b"quit save_library=no\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
-        self.assertEqual(self.read_library()["header"]["last_modified_deck"], "main.pas")
+        self.assertEqual(self.read_library()["header"]["last_modified_deck"], "pending.pas")
 
     def test_last_modified_deck_is_inferred_for_older_libraries(self):
         self.store("legacy", b"source\n")
@@ -578,7 +1178,7 @@ class ScuIntegration(unittest.TestCase):
         self.write_library(document)
         original = self.read_library()
         self.assertEqual(json.loads(self.run_scu("show_library"))["last_modified_deck"], "legacy")
-        self.assertTrue(self.run_scu("dd").startswith("1\t1.0\t"))
+        self.assertTrue(self.run_scu("disd").splitlines()[2].startswith("1.0-0.000 "))
         self.assertEqual(self.read_library(), original)
         self.run_scu("create_deck", "new")
         self.assertEqual(self.read_library()["header"]["last_modified_deck"], "new")
@@ -605,10 +1205,10 @@ class ScuIntegration(unittest.TestCase):
         self.assertEqual(self.read_library(), unchanged)
         self.run_scu("lock_version", "Test version")
         self.run_scu("create_deck", "new.pas", error="is locked")
-        self.run_scu("start_version", "1.1")
+        self.run_scu("create_version", "1.1")
         self.run_scu("create_deck", "empty.pas", error="already exists")
 
-        result = subprocess.run([SCU], cwd=self.root, input="create_deck new.pas\nquit\n",
+        result = subprocess.run([SCU], cwd=self.root, input="create_deck new.pas\nquis\n",
                                 capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stderr, "")
@@ -617,7 +1217,7 @@ class ScuIntegration(unittest.TestCase):
 
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
         creates = [event["parameters"] for event in events if event.get("command") == "create_deck"]
-        self.assertEqual(creates[:2], [{"deck_name": "Empty.pas", "from_file": ""},
+        self.assertEqual(creates[:2], [{"deck_name": "Empty.pas"},
                                       {"deck_name": "Imported.pas", "from_file": "initial source"}])
         self.assertIn("interrupted=0", self.run_scu("verify_audit"))
 
@@ -632,14 +1232,14 @@ class ScuIntegration(unittest.TestCase):
 
         self.run_scu("extract_deck", "MAIN.PAS", "raw")
         self.assertEqual((self.root / "raw").read_bytes(), main)
-        self.run_scu("start_version", "1.1", error="Lock version")
+        self.run_scu("create_version", "1.1", error="Lock version")
         self.run_scu("lock_version", "Test version")
-        self.run_scu("store_deck", "main.pas", "input", error="is locked")
-        self.run_scu("start_version", "1.1")
+        self.run_scu("import_deck", "main.pas", "input", error="is locked")
+        self.run_scu("create_version", "1.1")
         self.store("Common.inc", b"new text")
 
         self.run_scu("expand_deck", "main.pas", "old", "--version", "1.0")
-        self.run_scu("expand_deck", "main.pas", "old-by-revision", "--revision", "2")
+        self.run_scu("expand_deck", "main.pas", "old-by-revision", "--version", "1.0", "--revision", "0.000")
         expected = (
             f"'1.0 {stamps[0][:10]} {stamps[0][11:19]}'\r\n"
             f"{stamps[1][:10]} {stamps[1][11:19]}\r\n"
@@ -654,10 +1254,10 @@ class ScuIntegration(unittest.TestCase):
         for mode in ("extract", "expand"):
             output = self.root / mode
             output.mkdir()
-            self.run_scu(f"{mode}_modified_decks", "1.1", output)
-            expected = {"common.inc", "main.pas"} if mode == "expand" else {"common.inc"}
-            self.assertEqual({item.name for item in output.iterdir()}, expected)
-            self.assertEqual((output / "common.inc").read_bytes(), b"latest")
+            self.run_scu("extract_modified_decks" if mode == "extract" else "expand_version", "1.1", output)
+            expected = {"common.inc", "main.pas"} if mode == "expand" else {"common.inc.scu"}
+            self.assertEqual({item.name for item in output.iterdir()}, expected | {".scu-exports.json"})
+            self.assertEqual((output / ("common.inc" if mode == "expand" else "common.inc.scu")).read_bytes(), b"latest")
 
     def test_expansion_macros_distinguish_deck_library_and_expansion_metadata(self):
         names = (
@@ -667,7 +1267,7 @@ class ScuIntegration(unittest.TestCase):
         macros = "//" + " ".join("SCU$" + name for name in names) + "\n"
         self.store("common", macros.encode())
         self.run_scu("lock_version", "Test version")
-        self.run_scu("start_version", "1.1")
+        self.run_scu("create_version", "1.1")
         source = (macros + "//SCU_COPY common\n//scu$deck_version\n").encode()
         self.store("main", source)
         self.store("other", macros.encode())
@@ -697,7 +1297,7 @@ class ScuIntegration(unittest.TestCase):
         output = self.root / "bulk"
         output.mkdir()
         before = time.time()
-        self.run_scu("expand_modified_decks", "1.1", output)
+        self.run_scu("expand_version", "1.1", output)
         clock = check_expanded(output / "main", before, time.time())
         self.assertEqual((output / "other").read_text().split()[-1], clock)
         self.run_scu("extract_deck", "main", "raw")
@@ -742,85 +1342,1378 @@ class ScuIntegration(unittest.TestCase):
         self.assertLess(expand, 4 * extract + 0.05,
                         f"Expansion used {expand:.3f}s of CPU versus {extract:.3f}s for extraction")
 
+    def test_transfer_reports_the_selected_library_version_and_actual_root_deck_version(self):
+        self.store("part", b"old child\n")
+        original = b"//SCU_COPY part\nold root\n"
+        self.store("main", original)
+        edited = b"//SCU_COPY part\nSCU$DECK_VERSION SCU$LIBRARY_VERSION\n"
+        self.store("main", edited)
+        self.run_scu("locv", "desc=First")
+        self.run_scu("crev", "1.1")
+        self.store("part", b"child SCU$DECK_VERSION\n")
+        cases = (
+            ((), "1.1", "1.0-0.001", 4, edited, b"child 1.1-0.000\n1.0-0.001 1.1\n"),
+            (("v=1.0",), "1.0", "1.0-0.001", 3, edited, b"old child\n1.0-0.001 1.0\n"),
+            (("v=1.0", "r=0.000"), "1.0", "1.0-0.000", 3, original, b"old child\nold root\n"),
+            (("v=1.0-0.000",), "1.0", "1.0-0.000", 3, original, b"old child\nold root\n"),
+            (("v=1.0-0.001",), "1.0", "1.0-0.001", 3, edited, b"old child\n1.0-0.001 1.0\n"),
+        )
+        for options, version, deck_version, revision, raw, expanded in cases:
+            for command in ("extract_deck", "expand_deck"):
+                with self.subTest(command=command, options=options):
+                    result = subprocess.run([SCU, command, "main", "result", *options],
+                                            cwd=self.root, capture_output=True, text=True, timeout=20)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stderr,
+                                     f'Using library version {version}, deck "main", deck_version {deck_version}.\n')
+                    self.assertNotIn("library revision", result.stdout + result.stderr)
+                    self.assertEqual((self.root / "result").read_bytes(),
+                                     expanded if command == "expand_deck" else raw)
+                    outcome = json.loads(self.audit_lines()[-1].split(b" ", 1)[1])
+                    self.assertEqual(outcome["snapshot"], {"version": version, "library_revision": revision})
+        self.run_scu("verify_audit")
+
+    def test_transfer_reports_saved_empty_deck_revisions_without_prompting(self):
+        self.run_scu("cred", "main")
+        result = subprocess.run([SCU], cwd=self.root, capture_output=True, text=True, timeout=20,
+                                input="deld main\ncred main\nextd\nexpd build=no\nquis\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, 'Using library version 1.0, deck "main", deck_version 1.0-0.002.\n' * 2)
+        self.assertEqual((self.root / "main").read_bytes(), b"")
+        self.assertEqual(len(self.read_library()["revisions"]), 3)
+        self.run_scu("verify_audit")
+
+    def test_library_version_selectors_work_consistently_across_commands(self):
+        self.store("main", b"old")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("crev", "1.1")
+        self.store("main", b"current")
+        directory = self.root / "output"
+        directory.mkdir()
+        for selector, version, expected in (("scu$previous_version", "1.0", b"old"),
+                                             ("scu$current_version", "1.1", b"current")):
+            for command in ("disdl", "disv"):
+                self.assertIn(version, self.run_scu(command, "v=" + selector))
+            self.run_scu("extmd", "v=" + selector, "od=" + str(directory))
+            self.assertEqual((directory / "main.scu").read_bytes(), expected)
+            self.run_scu("expv", "v=" + selector, "od=" + str(directory), "build=no")
+            self.assertEqual((directory / "main").read_bytes(), expected)
+            self.assertIn("Verified 2", self.run_scu("verd", "v=" + selector, "od=" + str(directory)))
+            self.run_scu("resec", "v=" + selector, "od=" + str(directory))
+            outcome = json.loads(self.audit_lines()[-1].split(b" ", 1)[1])
+            self.assertEqual(outcome["snapshot"]["version"], version)
+        for command in ("extd", "expd"):
+            help_text = self.run_scu("disc", command)
+            self.assertNotIn("Mutually exclusive", help_text)
+            self.assertIn("version=1.1 revision=0.001", help_text)
+        for command in ("disdl", "disv", "verd"):
+            self.assertNotIn("revision (r)", self.run_scu("disc", command))
+        self.run_scu("verify_audit")
+
+    def crash_export_write(self, at, directory, *arguments):
+        compiler = shutil.which("cc")
+        if compiler is None:
+            self.skipTest("A C compiler is required to interrupt export writes.")
+        shim = self.root / "export_crash.so"
+        if not shim.exists():
+            source = self.root / "export_crash.c"
+            source.write_text("""
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+int mkstemp(char *pattern) {
+    static int (*real_mkstemp)(char *);
+    static int count;
+    if (!real_mkstemp) real_mkstemp = dlsym(RTLD_NEXT, "mkstemp");
+    const char *dir = getenv("SCU_EXPORT_CRASH_DIRECTORY");
+    if (dir && !strncmp(pattern, dir, strlen(dir)) &&
+        !strncmp(pattern + strlen(dir), "/.scu-", 6)) {
+        if (++count == atoi(getenv("SCU_EXPORT_CRASH_AT")))
+            kill(getpid(), SIGKILL);
+    }
+    return real_mkstemp(pattern);
+}
+""")
+            subprocess.run([compiler, "-shared", "-fPIC", "-o", shim, source, "-ldl"],
+                           check=True, capture_output=True, timeout=20)
+        result = subprocess.run([SCU, *arguments], cwd=self.root, capture_output=True, timeout=10,
+                                env=dict(os.environ, LD_PRELOAD=str(shim),
+                                         SCU_EXPORT_CRASH_DIRECTORY=str(directory),
+                                         SCU_EXPORT_CRASH_AT=str(at)))
+        self.assertEqual(result.returncode, -signal.SIGKILL, result.stderr)
+
+    def test_export_recovery_completes_manifest_after_output_replacement(self):
+        self.store("part", b"old child")
+        self.store("main", b"SCU$EXPANSION_DATE_TIME\n//SCU_COPY part\n")
+        self.run_scu("expd", "main", "generated", "build=no")
+        original = (self.root / "generated").read_bytes()
+        self.store("part", b"new child")
+        self.crash_export_write(3, self.root, "expd", "main", "generated", "build=no")
+        path = self.root / ".scu-exports.json"
+        interrupted = json.loads(path.read_bytes())
+        pending = interrupted["pending"]["entry"]
+        generated = (self.root / "generated").read_bytes()
+        self.assertNotEqual(generated, original)
+        self.assertEqual(hashlib.sha256(generated).hexdigest(), pending["sha256"])
+        self.assertEqual(interrupted["pending"]["previous_sha256"], hashlib.sha256(original).hexdigest())
+        time.sleep(1.05)
+        self.assertIn("Verified 1", self.run_scu("verd"))
+        repaired = json.loads(path.read_bytes())
+        self.assertNotIn("pending", repaired)
+        self.assertEqual(repaired["files"], [pending])
+        self.assertEqual((self.root / "generated").read_bytes(), generated)
+        stable = path.read_bytes()
+        self.run_scu("verd")
+        self.assertEqual(path.read_bytes(), stable)
+        self.run_scu("verify_audit")
+
+    def test_export_recovery_discards_unpublished_intent_and_preserves_previous_manifest(self):
+        self.store("main", b"old")
+        self.run_scu("extd", "main", "output")
+        path = self.root / ".scu-exports.json"
+        original = json.loads(path.read_bytes())
+        self.store("main", b"new")
+        self.crash_export_write(2, self.root, "extd", "main", "output")
+        self.assertIn("pending", json.loads(path.read_bytes()))
+        self.assertEqual((self.root / "output").read_bytes(), b"old")
+        self.assertIn("outdated", self.run_scu("verd", error="need attention"))
+        self.assertEqual(json.loads(path.read_bytes()), original)
+        self.assertEqual((self.root / "output").read_bytes(), b"old")
+        self.run_scu("extd", "main", "output")
+        self.assertIn("Verified 1", self.run_scu("verd"))
+        self.run_scu("verify_audit")
+
+    def test_export_recovery_handles_first_exports_before_and_after_publication(self):
+        self.store("main", b"content")
+        for stage in (2, 3):
+            with self.subTest(stage=stage):
+                directory = self.root / str(stage)
+                directory.mkdir()
+                output = directory / "custom.raw"
+                self.crash_export_write(stage, directory, "extd", "main", output)
+                path = directory / ".scu-exports.json"
+                record = json.loads(path.read_bytes())
+                self.assertEqual(record["files"], [])
+                self.assertEqual(record["pending"]["previous_sha256"], "")
+                expected = 0 if stage == 2 else 1
+                self.assertIn(f"Verified {expected}", self.run_scu("verd", "od=" + str(directory)))
+                repaired = json.loads(path.read_bytes())
+                self.assertNotIn("pending", repaired)
+                self.assertEqual(len(repaired["files"]), expected)
+                self.assertEqual(output.exists(), stage == 3)
+        self.run_scu("verify_audit")
+
+    def test_export_recovery_preserves_modified_files_and_requires_explicit_reexport(self):
+        self.store("main", b"generated")
+        self.crash_export_write(3, self.root, "extd", "main", "custom.raw")
+        output = self.root / "custom.raw"
+        output.write_bytes(b"user edits after interruption")
+        path = self.root / ".scu-exports.json"
+        report = self.run_scu("verd", error="need attention")
+        self.assertIn("interrupted export; locally modified", report)
+        document = json.loads(path.read_bytes())
+        self.assertNotIn("pending", document)
+        self.assertTrue(document["files"][0]["interrupted_export"])
+        interrupted = path.read_bytes()
+        self.run_scu("verd", error="need attention")
+        self.assertEqual(path.read_bytes(), interrupted)
+        self.assertEqual(output.read_bytes(), b"user edits after interruption")
+        # An interrupted retry must retain the earlier unresolved provenance.
+        self.crash_export_write(2, self.root, "extd", "main", "custom.raw")
+        self.assertIn("interrupted export", self.run_scu("verd", error="need attention"))
+        self.assertEqual(path.read_bytes(), interrupted)
+        self.assertEqual(output.read_bytes(), b"user edits after interruption")
+        # Unrelated exports can proceed without discarding or overwriting this file.
+        self.run_scu("extd", "main", "different.raw")
+        self.assertEqual(output.read_bytes(), b"user edits after interruption")
+        self.run_scu("extd", "main", "custom.raw")
+        self.assertEqual(output.read_bytes(), b"generated")
+        self.assertNotIn("pending", json.loads(path.read_bytes()))
+        self.assertFalse(any(e.get("interrupted_export") for e in json.loads(path.read_bytes())["files"]))
+        self.assertIn("Verified 2", self.run_scu("verd"))
+        self.run_scu("verify_audit")
+
+    def test_export_recovery_is_idempotent_when_repair_is_also_interrupted(self):
+        self.store("main", b"source")
+        self.crash_export_write(3, self.root, "extd", "main", "output")
+        path = self.root / ".scu-exports.json"
+        original = path.read_bytes()
+        self.crash_export_write(1, self.root, "verd")
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual((self.root / "output").read_bytes(), b"source")
+        self.assertIn("Verified 1", self.run_scu("verd"))
+        self.assertNotIn("pending", json.loads(path.read_bytes()))
+        self.run_scu("verify_audit")
+
+    def test_bulk_export_recovery_retains_published_files_without_advancing_checkpoint(self):
+        for deck in ("a", "b", "c"):
+            self.store(deck, deck.encode())
+        directory = self.root / "outputs"
+        directory.mkdir()
+        self.crash_export_write(6, directory, "expv", "od=" + str(directory), "build=no")
+        self.assertEqual((directory / "a").read_bytes(), b"a")
+        self.assertEqual((directory / "b").read_bytes(), b"b")
+        self.assertFalse((directory / "c").exists())
+        path = directory / ".scu-exports.json"
+        interrupted = json.loads(path.read_bytes())
+        self.assertEqual([entry["file"] for entry in interrupted["files"]], ["a"])
+        self.assertEqual(interrupted["pending"]["entry"]["file"], "b")
+        with closing(sqlite3.connect(self.library)) as database:
+            self.assertEqual(database.execute("SELECT count(*) FROM expansion_checkpoints").fetchone(), (0,))
+        self.assertIn("Verified 2", self.run_scu("verd", "od=" + str(directory)))
+        self.run_scu("expv", "od=" + str(directory), "build=no")
+        self.assertIn("Verified 3", self.run_scu("verd", "od=" + str(directory)))
+        self.assertNotIn("pending", json.loads(path.read_bytes()))
+        self.run_scu("verify_audit")
+
+    def test_export_recovery_rejects_unsafe_or_malformed_pending_records(self):
+        self.store("main", b"source")
+        self.crash_export_write(3, self.root, "extd", "main", "output")
+        path = self.root / ".scu-exports.json"
+        original = json.loads(path.read_bytes())
+        for target, key, value, error in (
+            ("entry", "file", "../escape", "invalid or duplicate file name"),
+            ("journal", "previous_sha256", "invalid", "invalid previous output checksum"),
+            ("entry", "sha256", "invalid", "invalid output checksum"),
+        ):
+            with self.subTest(key=key):
+                document = json.loads(json.dumps(original))
+                destination = document["pending"]["entry"] if target == "entry" else document["pending"]
+                destination[key] = value
+                path.write_text(json.dumps(document))
+                before = path.read_bytes()
+                self.run_scu("verd", error=error)
+                self.assertEqual(path.read_bytes(), before)
+                self.assertEqual((self.root / "output").read_bytes(), b"source")
+        path.write_text(json.dumps(original))
+        self.assertIn("Verified 1", self.run_scu("verd"))
+
+    def test_expand_version_latest_populates_a_copy_even_with_an_existing_checkpoint(self):
+        self.store("inherited", b"SCU$DECK_VERSION SCU$LIBRARY_VERSION\n")
+        self.store("main", b"old")
+        self.store("removed", b"remove")
+        self.store("child", b"old child")
+        self.store("parent", b"//SCU_COPY child\n")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("crev", "1.1")
+        self.store("main", b"new")
+        self.store("child", b"new child")
+        self.run_scu("deld", "removed")
+        directory = self.root / "checkout"
+        directory.mkdir()
+        self.assertIn("Wrote 3 deck(s)", self.run_scu("expv", "od=" + str(directory), "build=no"))
+        self.assertFalse((directory / "inherited").exists())
+        self.assertEqual((directory / "parent").read_bytes(), b"new child\n")
+        copy = self.root / "copy.sqlite"
+        shutil.copy2(self.library, copy)
+        for file in directory.iterdir():
+            file.unlink()
+        # The copied database already contains a checkpoint for this exact path.
+        self.assertIn("Wrote 4 deck(s)", self.run_scu(copy, "expv", "v=scu$latest_version",
+                                                   "od=" + str(directory), "build=no"))
+        self.assertEqual({p.name for p in directory.iterdir()},
+                         {"inherited", "main", "child", "parent", ".scu-exports.json"})
+        self.assertEqual((directory / "inherited").read_bytes(), b"1.0-0.000 1.1\n")
+        self.assertEqual((directory / "main").read_bytes(), b"new")
+        self.assertEqual((directory / "parent").read_bytes(), b"new child\n")
+        manifest = json.loads((directory / ".scu-exports.json").read_bytes())
+        inherited = next(e for e in manifest["files"] if e["deck_name"] == "inherited")
+        self.assertEqual(inherited["deck_version"], "1.0-0.000")
+        self.assertEqual(inherited["library_version"], "1.1")
+        self.assertIn("Verified 4", self.run_scu(copy, "verd", "od=" + str(directory)))
+        before = (directory / "inherited").stat().st_ino
+        self.assertIn("Wrote 4 deck(s)", self.run_scu(copy, "expv", "v=scu$latest_version",
+                                                   "od=" + str(directory), "build=no"))
+        self.assertNotEqual((directory / "inherited").stat().st_ino, before)
+        self.assertIn("Wrote 0 deck(s)", self.run_scu(copy, "expv", "od=" + str(directory), "build=no"))
+        self.run_scu(copy, "verify_audit")
+
+    def test_latest_expansion_invalidates_other_version_checkpoints_even_without_owned_decks(self):
+        self.store("main", b"SCU$LIBRARY_VERSION\n")
+        directory = self.root / "checkout"
+        directory.mkdir()
+        self.run_scu("expv", "1.0", directory, "build=no")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("crev", "1.1")
+        self.assertIn("Wrote 0 deck(s)", self.run_scu("expv", "od=" + str(directory), "build=no"))
+        self.run_scu("expv", "v=scu$latest_version", "od=" + str(directory), "build=no")
+        self.assertEqual((directory / "main").read_bytes(), b"1.1\n")
+        with closing(sqlite3.connect(self.library)) as database:
+            self.assertIsNone(database.execute("SELECT comment_prefix FROM expansion_checkpoints "
+                                              "WHERE version='1.0'").fetchone()[0])
+        self.assertIn("Wrote 1 deck(s)", self.run_scu("expv", "1.0", directory, "build=no"))
+        self.assertEqual((directory / "main").read_bytes(), b"1.0\n")
+        self.run_scu("verify_audit")
+
+    def test_failed_latest_build_requires_full_refresh_without_advancing_success(self):
+        self.store("inherited", b"SCU$LIBRARY_VERSION\n")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("crev", "1.1")
+        directory = self.root / "checkout"
+        directory.mkdir()
+        self.run_scu("conl", "build_command=true")
+        self.run_scu("expv", "v=scu$latest_version", "od=" + str(directory))
+        before = self.table_data(self.run_scu("disec")).split("\t")
+        before_build = (before[2], before[4])
+        self.assertNotEqual(before[4], "None")
+        self.run_scu("conl", "build_command=false")
+        self.run_scu("expv", "v=scu$latest_version", "od=" + str(directory), error="Build command failed")
+        after = self.table_data(self.run_scu("disec")).split("\t")
+        self.assertEqual((after[2], after[4]), before_build)
+        with closing(sqlite3.connect(self.library)) as database:
+            self.assertIsNone(database.execute("SELECT comment_prefix FROM expansion_checkpoints "
+                                              "WHERE version='1.1'").fetchone()[0])
+        self.run_scu("conl", "build_command=true")
+        self.assertIn("Wrote 1 deck(s)", self.run_scu("expv", "od=" + str(directory)))
+        self.assertIn("Wrote 0 deck(s)", self.run_scu("expv", "od=" + str(directory)))
+        self.run_scu("verify_audit")
+
+    def test_expansion_checkpoint_display_retains_builds_from_the_old_command_name(self):
+        self.store("main", b"source")
+        self.run_scu("conl", "build_command=true")
+        self.run_scu("expv")
+        before = self.table_data(self.run_scu("disec"))
+        self.assertNotIn("None", before)
+        previous = "0" * 64
+        remap = {}
+        with closing(sqlite3.connect(self.library)) as database, database:
+            records = database.execute("SELECT sequence,line FROM audit_records ORDER BY sequence").fetchall()
+            for sequence, line in records:
+                old_digest, payload = line.split(" ", 1)
+                event = json.loads(payload)
+                if event.get("command") == "expand_version":
+                    event["command"] = "expand_modified_decks"
+                for field in ("begin", "expansion"):
+                    if event.get(field) in remap:
+                        event[field] = remap[event[field]]
+                payload = json.dumps(event, separators=(",", ":"), ensure_ascii=False)
+                digest = hashlib.sha256(("SCU audit v1 " + previous + " " + payload).encode()).hexdigest()
+                remap[old_digest] = digest
+                database.execute("UPDATE audit_records SET line=? WHERE sequence=?", (digest + " " + payload, sequence))
+                previous = digest
+        self.run_scu("verify_audit")
+        self.assertEqual(self.table_data(self.run_scu("disec")), before)
+
+    def test_expand_version_name_defaults_and_latest_selector_completion(self):
+        self.store("main", b"source")
+        for retired in ("expand_modified_decks", "expmd"):
+            self.run_scu(retired, error="Unknown command")
+        help_text = self.run_scu("disc", "expv")
+        self.assertIn("expand_version, expv", help_text)
+        self.assertIn("version (v) : string = scu$current_version", help_text)
+        self.assertIn("scu$latest_version", help_text)
+        with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"expv v=scu$lat\t build=no\n")
+            self.assertIn(b"Wrote 1 deck(s)", read_until(b"scu> "))
+            os.write(terminal, b"expv build=no\n")
+            self.assertIn(b"Wrote 0 deck(s)", read_until(b"scu> "))
+            os.write(terminal, b"quis\n")
+            self.assertEqual(process.wait(timeout=5), 0)
+        self.assertEqual((self.root / "main").read_bytes(), b"source")
+        event = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
+        self.assertTrue(any(e.get("command") == "expand_version" and
+                            e["parameters"]["version"] == "scu$latest_version" for e in event))
+        self.assertIn("expand_deck, expd", self.run_scu("disc", "expd"))
+
+    def test_expand_version_lists_only_written_decks_with_actual_deck_versions(self):
+        inherited = "import-file-" + "a" * 64
+        self.store(inherited, b"inherited")
+        self.store("main", b"old")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("crev", "1.1")
+        self.store("main", b"current")
+        current = self.run_scu("expv", "build=no").splitlines()
+        self.assertEqual(current, ["Deck name  Deck version", "main       1.1-0.000", "Wrote 1 deck(s) for version 1.1"])
+        full = self.run_scu("expv", "v=scu$latest_version", "build=no").splitlines()
+        rows = self.table_data("\n".join(full[:-1])).splitlines()
+        self.assertEqual(rows, [inherited + "\t1.0-0.000", "main\t1.1-0.000"])
+        self.assertEqual(full[-1], "Wrote 2 deck(s) for version 1.1")
+        self.assertEqual(self.run_scu("expv", "build=no"), "Wrote 0 deck(s) for version 1.1")
+        with self.terminal_session(TERM="dumb", columns=80) as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"expv v=scu$latest_version build=no\n")
+            body = read_until(b"scu> ").decode().splitlines()[1:-1]
+            self.assertTrue(all(len(line) <= 80 for line in body), body)
+            self.assertIn("Wrote 2 deck(s) for version 1.1", body)
+            width = body[0].index("Deck version") - 2
+            start = next(i for i, line in enumerate(body) if line.startswith(inherited[:width]))
+            self.assertEqual("".join(line[:width].rstrip() for line in body[start:start + 2]), inherited)
+            os.write(terminal, b"quis\n")
+            self.assertEqual(process.wait(timeout=5), 0)
+        manifest = json.loads((self.root / ".scu-exports.json").read_bytes())
+        self.assertEqual({e["deck_name"]: e["deck_version"] for e in manifest["files"]},
+                         {inherited: "1.0-0.000", "main": "1.1-0.000"})
+        self.assertIn("Verified 2", self.run_scu("verd"))
+        self.run_scu("verify_audit")
+
+    def test_extract_modified_decks_lists_only_written_decks_with_latest_deck_versions(self):
+        self.store("inherited", b"inherited")
+        self.store("removed", b"removed")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("crev", "1.1")
+        self.store("zebra", b"first")
+        self.store("alpha", b"alpha")
+        self.store("zebra", b"latest")
+        self.run_scu("deld", "removed")
+        expected = ["Deck name  Deck version", "alpha      1.1-0.000",
+                    "zebra      1.1-0.001", "Wrote 2 deck(s) for version 1.1"]
+        self.assertEqual(self.run_scu("extmd").splitlines(), expected)
+        self.assertEqual((self.root / "alpha.scu").read_bytes(), b"alpha")
+        self.assertEqual((self.root / "zebra.scu").read_bytes(), b"latest")
+        self.assertFalse((self.root / "inherited.scu").exists())
+        self.assertFalse((self.root / "removed.scu").exists())
+        # Extraction has no checkpoint: a second run lists every extracted deck again.
+        self.assertEqual(self.run_scu("extmd").splitlines(), expected)
+        manifest = json.loads((self.root / ".scu-exports.json").read_bytes())
+        self.assertEqual({e["deck_name"]: e["deck_version"] for e in manifest["files"]},
+                         {"alpha": "1.1-0.000", "zebra": "1.1-0.001"})
+        self.run_scu("locv", "desc=Second")
+        self.run_scu("crev", "1.2")
+        self.assertEqual(self.run_scu("extmd"), "Wrote 0 deck(s) for version 1.2")
+        self.run_scu("verify_audit")
+
+    def test_extract_modified_decks_defaults_to_current_version_without_prompting(self):
+        self.store("main", b"old")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("crev", "1.1")
+        self.store("main", b"current")
+        directory = self.root / "outputs"
+        directory.mkdir()
+        self.assertEqual(self.run_scu("extmd", "od=" + str(directory)).splitlines(),
+                         ["Deck name  Deck version", "main       1.1-0.000", "Wrote 1 deck(s) for version 1.1"])
+        self.assertEqual((directory / "main.scu").read_bytes(), b"current")
+        begin, end = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()[-2:]]
+        self.assertEqual(begin["parameters"]["version"], "scu$current_version")
+        self.assertNotIn("version", begin["provided_arguments"])
+        self.assertEqual(end["snapshot"]["version"], "1.1")
+        self.run_scu("extmd", "v=1.0", "od=" + str(directory))
+        self.assertEqual((directory / "main.scu").read_bytes(), b"old")
+        with self.terminal_session(TERM="dumb") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, ("extmd od=" + str(directory) + "\n").encode())
+            result = read_until(b"scu> ")
+            self.assertIn(b"Wrote 1 deck(s) for version 1.1", result)
+            self.assertNotIn(b"version= ", result)
+            os.write(terminal, b"quis\n")
+            self.assertEqual(process.wait(timeout=5), 0)
+        self.assertEqual((directory / "main.scu").read_bytes(), b"current")
+        self.run_scu("verify_audit")
+
+    def test_extract_modified_decks_defaults_to_library_directory_not_working_directory(self):
+        directory = self.root / "libraries"
+        directory.mkdir()
+        library = directory / "project.sqlite"
+        self.run_scu(library, "inil")
+        source = directory / "input"
+        source.write_bytes(b"source")
+        self.run_scu(library, "impd", "main.pas", source.name)
+        self.assertEqual(self.run_scu(library, "extmd").splitlines(),
+                         ["Deck name  Deck version", "main.pas   1.0-0.000", "Wrote 1 deck(s) for version 1.0"])
+        self.assertEqual((directory / "main.pas.scu").read_bytes(), b"source")
+        self.assertFalse((self.root / "main.pas.scu").exists())
+        begin, end = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines(library)[-2:]]
+        self.assertEqual(begin["parameters"]["output_directory"], "scu$library_directory")
+        self.assertNotIn("output_directory", begin["provided_arguments"])
+        self.assertEqual(end["output_directory"], str(directory))
+        with self.terminal_session("ln=" + str(library), TERM="dumb") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"extmd\n")
+            output = read_until(b"scu> ")
+            self.assertIn(b"Wrote 1 deck(s) for version 1.0", output)
+            self.assertNotIn(b"output_directory= ", output)
+            self.assertNotIn(b"version= ", output)
+            os.write(terminal, b"quis\n")
+            self.assertEqual(process.wait(timeout=5), 0)
+        self.run_scu(library, "extmd", "od=.")
+        self.assertEqual((self.root / "main.pas.scu").read_bytes(), b"source")
+        self.run_scu(library, "verify_audit")
+
+    def test_verification_output_does_not_squeeze_names_for_deleted_decks(self):
+        name = "import-file-" + "a" * 64
+        self.store("boards.c", b"boards")
+        self.store(name, b"hidden checksums")
+        self.run_scu("expv", "v=scu$latest_version", "build=no")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("crev", "1.1")
+        path = self.root / ".scu-exports.json"
+        before = path.read_bytes()
+        self.run_scu("deld", name)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual((self.root / name).read_bytes(), b"hidden checksums")
+        output = self.run_scu("verd", error="1 of 2 deck file(s) need attention")
+        lines = output.splitlines()
+        self.assertEqual(re.split(r" {2,}", lines[0]), ["File", "Mode", "Exported", "Latest", "Status"])
+        self.assertEqual(lines[1].split()[0], "boards.c")
+        self.assertIn("deleted", output)
+        self.assertIn("1.1-0.000", output)
+        self.assertNotIn("unavailable:", output)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertIn("Verified 2", self.run_scu("verd", "v=1.0"))
+        for columns in (80, 96):
+            with self.subTest(columns=columns), self.terminal_session(
+                    TERM="dumb", columns=columns) as (process, terminal, read_until):
+                read_until(b"scu> ")
+                os.write(terminal, b"verd\n")
+                body = read_until(b"scu> ").decode().splitlines()[1:-1]
+                self.assertTrue(all(len(line) <= columns for line in body), body)
+                board = next(line for line in body if line.startswith("boards.c "))
+                self.assertIn("current", board)
+                self.assertIn("expand", board)
+                width = body[0].index("Mode") - 2
+                self.assertGreaterEqual(width, len("scu-import-manifest.json"))
+                start = next(i for i, line in enumerate(body) if line.startswith(name[:width]))
+                self.assertEqual("".join(line[:width].rstrip() for line in body[start:start + 2]), name)
+                os.write(terminal, b"quis\n")
+                self.assertEqual(process.wait(timeout=5), 1)
+        self.run_scu("verify_audit")
+
+    def test_verification_keeps_diagnostics_and_custom_deck_mapping_out_of_columns(self):
+        self.store("boards.c", b"old")
+        self.run_scu("expd", "boards.c", "renamed.out", "build=no")
+        self.store("boards.c", b"//SCU_COPY missing-" + b"a" * 64 + b"\n")
+        report = self.run_scu("verd", error="need attention")
+        self.assertIn('File "renamed.out" is deck "boards.c".', report)
+        self.assertIn("unavailable:", report)
+        self.assertIn("1.0-0.001", report)
+        for columns in (80, 96):
+            with self.subTest(columns=columns), self.terminal_session(
+                    TERM="dumb", columns=columns) as (process, terminal, read_until):
+                read_until(b"scu> ")
+                os.write(terminal, b"verd\n")
+                body = read_until(b"scu> ").decode().splitlines()[1:-1]
+                self.assertTrue(all(len(line) <= columns for line in body), body)
+                row = next(line for line in body if line.startswith("renamed.out "))
+                self.assertIn("unavailable", row)
+                self.assertNotIn("missing-", row)
+                self.assertTrue(any(line.startswith("  File") for line in body), body)
+                os.write(terminal, b"quis\n")
+                self.assertEqual(process.wait(timeout=5), 1)
+
+    def test_verification_finishes_with_deck_file_and_reason_for_every_problem(self):
+        for deck in ("ok", "old", "edited", "missing", "removed", "both"):
+            self.store(deck, b"original")
+            self.run_scu("extd", deck)
+        self.store("old", b"new")
+        (self.root / "edited.scu").write_bytes(b"local")
+        (self.root / "missing.scu").unlink()
+        self.run_scu("deld", "removed")
+        self.store("both", b"new")
+        (self.root / "both.scu").write_bytes(b"local")
+        self.store("broken", b"old")
+        self.run_scu("expd", "broken", "build=no")
+        self.store("broken", b"//SCU_COPY unknown_copy\n")
+        self.store("unknown", b"untracked")
+        (self.root / "unknown.scu").write_bytes(b"untracked")
+        manifest = (self.root / ".scu-exports.json").read_bytes()
+        output = self.run_scu("verd", error="7 of 8 deck file(s) need attention")
+        self.assertEqual(output.count("Needs attention:"), 1)
+        self.assertNotIn("No errors were found", output)
+        listing, attention = output.split("Needs attention:\n", 1)
+        self.assertIn("current", listing)
+        self.assertNotIn('Deck "ok"', attention)
+        for deck, filename, status in (
+            ("old", "old.scu", "outdated"), ("edited", "edited.scu", "locally modified"),
+            ("missing", "missing.scu", "missing"), ("removed", "removed.scu", "deleted"),
+            ("both", "both.scu", "outdated; locally modified"),
+            ("broken", "broken", "unavailable:"), ("unknown", "unknown.scu", "untracked"),
+        ):
+            with self.subTest(deck=deck):
+                self.assertIn(f'Deck "{deck}", file "{filename}": {status}', attention)
+        self.assertIn("Exported deck version 1.0-0.000; latest deck version 1.0-0.001.", attention)
+        self.assertIn("File checksum differs from its recorded export.", attention)
+        self.assertIn("Output file does not exist.", attention)
+        self.assertIn("Deck is deleted in library version 1.0", attention)
+        self.assertIn('Deck "unknown_copy" does not exist', attention)
+        self.assertIn("No export record exists for this file.", attention)
+        self.assertEqual((self.root / ".scu-exports.json").read_bytes(), manifest)
+        self.assertEqual((self.root / "edited.scu").read_bytes(), b"local")
+        self.run_scu("verify_audit")
+
+    def test_verification_attention_explains_copy_changes_and_omits_current_decks(self):
+        self.store("part", b"old")
+        self.store("main", b"//SCU_COPY part\n")
+        self.run_scu("expd", "main", "build=no")
+        current = self.run_scu("verd")
+        self.assertNotIn("Needs attention:", current)
+        self.assertIn("No errors were found.", current)
+        self.store("part", b"new")
+        output = self.run_scu("verd", error="need attention")
+        attention = output.split("Needs attention:\n", 1)[1]
+        self.assertIn('Deck "main", file "main": outdated', attention)
+        self.assertIn("Generated output differs from the selected snapshot (COPY or macro expansion).", attention)
+        self.run_scu("verify_audit")
+
+    def test_verification_attention_reports_nonregular_outputs_and_continues(self):
+        self.store("bad", b"bad")
+        self.store("ok", b"ok")
+        self.run_scu("extd", "bad")
+        self.run_scu("extd", "ok")
+        output = self.root / "bad.scu"
+        output.unlink()
+        output.mkdir()
+        report = self.run_scu("verd", error="1 of 2 deck file(s) need attention")
+        table, attention = report.split("Needs attention:\n", 1)
+        self.assertRegex(table, r"ok.scu +extract +1.0-0.000 +1.0-0.000 +current")
+        self.assertIn('Deck "bad", file "bad.scu": unavailable:', attention)
+        self.assertIn("Expected a regular file", attention)
+        self.assertNotIn('Deck "ok"', attention)
+        self.assertTrue(output.is_dir())
+
+    def test_verify_decks_reproduces_nested_copy_and_expansion_time_macros(self):
+        self.store("leaf", b"leaf SCU$DECK_VERSION\n")
+        self.store("middle", b"//SCU_COPY leaf\n")
+        root = b"SCU$EXPANSION_DATE_TIME SCU$EXPANSION_TIME\n//SCU_COPY middle\n"
+        self.store("main", root)
+        self.run_scu("extd", "main", "raw")
+        self.run_scu("expd", "main", "expanded", "build=no")
+        manifest_path = self.root / ".scu-exports.json"
+        manifest = json.loads(manifest_path.read_bytes())
+        self.assertEqual(manifest["format"], 1)
+        self.assertEqual({e["mode"] for e in manifest["files"]}, {"extract", "expand"})
+        for entry in manifest["files"]:
+            data = (self.root / entry["file"]).read_bytes()
+            self.assertEqual(entry["sha256"], hashlib.sha256(data).hexdigest())
+            self.assertEqual(entry["deck_name"], "main")
+            self.assertEqual(entry["deck_version"], "1.0-0.000")
+        before = {name: (self.root / name).read_bytes() for name in ("raw", "expanded", ".scu-exports.json")}
+        time.sleep(1.05)
+        result = self.run_scu("verd")
+        self.assertIn("Verified 2 deck file(s) against version 1.0.", result)
+        self.assertEqual(result.count("current"), 2)
+        self.assertEqual((self.root / "raw").read_bytes(), root)
+        self.assertIn(b"leaf 1.0-0.000", (self.root / "expanded").read_bytes())
+        self.assertEqual({name: (self.root / name).read_bytes() for name in before}, before)
+        outcome = json.loads(self.audit_lines()[-1].split(b" ", 1)[1])
+        self.assertEqual(outcome["output_directory"], str(self.root))
+        self.assertEqual(outcome["snapshot"], {"version": "1.0", "library_revision": 3})
+        self.run_scu("verify_audit")
+
+    def test_verify_decks_distinguishes_dependency_changes_local_edits_and_missing_files(self):
+        self.store("part", b"old")
+        self.store("main", b"//SCU_COPY part\n")
+        self.run_scu("extd", "main", "raw")
+        self.run_scu("expd", "main", "expanded", "build=no")
+        self.store("part", b"new")
+        before = (self.root / ".scu-exports.json").read_bytes()
+        output = self.run_scu("verd", error="1 of 2 deck file(s) need attention")
+        self.assertIn("outdated", output)
+        self.assertIn("current", output)
+        (self.root / "expanded").write_bytes(b"local")
+        output = self.run_scu("verd", error="need attention")
+        self.assertIn("outdated; locally modified", output)
+        self.assertEqual((self.root / "expanded").read_bytes(), b"local")
+        (self.root / "raw").unlink()
+        output = self.run_scu("verd", error="2 of 2")
+        self.assertIn("missing", output)
+        self.assertEqual((self.root / ".scu-exports.json").read_bytes(), before)
+        self.run_scu("deld", "part")
+        output = self.run_scu("verd", error="need attention")
+        self.assertIn("unavailable", output)
+        self.assertIn('does not exist in version 1.0', output)
+        self.run_scu("verify_audit")
+
+    def test_verify_decks_flags_older_root_revision_and_honors_selected_version(self):
+        self.store("main", b"old")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("crev", "1.1")
+        self.store("main", b"current")
+        self.run_scu("extd", "main", "output", "v=1.0", "r=0.000")
+        output = self.run_scu("verd", error="need attention")
+        self.assertIn("outdated", output)
+        self.assertIn("1.0-0.000", output)
+        self.assertIn("1.1-0.000", output)
+        self.assertIn("Verified 1", self.run_scu("verd", "--version", "1.0"))
+        self.run_scu("extd", "main", "output")
+        (self.root / "output").write_bytes(b"local")
+        output = self.run_scu("verd", error="need attention")
+        self.assertIn("locally modified", output)
+        self.assertNotIn("outdated", output)
+
+    def test_verify_decks_handles_untracked_files_and_never_creates_a_manifest(self):
+        self.store("main", b"source")
+        (self.root / "main").write_bytes(b"source")
+        self.assertIn("untracked", self.run_scu("verd", error="need attention"))
+        self.assertFalse((self.root / ".scu-exports.json").exists())
+        directory = self.root / "empty"
+        directory.mkdir()
+        self.assertIn("Verified 0", self.run_scu("verd", "od=empty"))
+        self.assertFalse((directory / ".scu-exports.json").exists())
+        help_text = self.run_scu("disc", "verd")
+        self.assertIn("verify_decks, verd", help_text)
+        self.assertIn("version (v) : string = scu$current_version", help_text)
+
+    def test_export_manifests_reject_corruption_and_reserved_output_paths(self):
+        self.store("main", b"source")
+        manifest = self.root / ".scu-exports.json"
+        manifest.write_text("invalid JSON")
+        output = self.root / "output"
+        output.write_bytes(b"keep")
+        self.run_scu("extd", "main", "output", error="Export manifest")
+        self.assertEqual(output.read_bytes(), b"keep")
+        manifest.unlink()
+        self.run_scu("expd", "main", "output", "build=no")
+        saved = manifest.read_bytes()
+        self.run_scu("extd", "main", manifest, error="reserved for the SCU export manifest")
+        self.assertEqual(manifest.read_bytes(), saved)
+        document = json.loads(saved)
+        document["files"][0]["file"] = "../escape"
+        manifest.write_text(json.dumps(document))
+        self.run_scu("verd", error="invalid or duplicate file name")
+        self.assertFalse((self.root.parent / "escape").exists())
+
+    def test_export_manifest_updates_are_serialized_across_libraries(self):
+        other = self.root / "other.sqlite"
+        self.run_scu(other, "inil")
+        self.store("first", b"first")
+        source = self.root / "other-source"
+        source.write_bytes(b"second")
+        self.run_scu(other, "impd", "second", source.name)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as workers:
+            tasks = [workers.submit(self.run_scu, "extd", "first", "first"),
+                     workers.submit(self.run_scu, other, "extd", "second", "second")]
+            for task in tasks:
+                task.result()
+        manifest = json.loads((self.root / ".scu-exports.json").read_bytes())
+        self.assertEqual({e["file"] for e in manifest["files"]}, {"first", "second"})
+        self.assertIn("Verified 1", self.run_scu("verd"))
+        self.assertIn("Verified 1", self.run_scu(other, "verd"))
+        self.run_scu("verify_audit")
+        self.run_scu(other, "verify_audit")
+
+    def test_bulk_exports_track_dependency_refreshes_and_prefix_overrides(self):
+        self.store("part", b"old")
+        self.store("main", b"!SCU_COPY part\nSCU$EXPANSION_TIME")
+        self.run_scu("expv", "build=no", "cp=!")
+        self.assertIn("Verified 2", self.run_scu("verd"))
+        self.store("part", b"new")
+        self.assertIn("outdated", self.run_scu("verd", error="need attention"))
+        self.run_scu("expv", "build=no", "cp=!")
+        self.assertIn("Verified 2", self.run_scu("verd"))
+        self.run_scu("extmd", "1.0", str(self.root))
+        document = json.loads((self.root / ".scu-exports.json").read_bytes())
+        self.assertEqual({entry["mode"] for entry in document["files"]}, {"extract", "expand"})
+        self.assertIn("Verified 4", self.run_scu("verd"))
+
+    def test_default_extraction_and_expansion_use_separate_files(self):
+        raw = b"SCU$DECK_VERSION\n"
+        self.store("main.pas", raw)
+        self.run_scu("expd", "build=no")
+        expanded = (self.root / "main.pas").read_bytes()
+        self.assertEqual(expanded, b"1.0-0.000\n")
+        self.run_scu("extd")
+        self.assertEqual((self.root / "main.pas.scu").read_bytes(), raw)
+        self.assertEqual((self.root / "main.pas").read_bytes(), expanded)
+        self.run_scu("extd", "main.pas", "explicit.txt")
+        self.assertEqual((self.root / "explicit.txt").read_bytes(), raw)
+        self.assertFalse((self.root / "explicit.txt.scu").exists())
+        self.assertIn("Verified 3", self.run_scu("verd"))
+        self.run_scu("verify_audit")
+
+    def configure_file_patterns(self, patterns, library=None):
+        editor = self.root / ".set-patterns.py"
+        data = self.root / ".pattern-list"
+        data.write_text("\n".join(patterns) + "\n")
+        editor.write_text("import pathlib, sys; pathlib.Path(sys.argv[-1]).write_bytes(pathlib.Path(sys.argv[1]).read_bytes())")
+        args = (library,) if library is not None else ()
+        self.run_scu(*args, "conl", "editor=" + json.dumps([sys.executable, str(editor), str(data)]))
+        self.run_scu(*args, "edifp")
+
+    def test_import_scan_snapshots_new_changed_deleted_and_inherited_files(self):
+        directory = self.root / "project"
+        directory.mkdir()
+        library = directory / "project.sqlite"
+        self.run_scu(library, "inil")
+        self.configure_file_patterns(["*.c", "m*.c", "Makefile"], library)
+        main = directory / "main.c"
+        main.write_bytes(b"first\n")
+        (directory / "removed.c").write_bytes(b"old source\n")
+        (directory / "Makefile").write_bytes(b"make\n")
+        (self.root / "outside.c").write_bytes(b"wrong directory")
+        self.run_scu(library, "cred", "unselected.txt")
+        first = self.run_scu(library, "impd")
+        self.assertIn("Imported 3 new, 0 changed, 0 deleted; 0 unchanged.", first)
+        self.assertEqual(self.table_data("\n".join(first.splitlines()[:-1])).splitlines(),
+                         ["main.c\t1.0-0.000\tnew", "makefile\t1.0-0.000\tnew", "removed.c\t1.0-0.000\tnew"])
+        self.assertEqual(self.run_scu(library, "impd"), "Imported 0 new, 0 changed, 0 deleted; 3 unchanged.")
+        self.run_scu(library, "locv", "Initial snapshot")
+        self.run_scu(library, "crev", "1.1")
+        self.assertEqual(self.run_scu(library, "impd"), "Imported 0 new, 0 changed, 0 deleted; 3 unchanged.")
+        mtime = main.stat().st_mtime_ns
+        main.write_bytes(b"changed\n")
+        os.utime(main, ns=(mtime, mtime))
+        (directory / "removed.c").unlink()
+        (directory / "added.c").write_bytes(b"new source\n")
+        changed = self.run_scu(library, "impd")
+        self.assertEqual(self.table_data("\n".join(changed.splitlines()[:-1])).splitlines(),
+                         ["added.c\t1.1-0.000\tnew", "main.c\t1.1-0.000\tchanged", "removed.c\t1.1-0.000\tdeleted"])
+        self.assertIn("Imported 1 new, 1 changed, 1 deleted; 1 unchanged.", changed)
+        self.run_scu(library, "extd", "removed.c", self.root / "old", "v=1.0")
+        self.assertEqual((self.root / "old").read_bytes(), b"old source\n")
+        self.run_scu(library, "extd", "removed.c", self.root / "gone", error="does not exist")
+        (directory / "removed.c").write_bytes(b"old source\n")
+        self.assertIn("removed.c", self.run_scu(library, "impd"))
+        self.assertIn("1.1-0.001", self.run_scu(library, "disd", "removed.c"))
+        self.configure_file_patterns(["added.c"], library)
+        (directory / "main.c").unlink()
+        self.assertEqual(self.run_scu(library, "impd"), "Imported 0 new, 0 changed, 0 deleted; 1 unchanged.")
+        listing = self.table_data(self.run_scu(library, "disdl"))
+        self.assertIn("main.c\t1.1-0.000", listing)
+        self.assertIn("makefile\t1.0-0.000", listing)
+        self.assertIn("unselected.txt\t", listing)
+        self.assertNotIn("outside.c", listing)
+        self.run_scu(library, "verify_audit")
+
+    def test_import_scan_tracks_filename_case_and_detects_collisions(self):
+        self.configure_file_patterns(["*.c"])
+        source = self.root / "Main.c"
+        source.write_bytes(b"source")
+        self.assertIn("Imported 1 new", self.run_scu("impd"))
+        self.assertEqual(self.read_library()["revisions"][-1]["source_path"], "Main.c")
+        source.write_bytes(b"single deck")
+        self.assertIn("changed", self.run_scu("impd", "main.c"))
+        self.assertEqual(self.read_library()["revisions"][-1]["source_path"], "Main.c")
+        before = self.read_library()
+        (self.root / "main.c").write_bytes(b"collision")
+        self.run_scu("impd", error="both map to deck")
+        self.assertEqual(self.read_library(), before)
+        (self.root / "main.c").unlink()
+        source.unlink()
+        self.assertIn("deleted", self.run_scu("impd"))
+        self.assertEqual(self.read_library()["revisions"][-1]["source_path"], "Main.c")
+        source.write_bytes(b"recreated")
+        self.assertIn("new", self.run_scu("impd"))
+        self.assertEqual(self.read_library()["revisions"][-1]["deck_revision"], "0.003")
+        self.run_scu("verify_audit")
+
+    def test_import_scan_rejects_symlinks_and_invalid_names_without_deleting_decks(self):
+        self.configure_file_patterns(["*.c"])
+        (self.root / "main.c").write_bytes(b"source")
+        self.run_scu("impd")
+        (self.root / "main.c").unlink()
+        before = self.read_library()
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "outside.c").write_bytes(b"outside")
+        (self.root / "src.c").symlink_to(outside, target_is_directory=True)
+        self.run_scu("impd", error="symbolic link")
+        self.assertEqual(self.read_library(), before)
+        (self.root / "src.c").unlink()
+        (self.root / "bad.c").symlink_to(outside / "outside.c")
+        self.run_scu("impd", error="symbolic link")
+        self.assertEqual(self.read_library(), before)
+        (self.root / "bad.c").unlink()
+        (self.root / "file with spaces.c").write_bytes(b"invalid deck filename")
+        self.run_scu("impd", error="Invalid deck name")
+        self.assertEqual(self.read_library(), before)
+        self.run_scu("verify_audit")
+
+    def test_import_scan_does_not_import_sqlite_operational_files_or_export_manifest(self):
+        self.configure_file_patterns(["*", ".scu-exports.json", "library.sqlite*"])
+        (self.root / "main.c").write_bytes(b"source")
+        (self.root / ".scu-exports.json").write_text("not source")
+        (self.root / "subdir").mkdir()
+        self.assertIn("Imported 1 new", self.run_scu("impd"))
+        self.assertEqual([r["deck"] for r in self.read_library()["revisions"]], ["main.c"])
+        self.run_scu("verify_audit")
+
+    def test_import_scan_rolls_back_entire_batch_on_revision_limit_or_audit_failure(self):
+        self.configure_file_patterns(["*.c"])
+        for name in ("alpha.c", "limited.c", "removed.c"):
+            (self.root / name).write_bytes(b"original")
+        self.run_scu("impd")
+        self.run_scu("conl", "revision_increment=0.999")
+        (self.root / "limited.c").write_bytes(b"limit")
+        self.run_scu("impd")
+        before = self.read_library()
+        (self.root / "alpha.c").write_bytes(b"changed")
+        (self.root / "limited.c").write_bytes(b"over limit")
+        (self.root / "removed.c").unlink()
+        self.run_scu("impd", error="revision limit")
+        self.assertEqual(self.read_library(), before)
+        self.run_scu("locv", "First")
+        self.run_scu("crev", "1.1")
+        with closing(sqlite3.connect(self.library, isolation_level=None)) as database:
+            before = self.sqlite_state(database)
+            state = database.execute("SELECT * FROM audit_state").fetchall()
+            database.execute("""
+                CREATE TRIGGER reject_snapshot BEFORE INSERT ON audit_records
+                WHEN json_extract(substr(NEW.line, 66), '$.phase') = 'end'
+                 AND json_extract(substr(NEW.line, 66), '$.success') = 1
+                BEGIN SELECT RAISE(ABORT, 'injected snapshot audit failure'); END
+            """)
+            self.run_scu("impd", error="injected snapshot audit failure")
+            self.assertEqual(self.sqlite_state(database), before)
+            self.assertEqual(database.execute("SELECT * FROM audit_state").fetchall(), state)
+            database.execute("DROP TRIGGER reject_snapshot")
+        self.assertIn("Imported 0 new, 2 changed, 1 deleted", self.run_scu("impd"))
+        self.run_scu("verify_audit")
+
+    def test_import_scan_wildcards_and_prefix_only_changes_without_subdirectories(self):
+        self.configure_file_patterns(["[ab]?.c", "a?.c"])
+        (self.root / "nested").mkdir()
+        (self.root / "nested/a3.c").write_bytes(b"not selected")
+        (self.root / "a1.c").write_bytes(b"//SCU_COPY part\n")
+        (self.root / "b2.c").write_bytes(b"source")
+        (self.root / "skip.c").write_bytes(b"not selected")
+        self.assertIn("Imported 2 new", self.run_scu("impd", "cp=#"))
+        self.assertEqual([r["comment_prefix"] for r in self.read_library()["revisions"]], ["#", "#"])
+        self.assertIn("2 unchanged", self.run_scu("impd"))
+        self.assertIn("Imported 0 new, 2 changed", self.run_scu("impd", "cp=//"))
+        self.assertEqual([r["comment_prefix"] for r in self.read_library()["revisions"][-2:]], ["//", "//"])
+        self.assertNotIn("skip.c", self.table_data(self.run_scu("disdl")))
+        (self.root / "a1.c").unlink()
+        self.assertIn("1 deleted", self.run_scu("impd"))
+        self.assertEqual(self.read_library()["revisions"][-1]["comment_prefix"], "//")
+        self.run_scu("verify_audit")
+
+    def test_import_scan_cancelled_lock_wait_has_no_effect(self):
+        self.configure_file_patterns(["*.c"])
+        (self.root / "main.c").write_bytes(b"source")
+        with self.terminal_session(TERM="dumb") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            before = self.read_library()
+            audit = self.audit_lines()
+            with self.library.with_suffix(".sqlite.lock").open("rb") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                os.write(terminal, b"impd\n")
+                read_until(b"impd")
+                process.send_signal(signal.SIGINT)
+                self.assertIn(b"Command cancelled.", read_until(b"scu> "))
+            self.assertEqual(self.read_library(), before)
+            self.assertEqual(self.audit_lines(), audit)
+            os.write(terminal, b"impd\n")
+            self.assertIn(b"Imported 1 new", read_until(b"scu> "))
+            os.write(terminal, b"quit\n")
+            self.assertEqual(process.wait(timeout=5), 0)
+        self.run_scu("verify_audit")
+
+    def test_import_scan_read_error_after_staging_a_change_rolls_back(self):
+        self.configure_file_patterns(["*.c"])
+        (self.root / "alpha.c").write_bytes(b"first")
+        (self.root / "removed.c").write_bytes(b"old")
+        self.run_scu("impd")
+        before = self.read_library()
+        (self.root / "alpha.c").write_bytes(b"changed")
+        (self.root / "removed.c").unlink()
+        with (self.root / "oversized.c").open("wb") as stream:
+            stream.truncate(64 * 1024 * 1024 + 1)
+        self.run_scu("impd", error="File exceeds")
+        self.assertEqual(self.read_library(), before)
+        self.run_scu("verify_audit")
+
+    def test_file_patterns_rejects_directory_components_without_changing_configuration(self):
+        self.configure_file_patterns(["*.c"])
+        before = self.read_library()
+        for pattern in ("src/*.c", "./*.c", "dir\\*.c", "**/*.c", "src/file.c"):
+            with self.subTest(pattern=pattern):
+                (self.root / ".pattern-list").write_text(pattern + "\n")
+                self.run_scu("edifp", error="subdirectories are not supported yet")
+                self.assertEqual(self.read_library(), before)
+        self.run_scu("verify_audit")
+
+    def test_previous_subdirectory_patterns_can_be_opened_and_corrected_without_scanning(self):
+        document = self.read_library()
+        document["header"]["file_patterns"] = ["src/*.c"]
+        recovery = self.root / "earlier-selection.json"
+        recovery.write_text(json.dumps(document))
+        library = self.root / "earlier.sqlite"
+        self.run_scu(library, "recl", recovery)
+        self.assertIn("src/*.c", self.run_scu(library, "disl"))
+        with closing(sqlite3.connect(library)) as database:
+            before = self.sqlite_state(database)[:2]
+        self.run_scu(library, "impd", error="subdirectories are not supported yet")
+        with closing(sqlite3.connect(library)) as database:
+            self.assertEqual(self.sqlite_state(database)[:2], before)
+        self.configure_file_patterns(["*.c"], library)
+        self.assertEqual(json.loads(self.run_scu(library, "show_library"))["file_patterns"], ["*.c"])
+        self.run_scu(library, "verify_audit")
+
+    def test_import_source_file_rejects_directory_components_and_resolves_beside_library(self):
+        directory = self.root / "project"
+        directory.mkdir()
+        library = directory / "project.sqlite"
+        self.run_scu(library, "inil")
+        (directory / "main.c").write_bytes(b"library directory source")
+        (self.root / "main.c").write_bytes(b"wrong working-directory source")
+        self.assertIn("Imported 1 new", self.run_scu(library, "impd", "main.c", "source_file=main.c"))
+        self.run_scu(library, "extd", "main.c", self.root / "check")
+        self.assertEqual((self.root / "check").read_bytes(), b"library directory source")
+        with closing(sqlite3.connect(library)) as database:
+            before = self.sqlite_state(database)[:2]
+        for value in ("./main.c", "../main.c", "src/main.c", str(directory / "main.c"),
+                      "src\\main.c", "C:\\main.c", "C:main.c", ".", ".."):
+            with self.subTest(value=value):
+                self.run_scu(library, "impd", "main.c", "source_file=" + value,
+                             error="filename without a directory component")
+                self.run_scu(library, "impd", "main.c", "--source_file", value,
+                             error="filename without a directory component")
+                with closing(sqlite3.connect(library)) as database:
+                    self.assertEqual(self.sqlite_state(database)[:2], before)
+        self.run_scu(library, "verify_audit")
+
+    def test_import_source_file_completion_uses_library_directory_and_omits_directories(self):
+        directory = self.root / "project"
+        directory.mkdir()
+        library = directory / "project.sqlite"
+        self.run_scu(library, "inil")
+        (directory / "source-first").write_bytes(b"selected file")
+        (directory / "source-second").write_bytes(b"another file")
+        (directory / "source-folder").mkdir()
+        (self.root / "source-outside").write_bytes(b"wrong directory")
+        with self.terminal_session("ln=" + str(library), TERM="xterm") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"impd deck source_file=source-\t\t")
+            response = read_until(b"scu> impd deck source_file=source-")
+            self.assertIn(b"source-first", response)
+            self.assertIn(b"source-second", response)
+            self.assertNotIn(b"source-folder", response)
+            self.assertNotIn(b"source-outside", response)
+            os.write(terminal, b"\x15impd deck source_file=source-f\t\n")
+            self.assertIn(b"Imported 1 new", read_until(b"scu> "))
+            os.write(terminal, b"quit\n")
+            self.assertEqual(process.wait(timeout=5), 0)
+        self.run_scu(library, "extd", "deck", self.root / "check")
+        self.assertEqual((self.root / "check").read_bytes(), b"selected file")
+
+    def test_import_scan_empty_patterns_and_named_file_defaults_and_retired_command(self):
+        self.assertIn("No file patterns", self.run_scu("impd"))
+        self.assertEqual(self.read_library()["revisions"], [])
+        source = self.root / "main.c"
+        source.write_bytes(b"first")
+        self.assertIn("new", self.run_scu("impd", "main.c"))
+        self.assertEqual(self.run_scu("impd", "main.c"), "Imported 0 new, 0 changed, 0 deleted; 1 unchanged.")
+        self.run_scu("impd", "source_file=main.c", error="Specify deck_name")
+        self.run_scu("store_deck", "main.c", source, error="Unknown command")
+        self.run_scu("stod", "main.c", source, error="Unknown command")
+        self.run_scu("locv", "First")
+        self.run_scu("impd", error="is locked")
+        self.run_scu("verify_audit")
+
+    def test_import_deck_uses_an_existing_named_deck_regardless_of_filename(self):
+        self.store("main.pas", b"old", "cp=#")
+        self.run_scu("extd")
+        source = self.root / "unrelated.anything"
+        source.write_bytes(b"new\0\xff\n#SCU_COPY part\n")
+        result = self.run_scu("impd", "main.pas", source.name)
+        self.assertIn("1.0-0.001", result)
+        self.assertEqual(self.read_library()["revisions"][-1]["deck"], "main.pas")
+        self.assertEqual(self.read_library()["revisions"][-1]["comment_prefix"], "#")
+        self.run_scu("extd", "main.pas", "check")
+        self.assertEqual((self.root / "check").read_bytes(), source.read_bytes())
+        self.run_scu("impd", "source_file=" + source.name, error="Specify deck_name")
+        self.run_scu("impd", "dn=main.pas", "source_file=" + source.name)
+        self.assertEqual(self.read_library()["revisions"][-1]["deck_revision"], "0.001")
+        self.assertEqual(self.read_library()["header"]["last_modified_deck"], "main.pas")
+        event = json.loads(self.audit_lines()[-2].split(b" ", 1)[1])
+        self.assertEqual(event["command"], "import_deck")
+        self.assertEqual(event["parameters"]["deck_name"], "main.pas")
+        self.assertEqual(source.read_bytes(), b"new\0\xff\n#SCU_COPY part\n")
+        self.run_scu("verify_audit")
+
+    def test_import_deck_creates_recreates_and_enforces_unlocked_versions_and_revision_limits(self):
+        source = self.root / "source.scu"
+        source.write_bytes(b"source")
+        self.assertIn("new", self.run_scu("impd", "missing", source.name))
+        self.store("main", b"original")
+        self.run_scu("conl", "ri=0.999")
+        self.run_scu("impd", "main", source.name)
+        self.assertIn("1 unchanged", self.run_scu("impd", "main", source.name))
+        source.write_bytes(b"different source")
+        self.run_scu("impd", "main", source.name, error="revision limit")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("impd", "main", source.name, error="is locked")
+        self.run_scu("crev", "1.1")
+        self.run_scu("impd", "main", source.name)
+        self.assertEqual(self.read_library()["revisions"][-1]["deck_revision"], "0.000")
+        self.run_scu("conl", "ri=0.001")
+        self.run_scu("deld", "main")
+        self.assertIn("new", self.run_scu("impd", "main", source.name))
+        self.assertEqual(self.read_library()["revisions"][-1]["deck_revision"], "0.002")
+        self.assertIn("import_deck, impd", self.run_scu("disc", "impd"))
+        self.run_scu("verify_audit")
+
+    def test_version_and_deck_revision_select_independently_with_inheritance(self):
+        self.store("main", b"first")
+        self.store("unrelated", b"unrelated")
+        self.store("main", b"second")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("crev", "1.1")
+        self.store("unrelated", b"changed")
+        self.run_scu("extd", "main", "inherited")
+        self.assertEqual((self.root / "inherited").read_bytes(), b"second")
+        end = json.loads(self.audit_lines()[-1].split(b" ", 1)[1])
+        self.assertEqual(end["deck_version"], "1.0-0.001")
+        self.assertEqual(end["snapshot"], {"version": "1.1", "library_revision": 4})
+        self.run_scu("extd", "main", "missing", "r=0.001", error='has no deck version "1.1-0.001"')
+        for arguments in (("v=1.0", "r=0.000"), ("version=1.0-0.000",),
+                          ("--version", "1.0", "--revision", "0.000")):
+            self.run_scu("extd", "main", "old", *arguments)
+            self.assertEqual((self.root / "old").read_bytes(), b"first")
+            end = json.loads(self.audit_lines()[-1].split(b" ", 1)[1])
+            self.assertEqual(end["deck_version"], "1.0-0.000")
+            self.assertEqual(end["resolved_deck"], "main")
+            self.assertEqual(end["snapshot"], {"version": "1.0", "library_revision": 3})
+        self.store("main", b"current")
+        self.run_scu("extd", "main", "current", "r=0.000")
+        self.assertEqual((self.root / "current").read_bytes(), b"current")
+        self.run_scu("verify_audit")
+
+    def test_explicit_root_revision_uses_selected_version_for_nested_copy_and_macros(self):
+        self.store("main", b"old SCU$DECK_VERSION SCU$LIBRARY_VERSION\n//SCU_COPY middle\n")
+        self.store("main", b"new root\n")
+        self.store("middle", b"//SCU_COPY leaf\n")
+        self.store("leaf", b"first leaf\n")
+        self.store("leaf", b"new leaf SCU$DECK_VERSION\n")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("crev", "1.1")
+        self.store("leaf", b"current leaf\n")
+        for selector in (("v=1.0", "r=0.000"), ("v=1.0-0.000",)):
+            self.run_scu("expd", "main", "expanded", "build=no", *selector)
+            self.assertEqual((self.root / "expanded").read_bytes(),
+                             b"old 1.0-0.000 1.0\nnew leaf 1.0-0.001\n")
+            end = json.loads(self.audit_lines()[-1].split(b" ", 1)[1])
+            self.assertEqual(end["deck_version"], "1.0-0.000")
+            self.assertEqual(end["snapshot"]["library_revision"], 5)
+        self.run_scu("verify_audit")
+
+    def test_deck_revision_validation_and_tombstones_preserve_output(self):
+        self.store("main", b"original")
+        self.run_scu("deld", "main")
+        self.run_scu("cred", "main")
+        output = self.root / "result"
+        output.write_bytes(b"keep")
+        for command in ("extd", "expd"):
+            for value in ("1", "-0.001", "0.0001", "1e-3", "nan", "", "0x1", "99999999999999999999999"):
+                self.run_scu(command, "main", "result", "r=" + value, error="Expected a deck revision")
+                self.assertEqual(output.read_bytes(), b"keep")
+            self.run_scu(command, "main", "result", "r=0.001", error="is deleted at deck version 1.0-0.001")
+            self.run_scu(command, "main", "result", "v=1.0-0.000", "r=0.000",
+                         error="complete deck version without revision")
+            self.assertEqual(output.read_bytes(), b"keep")
+        self.run_scu("extd", "main", "result", "r=0.000")
+        self.assertEqual(output.read_bytes(), b"original")
+        self.run_scu("extd", "main", "result", "r=0.002")
+        self.assertEqual(output.read_bytes(), b"")
+        self.run_scu("verify_audit")
+
+    def test_completion_revisions_are_per_deck_and_version(self):
+        self.store("main", b"old0")
+        self.store("main", b"old1")
+        self.store("inherited", b"inherited")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("crev", "1.1")
+        self.store("main", b"new0")
+        self.store("other", b"other0")
+        self.store("other", b"other1")
+        with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"extd main v=1.0 r=0.00\t\t")
+            matches = read_until(b"scu> extd main v=1.0 r=0.00")
+            self.assertIn(b"r=0.000", matches)
+            self.assertIn(b"r=0.001", matches)
+            os.write(terminal, b"\x15extd main v=1.1 r=0.00\t o=current\n")
+            read_until(b"scu> ")
+            self.assertEqual((self.root / "current").read_bytes(), b"new0")
+            os.write(terminal, b"extd r=0.001 v=1.0 dn=ma\t o=old\n")
+            read_until(b"scu> ")
+            self.assertEqual((self.root / "old").read_bytes(), b"old1")
+            os.write(terminal, b"extd main r=0.001 v=1.\t o=filtered-version\n")
+            read_until(b"scu> ")
+            self.assertEqual((self.root / "filtered-version").read_bytes(), b"old1")
+            os.write(terminal, b"quis\n")
+            self.assertEqual(process.wait(timeout=5), 0)
+
     def test_snapshot_commands_report_and_audit_the_resolved_snapshot(self):
         source = b"'SCU$VERSION'\n"
         self.store("main.pas", source)
         self.store("shared.inc", b"shared")
-        self.run_scu("lock_version", "Test version")
-        self.run_scu("start_version", "1.1")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("crev", "1.1")
         self.store("extra.inc", b"extra")
-        self.run_scu("lock_version", "Test version")
-        self.run_scu("start_version", "1.2")
-
-        cases = (
-            ((), "1.2", 3, "extra.inc\t1.1-0.000\nmain.pas\t1.0-0.000\nshared.inc\t1.0-0.000\n"),
-            (("version=1.0",), "1.0", 2, "main.pas\t1.0-0.000\nshared.inc\t1.0-0.000\n"),
-            (("revision=1",), "1.0", 1, "main.pas\t1.0-0.000\n"),
-            (("revision=3",), "1.1", 3, "extra.inc\t1.1-0.000\nmain.pas\t1.0-0.000\nshared.inc\t1.0-0.000\n"),
-        )
-        for selectors, version, revision, listing in cases:
+        for version, revision in (("1.0", 2), ("1.1", 3)):
             for command in ("display_deck_list", "extract_deck", "expand_deck"):
-                with self.subTest(command=command, selectors=selectors):
+                with self.subTest(command=command, version=version):
                     arguments = () if command == "display_deck_list" else ("main.pas", "output")
-                    result = subprocess.run(
-                        [SCU, command, *arguments, *selectors], cwd=self.root,
-                        capture_output=True, text=True, timeout=20,
-                    )
+                    result = subprocess.run([SCU, command, *arguments, "version=" + version],
+                                            cwd=self.root, capture_output=True, text=True, timeout=10)
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(result.stderr, f"Using version {version}, library revision {revision}.\n")
-                    self.assertEqual(result.stdout, listing if command == "display_deck_list" else "")
-                    begin, end = [
-                        json.loads(line.split(b" ", 1)[1])
-                        for line in self.audit_lines()[-2:]
-                    ]
-                    self.assertEqual(begin["command"], command)
-                    if not selectors:
-                        self.assertEqual(begin["options"], {"build": "yes"} if command == "expand_deck" else {})
-                    self.assertTrue(end["success"])
-                    self.assertEqual(end["snapshot"], {"version": version, "library_revision": revision})
-                    if command != "display_deck_list":
-                        self.assertEqual(end["output_path"], str(self.root / "output"))
-                    if command == "extract_deck":
-                        self.assertEqual((self.root / "output").read_bytes(), source)
-                    elif command == "expand_deck":
-                        self.assertEqual((self.root / "output").read_text(), f"'{version}'\n")
-
-        missing_cases = (
-            ((), "1.2", 3, "in version 1.2"),
-            (("version=1.0",), "1.0", 2, "in version 1.0"),
-            (("r=1",), "1.0", 1, "at revision 1"),
-        )
-        for selectors, version, revision, location in missing_cases:
-            for command in ("extract_deck", "expand_deck"):
-                with self.subTest(command=command, missing=True, selectors=selectors):
-                    message = f'Deck "missing" does not exist {location}.'
-                    self.run_scu(command, "missing", "output", *selectors, error=message)
+                    self.assertNotIn("library revision", result.stdout + result.stderr)
                     end = json.loads(self.audit_lines()[-1].split(b" ", 1)[1])
-                    self.assertFalse(end["success"])
-                    self.assertEqual(end["detail"], message)
                     self.assertEqual(end["snapshot"], {"version": version, "library_revision": revision})
-        self.run_scu("display_deck_list", "version=9.0", error="does not exist")
-        end = json.loads(self.audit_lines()[-1].split(b" ", 1)[1])
-        self.assertFalse(end["success"])
-        self.assertNotIn("snapshot", end)
-        self.assertIn("interrupted=0", self.run_scu("verify_audit"))
+                    if command == "display_deck_list":
+                        self.assertEqual(result.stderr, f"Using library version {version}.\n")
+                    else:
+                        self.assertEqual(end["deck_version"], "1.0-0.000")
+                        self.assertEqual((self.root / "output").read_bytes(),
+                                         source if command == "extract_deck" else f"'{version}'\n".encode())
+        for command in ("extract_deck", "expand_deck"):
+            self.run_scu(command, "missing", "output", error='Deck "missing" does not exist in version 1.1.')
+        self.run_scu("disdl", "--revision", "1", error="Unknown argument")
+        self.run_scu("disdl", "v=9.0", error='Version "9.0" does not exist')
+        self.run_scu("verify_audit")
+
+    def test_edit_file_patterns_saves_line_list_with_the_configured_waiting_editor(self):
+        self.assertEqual(self.read_library()["header"]["file_patterns"], [])
+        self.assertIn("file_patterns", self.run_scu("disl"))
+        editor = self.root / "pattern-editor.py"
+        candidate = self.root / "new-patterns"
+        candidate.write_bytes(b"  *.pas \r\n\r\n*.inc\nMakefile\nfile with spaces.c\nheader.h\n")
+        editor.write_text("""
+import json, pathlib, sys
+assert sys.argv[1] == '--wait'
+path = pathlib.Path(sys.argv[-1])
+pathlib.Path('editor-observed.json').write_text(json.dumps({
+    'initial': path.read_text(), 'path': str(path),
+    'mode': path.stat().st_mode & 0o777, 'directory_mode': path.parent.stat().st_mode & 0o777}))
+path.write_bytes(pathlib.Path(sys.argv[2]).read_bytes())
+path.with_suffix('.bak').write_text('editor backup')
+""")
+        self.run_scu("conl", "editor=" + json.dumps([sys.executable, str(editor), "--wait", str(candidate)]))
+        self.assertEqual(self.run_scu("edifp"), "Saved 5 file pattern(s).")
+        observed = json.loads((self.root / "editor-observed.json").read_text())
+        self.assertEqual(observed["initial"], "")
+        self.assertEqual((observed["mode"], observed["directory_mode"]), (0o600, 0o700))
+        self.assertFalse(Path(observed["path"]).parent.exists())
+        expected = ["*.pas", "*.inc", "Makefile", "file with spaces.c", "header.h"]
+        self.assertEqual(self.read_library()["header"]["file_patterns"], expected)
+        self.assertEqual(self.read_library()["revisions"], [])
+        event = json.loads(self.audit_lines()[-2].split(b" ", 1)[1])
+        self.assertEqual(event["command"], "edit_file_patterns")
+        self.assertEqual(event["parameters"], {})
+        self.assertIn('"*.pas"', self.run_scu("disl"))
+        self.assertIn("edit_file_patterns, edifp", self.run_scu("disc", "edifp"))
+
+        # Reopen the same list, edit while locked, and verify that no-op edits
+        # do not rewrite metadata or advance its generation.
+        self.run_scu("locv", "desc=Configuration is library-wide")
+        with closing(sqlite3.connect(self.library)) as database:
+            before = database.execute("SELECT generation, payload FROM library").fetchone()
+        self.assertEqual(self.run_scu("edit_file_patterns"), "Saved 5 file pattern(s).")
+        observed = json.loads((self.root / "editor-observed.json").read_text())
+        self.assertEqual(observed["initial"], "\n".join(expected) + "\n")
+        with closing(sqlite3.connect(self.library)) as database:
+            self.assertEqual(database.execute("SELECT generation, payload FROM library").fetchone(), before)
+        candidate.write_bytes(b"\n  \n")
+        self.assertEqual(self.run_scu("edifp"), "Saved 0 file pattern(s).")
+        self.assertEqual(self.read_library()["header"]["file_patterns"], [])
+        self.run_scu("verify_audit")
+
+    def test_edit_file_patterns_rejects_invalid_entries_and_editor_failures_atomically(self):
+        candidate = self.root / "candidate"
+        editor = self.root / "editor.py"
+        editor.write_text("""
+import pathlib, sys
+path = pathlib.Path(sys.argv[-1])
+pathlib.Path('working-path').write_text(str(path))
+path.write_bytes(pathlib.Path('candidate').read_bytes())
+if pathlib.Path('fail-editor').exists():
+    sys.exit(7)
+if pathlib.Path('remove-file').exists():
+    path.unlink()
+""")
+        self.run_scu("conl", "editor=" + json.dumps([sys.executable, str(editor)]))
+        candidate.write_bytes(b"*.pas\n")
+        self.run_scu("edifp")
+        before = self.read_library()
+        for data, error in ((b"*.inc\n../outside\n", "parent-directory"),
+                            (b"src/*.c\n", "subdirectories are not supported yet"),
+                            (b"/tmp/outside\n", "relative to the library directory"),
+                            (b"C:\\outside\n", "relative to the library directory"),
+                            (b"*.inc\x00ignored\n", "NUL bytes"),
+                            (b"x" * (1024 * 1024 + 1), "exceeds")):
+            with self.subTest(data=data[:40]):
+                candidate.write_bytes(data)
+                self.run_scu("edifp", error=error)
+                self.assertEqual(self.read_library(), before)
+                self.assertFalse(Path((self.root / "working-path").read_text()).parent.exists())
+        candidate.write_bytes(b"*.inc\n")
+        for marker, error in (("fail-editor", "Editor failed with exit status 7"),
+                              ("remove-file", "editor removed the working file")):
+            (self.root / marker).touch()
+            self.run_scu("edifp", error=error)
+            (self.root / marker).unlink()
+            self.assertEqual(self.read_library(), before)
+        self.run_scu("verify_audit")
+
+    def test_edit_file_patterns_audit_failure_rolls_back_configuration(self):
+        editor = self.root / "editor.py"
+        editor.write_text("import pathlib, sys; pathlib.Path(sys.argv[-1]).write_text('*.pas\\n')")
+        self.run_scu("conl", "editor=" + json.dumps([sys.executable, str(editor)]))
+        with closing(sqlite3.connect(self.library, isolation_level=None)) as database:
+            before = self.sqlite_state(database)
+            state = database.execute("SELECT * FROM audit_state").fetchall()
+            database.execute("""
+                CREATE TRIGGER reject_patterns BEFORE INSERT ON audit_records
+                WHEN json_extract(substr(NEW.line, 66), '$.phase') = 'end'
+                 AND json_extract(substr(NEW.line, 66), '$.success') = 1
+                BEGIN SELECT RAISE(ABORT, 'injected pattern audit failure'); END
+            """)
+            self.run_scu("edifp", error="injected pattern audit failure")
+            self.assertEqual(self.sqlite_state(database), before)
+            self.assertEqual(database.execute("SELECT * FROM audit_state").fetchall(), state)
+            database.execute("DROP TRIGGER reject_patterns")
+        self.run_scu("edifp")
+        self.assertEqual(self.read_library()["header"]["file_patterns"], ["*.pas"])
+        self.run_scu("verify_audit")
+
+    def test_file_patterns_legacy_default_preserves_audited_header_bytes(self):
+        document = self.read_library()
+        del document["header"]["file_patterns"]
+        recovery = self.root / "old-library.json"
+        recovery.write_text(json.dumps(document))
+        legacy = self.root / "old.sqlite"
+        self.run_scu(legacy, "recl", recovery)
+        self.run_scu(legacy, "verify_audit")
+        with closing(sqlite3.connect(legacy)) as database:
+            before = database.execute("SELECT generation, payload FROM library").fetchone()
+        self.assertRegex(self.run_scu(legacy, "disl"), r"(?m)^file_patterns +\[\]$")
+        with closing(sqlite3.connect(legacy)) as database:
+            self.assertEqual(database.execute("SELECT generation, payload FROM library").fetchone(), before)
+        self.assertNotIn("file_patterns", json.loads(self.run_scu(legacy, "show_library")))
+        self.run_scu(legacy, "conl", 'editor=["true"]')
+        self.assertEqual(self.run_scu(legacy, "edifp"), "Saved 0 file pattern(s).")
+        self.assertNotIn("file_patterns", json.loads(self.run_scu(legacy, "show_library")))
+        editor = self.root / "editor.py"
+        editor.write_text("import pathlib, sys; pathlib.Path(sys.argv[-1]).write_text('Makefile\\n')")
+        self.run_scu(legacy, "conl", "editor=" + json.dumps([sys.executable, str(editor)]))
+        self.run_scu(legacy, "edifp")
+        self.assertEqual(json.loads(self.run_scu(legacy, "show_library"))["file_patterns"], ["Makefile"])
+        self.run_scu(legacy, "verify_audit")
+
+    def test_edit_file_patterns_interrupt_preserves_configuration_and_session(self):
+        self.run_scu("conl", 'editor=["sh", "-c", "echo patterns-editor-ready; exec sleep 30"]')
+        before = self.read_library()
+        with self.terminal_session(TERM="dumb", controlling=True) as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"edifp\n")
+            read_until(b"patterns-editor-ready")
+            os.write(terminal, b"\x03")
+            read_until(b"scu> ")
+            self.assertEqual(self.read_library(), before)
+            os.write(terminal, b"quit\n")
+            process.wait(timeout=5)
+        self.run_scu("verify_audit")
 
     def test_header_configures_editor_and_preserves_old_comment_prefix(self):
-        self.run_scu("configure", "--comment-prefix", "#", "--editor", '["true"]')
+        self.run_scu("conl", "--comment-prefix", "#", "--editor", '["true"]')
         self.store("demo", b"#SCU$VERSION\n")
         self.assertEqual(self.run_scu("edit_deck", "demo"), "No changes to demo")
         self.assertEqual(len(self.read_library()["revisions"]), 1)
         editor = self.root / "test editor"
         editor.write_text('#!/bin/sh\nprintf "%s\\n" "$1" >> "$2"\n')
         editor.chmod(0o700)
-        self.run_scu("configure", "--editor", json.dumps([str(editor), "saved text"]))
+        self.run_scu("conl", "--editor", json.dumps([str(editor), "saved text"]))
         self.assertEqual(self.run_scu("edit_deck", "demo"),
                          "demo version 1.0 revision 0.001, deck version 1.0-0.001")
         self.run_scu("lock_version", "Test version")
         self.run_scu("edit_deck", "demo", error="is locked")
-        self.run_scu("start_version", "1.1")
+        self.run_scu("create_version", "1.1")
         self.run_scu("edid", "noot", error='Deck "noot" does not exist in version 1.1.')
-        self.run_scu("configure", "--comment-prefix", "//", "--editor", '["false"]')
+        self.run_scu("conl", "--comment-prefix", "//", "--editor", '["false"]')
         self.run_scu("edit_deck", "demo", error="exit status 1")
         self.run_scu("expand_deck", "demo", "output", "--version", "1.0")
         self.assertEqual((self.root / "output").read_bytes(), b"1.0\nsaved text\n")
@@ -839,7 +2732,7 @@ class ScuIntegration(unittest.TestCase):
         self.run_scu("create_deck", "shared.inc", "from_file=initial", "comment_prefix=#")
         self.store("leaf.inc", b"!SCU$VERSION\n", "--cp", "!")
         self.run_scu("lock_version", "Test version")
-        self.run_scu("start_version", "1.1")
+        self.run_scu("create_version", "1.1")
         self.run_scu("configure_library", "--comment-prefix", ";")
         self.store("main.pas", main)
         self.store("shared.inc", b"#SCU_COPY leaf.inc\n#SCU$VERSION\nretained\n")
@@ -847,7 +2740,7 @@ class ScuIntegration(unittest.TestCase):
 
         for selectors, expected in (
             (("version=1.0",), b"1.0\n1.0\n"),
-            (("revision=5",), b"1.1\n1.1\nretained\n"),
+            (("version=1.1",), b"1.1\n1.1\nchanged\n"),
             ((), b"1.1\n1.1\nchanged\n"),
             (("--comment-prefix", "//"), b";1.1\n;SCU_COPY leaf.inc\nchanged\n"),
         ):
@@ -855,12 +2748,12 @@ class ScuIntegration(unittest.TestCase):
                 self.run_scu("expand_deck", "main.pas", "expanded", *selectors)
                 self.assertEqual((self.root / "expanded").read_bytes(), expected)
         (self.root / "bulk").mkdir()
-        self.run_scu("expand_modified_decks", "1.1", "bulk")
+        self.run_scu("expand_version", "1.1", "bulk")
         self.assertEqual((self.root / "bulk/main.pas").read_bytes(), b"1.1\n1.1\nchanged\n")
-        self.assertEqual(self.run_scu("expmd"), "Wrote 2 deck(s) for version 1.1")
+        self.assertEqual(self.run_scu("expv").splitlines()[-1], "Wrote 2 deck(s) for version 1.1")
         self.assertEqual((self.root / "main.pas").read_bytes(), b"1.1\n1.1\nchanged\n")
         self.assertEqual([entry["comment_prefix"] for entry in self.read_library()["revisions"]],
-                         ["//", "#", "!", "//", "#", ";"])
+                         ["//", "#", "!", "#", ";"])
         self.run_scu("create_deck", "invalid", "--comment-prefix", "", error="Expected a nonempty comment prefix")
 
     def test_legacy_deck_without_comment_prefix_uses_the_selected_version_default(self):
@@ -870,7 +2763,7 @@ class ScuIntegration(unittest.TestCase):
         del document["revisions"][0]["comment_prefix"]
         self.write_library(document)
         self.run_scu("lock_version", "Test version")
-        self.run_scu("start_version", "1.1")
+        self.run_scu("create_version", "1.1")
         self.run_scu("configure_library", "--comment-prefix", "//")
         unchanged = self.read_library()
         self.run_scu("expand_deck", "legacy", "older", "version=1.0")
@@ -893,8 +2786,8 @@ class ScuIntegration(unittest.TestCase):
         self.store("missing", b"//SCU_COPY unknown\n")
         self.run_scu("expand_deck", "missing", "output", "version=1.0",
                      error='missing:1: Deck "unknown" does not exist in version 1.0.')
-        self.run_scu("expand_deck", "missing", "output", "revision=3",
-                     error='missing:1: Deck "unknown" does not exist at revision 3.')
+        self.run_scu("expand_deck", "missing", "output", "revision=0.000",
+                     error='missing:1: Deck "unknown" does not exist in version 1.0.')
         self.assertEqual((self.root / "output").read_bytes(), source)
 
     def test_audit_detects_modified_records_and_checkpoint_rollback(self):
@@ -915,11 +2808,11 @@ class ScuIntegration(unittest.TestCase):
             database.execute("UPDATE audit_records SET line = replace(line, ?, ?) WHERE sequence = 5",
                              ('"empty"', '"other"'))
         self.run_scu("verify_audit", error="digest mismatch")
-        self.run_scu("store_deck", "other", "input", error="digest mismatch")
+        self.run_scu("import_deck", "other", "input", error="digest mismatch")
 
     def test_one_shot_commands_reuse_audit_state_and_full_verification_reads_the_prefix(self):
-        self.run_scu("list_versions")
-        head = self.run_scu("verify_audit_trail").split("head=")[1]
+        self.table_data(self.run_scu("list_versions"))
+        head = self.run_scu("verify_audit").split("head=")[1]
         with closing(sqlite3.connect(self.library, isolation_level=None)) as database:
             self.assertEqual(database.execute("SELECT record_count, head FROM audit_state").fetchone(), (4, head))
             trigger, = database.execute(
@@ -930,14 +2823,14 @@ class ScuIntegration(unittest.TestCase):
             database.execute("UPDATE audit_records SET line = replace(line, 'initialize_library', 'initialize_other') "
                              "WHERE sequence = 1")
             database.execute(trigger)
-            self.run_scu("list_versions")
+            self.table_data(self.run_scu("list_versions"))
             last, = database.execute("SELECT line FROM audit_records WHERE sequence = 6").fetchone()
             self.assertEqual(database.execute("SELECT record_count, head FROM audit_state").fetchone(),
                              (6, last[:64]))
-        self.run_scu("verify_audit_trail", error="Audit digest mismatch at record 1")
+        self.run_scu("verify_audit", error="Audit digest mismatch at record 1")
 
     def test_audit_state_is_seeded_for_an_existing_library(self):
-        self.run_scu("list_versions")
+        self.table_data(self.run_scu("list_versions"))
         with closing(sqlite3.connect(self.library, isolation_level=None)) as database:
             database.executescript("""
                 DROP TRIGGER audit_state_insert;
@@ -947,21 +2840,21 @@ class ScuIntegration(unittest.TestCase):
                 DROP TABLE audit_state;
                 PRAGMA user_version = 3;
             """)
-            self.assertIn("records=4 interrupted=0", self.run_scu("verify_audit_trail"))
+            self.assertIn("records=4 interrupted=0", self.run_scu("verify_audit"))
             self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (3,))
-            self.run_scu("list_versions")
+            self.table_data(self.run_scu("list_versions"))
             self.assertEqual(database.execute("SELECT record_count FROM audit_state").fetchone(), (6,))
             database.execute("UPDATE audit_state SET head = ?", ("0" * 64,))
-        self.run_scu("list_versions", error="Stored audit state does not match the audit log")
-        self.run_scu("verify_audit_trail", error="Stored audit state does not match the audit log")
+        self.table_data(self.run_scu("list_versions", error="Stored audit state does not match the audit log"))
+        self.run_scu("verify_audit", error="Stored audit state does not match the audit log")
 
-    def test_history_pending_save_applies_only_to_commands_that_changed_the_library(self):
+    def test_history_successful_commands_have_no_pending_saves(self):
         (self.root / "first").write_bytes(b"first\n")
         (self.root / "second").write_bytes(b"second\n")
         script = (
-            "cred pending\nstore_deck pending first\nstore_deck pending second\n"
-            "extd pending copied\nddl\ndisvh\n"
-            "conl bc=true\nconl bc=true\nshow_history\nquit save_library=no\n"
+            "cred pending\nimport_deck pending first\nimport_deck pending second\n"
+            "extd pending copied\ndisdl\ndisvh\n"
+            "conl bc=true\nconl bc=true\nshow_history\nquis\n"
         )
         result = subprocess.run([SCU], cwd=self.root, input=script,
                                 capture_output=True, text=True, timeout=10)
@@ -972,13 +2865,13 @@ class ScuIntegration(unittest.TestCase):
                     for index in range(0, len(events), 2)]
         pending = [(name, outcome.get("pending_save", False)) for name, outcome in attempts[1:]]
         self.assertEqual(pending, [
-            ("create_deck", True), ("store_deck", True), ("store_deck", True),
+            ("create_deck", False), ("import_deck", False), ("import_deck", False),
             ("extract_deck", False), ("display_deck_list", False),
-            ("display_version_history", False), ("configure_library", True),
-            ("configure_library", False), ("quit_session", False),
+            ("display_version_history", False), ("configure_library", False),
+            ("configure_library", False),
         ])
-        self.assertIn("extract_deck deck_name=pending output_file=copied\tsucceeded", result.stdout)
-        self.assertIn("display_version_history\tsucceeded", result.stdout)
+        self.assertIn('extract_deck deck_name=pending output_file=copied version="scu$current_version"', result.stdout)
+        self.assertRegex(result.stdout, r"display_version_history display_description=short limit=10 +succeeded")
 
     def test_background_terminal_eio_does_not_end_the_session(self):
         bash = shutil.which("bash")
@@ -1010,7 +2903,7 @@ class ScuIntegration(unittest.TestCase):
             while os.tcgetpgrp(terminal) != pid:
                 self.assertLess(time.monotonic(), deadline, "SCU did not gain the foreground")
                 time.sleep(0.02)
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             deadline = time.monotonic() + 8
             while os.tcgetpgrp(terminal) != shell.pid:
                 self.assertLess(time.monotonic(), deadline, "The shell did not regain the terminal")
@@ -1032,19 +2925,19 @@ class ScuIntegration(unittest.TestCase):
     def test_show_history_lists_expanded_commands_and_accepts_a_line_count(self):
         for index in range(1, 22):
             self.run_scu("cred", f"deck-{index}")
-        self.run_scu("ddl", "v=1.0")
+        self.table_data(self.run_scu("disdl", "v=1.0"))
         self.run_scu("extd", "dn=deck-21", "o=output copy")
         before = self.audit_lines()
-        history = self.run_scu("show_history").splitlines()
+        history = self.table_data(self.run_scu("show_history")).splitlines()
         self.assertEqual(len(history), 20)
-        self.assertEqual(history[0], 'create_deck deck_name=deck-4 from_file=""\tsucceeded')
+        self.assertEqual(history[0], 'create_deck deck_name=deck-4\tsucceeded')
         self.assertEqual(history[-2:], [
             "display_deck_list version=1.0\tsucceeded",
-            'extract_deck deck_name=deck-21 output_file="output copy"\tsucceeded',
+            'extract_deck deck_name=deck-21 output_file="output copy" version="scu$current_version"\tsucceeded',
         ])
-        self.assertEqual(self.run_scu("shoh", "2").splitlines(), history[-2:])
-        self.assertEqual(self.run_scu("show_history", "nl=1"), history[-1])
-        self.run_scu("show_history", "0", error="Expected a positive number_of_lines")
+        self.assertEqual(self.table_data(self.run_scu("shoh", "2")).splitlines(), history[-2:])
+        self.assertEqual(self.table_data(self.run_scu("show_history", "nl=1")), history[-1])
+        self.table_data(self.run_scu("show_history", "0", error="Expected a positive number_of_lines"))
         self.assertEqual(self.audit_lines(), before)
 
     def test_show_history_reports_failures_without_waiting_on_the_library_lock(self):
@@ -1056,16 +2949,310 @@ class ScuIntegration(unittest.TestCase):
             result = subprocess.run([SCU, "show_history", "2"], cwd=self.root,
                                     capture_output=True, text=True, timeout=2)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.splitlines(), [
-            "extract_deck deck_name=missing output_file=output\tfailed",
-            'create_deck deck_name=saved from_file=""\tsucceeded',
+        self.assertEqual(self.table_data(result.stdout).splitlines(), [
+            'extract_deck deck_name=missing output_file=output version="scu$current_version"\tfailed',
+            'create_deck deck_name=saved\tsucceeded',
         ])
         self.assertEqual(self.audit_lines(), before)
         # A begin without a matching end is still visible after a later command.
         with closing(sqlite3.connect(self.library)) as database, database:
             database.execute("DELETE FROM audit_records WHERE sequence = (SELECT max(sequence) FROM audit_records)")
-        self.run_scu("ddl")
-        self.assertTrue(self.run_scu("shoh", "2").splitlines()[0].endswith("\tinterrupted"))
+        self.table_data(self.run_scu("disdl"))
+        self.assertTrue(self.table_data(self.run_scu("shoh", "2")).splitlines()[0].endswith("\tinterrupted"))
+
+    def test_version_history_accepts_positional_named_and_mixed_parameters(self):
+        self.run_scu("locv", "description=First\nMore detail")
+        self.run_scu("crev", "1.1")
+        short = self.run_scu("disvh", "display_description=short", "limit=0")
+        for arguments in (("short", "0"), ("s", "0"), ("dd=s", "0"), ("l=0", "short"),
+                          ("--display_description", "s", "--limit", "0"),
+                          ("--dd=s", "--l=0")):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(self.run_scu("disvh", *arguments), short)
+                event = json.loads(self.audit_lines()[-2].split(b" ", 1)[1])
+                self.assertEqual(event["parameters"], {"display_description": "short", "limit": "0"})
+                self.assertNotIn("options", event)
+        full = self.run_scu("disvh", "dd=full", "limit=0")
+        self.assertEqual(self.run_scu("disvh", "f", "0"), full)
+        self.assertEqual(self.run_scu("disvh", "full"), self.run_scu("disvh", "dd=full"))
+        self.run_scu("disvh", "s", "many", error="Expected integer value for limit")
+        self.run_scu("disvh", "s", "0", "extra", error="Too many arguments")
+        self.run_scu("disvh", "short", "dd=f", error="Duplicate argument display_description")
+        self.run_scu("disvh", "short", "0", "l=1", error="Duplicate argument limit")
+        self.run_scu("verify_audit")
+
+    def test_version_history_completes_positional_values_and_long_named_arguments(self):
+        self.run_scu("locv", "description=First\nMore detail")
+        with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"disvh fu\t 0\n")
+            self.assertIn(b"First\\nMore detail", read_until(b"scu> "))
+            os.write(terminal, b"disvh --display_d\tf --lim\t0\n")
+            self.assertIn(b"First\\nMore detail", read_until(b"scu> "))
+            os.write(terminal, b"disvh sh\t0\n")
+            output = read_until(b"scu> ")
+            self.assertIn(b"First", output)
+            self.assertNotIn(b"More detail", output)
+            os.write(terminal, b'quis\n')
+            self.assertEqual(process.wait(timeout=5), 0)
+        text = self.run_scu("display_command", "disvh")
+        arguments = text.split("Arguments\n", 1)[1]
+        self.assertIn("display_description (dd) : enum", arguments)
+        self.assertIn("limit (l) : integer = 10", arguments)
+        self.assertNotIn("\nOptions\n", text)
+        self.assertIn("scu disvh short 0", text)
+
+    def test_version_history_limit_selects_recent_versions_including_current(self):
+        for index in range(12):
+            self.run_scu("locv", "description=" + f"Release {index}\nMore detail")
+            self.run_scu("crev", f"1.{index + 1:02d}")
+        entries = self.read_library()["header"]["versions"]
+        def names(output):
+            return [re.split(r" {2,}", line, maxsplit=3)[0] for line in output.splitlines()[1:]]
+        expected = [entry["name"] for entry in entries]
+        output = self.run_scu("disvh")
+        self.assertEqual(names(output), expected[-10:])
+        self.assertIn("open", output.splitlines()[-1])
+        self.assertEqual(names(self.run_scu("disvh", "limit=1")), expected[-1:])
+        self.assertEqual(names(self.run_scu("disvh", "l=3")), expected[-3:])
+        self.assertEqual(names(self.run_scu("disvh", "--limit", "0")), expected)
+        self.assertEqual(names(self.run_scu("disvh", "limit=100")), expected)
+        self.assertEqual(names(self.run_scu("disvh", "limit=9223372036854775807")), expected)
+        full = self.run_scu("disvh", "limit=2", "dd=f")
+        self.assertEqual(names(full), expected[-2:])
+        self.assertIn("Release 11\\nMore detail", full)
+        self.assertEqual(self.read_library()["header"]["versions"], entries)
+        self.run_scu("locv", "desc=Current is locked")
+        self.assertEqual(names(self.run_scu("disvh", "limit=1")), expected[-1:])
+        self.assertIn("locked", self.run_scu("disvh", "limit=1").splitlines()[-1])
+        self.run_scu("verify_audit")
+
+    def test_version_history_limit_validation_help_and_audit_defaults(self):
+        self.assertEqual(len(self.run_scu("disvh").splitlines()), 2)
+        event = json.loads(self.audit_lines()[-2].split(b" ", 1)[1])
+        self.assertEqual(event["parameters"]["limit"], "10")
+        self.run_scu("disvh", "l=0")
+        event = json.loads(self.audit_lines()[-2].split(b" ", 1)[1])
+        self.assertEqual(event["parameters"]["limit"], "0")
+        before = self.read_library()
+        self.run_scu("disvh", "limit=-1", error="Expected a nonnegative integer for limit")
+        for value in ("1.5", "many", "9223372036854775808", ""):
+            with self.subTest(value=value):
+                self.run_scu("disvh", "limit=" + value, error="Expected integer value for limit")
+        self.assertEqual(self.read_library(), before)
+        self.assertIn("limit (l) : integer = 10", self.run_scu("display_command", "disvh"))
+        with self.terminal_session(TERM="dumb") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"disvh\n")
+            output = read_until(b"scu> ")
+            self.assertIn(b"Version", output)
+            self.assertNotIn(b"limit= ", output)
+            os.write(terminal, b'quis\n')
+            self.assertEqual(process.wait(timeout=5), 0)
+        self.run_scu("verify_audit")
+
+    def test_version_history_defaults_to_first_description_line_and_can_show_full_text(self):
+        description = 'First line\nSecond line\n\nLast line with "quotes"'
+        self.run_scu("locv", "description=" + description)
+        entry = self.read_library()["header"]["versions"][0]
+        prefix = f'{"1.0":<7}  {"locked":<6}  {entry["locked_utc"]}  '
+        expected = f'{"Version":<7}  {"Status":<6}  {"Locked (UTC)":<24}  Description\n' + prefix + "First line"
+        self.assertEqual(self.run_scu("disvh"), expected)
+        self.assertEqual(self.run_scu("disvh", "display_description=short"), expected)
+        self.assertEqual(self.run_scu("disvh", "dd=SHORT"), expected)
+        full = self.run_scu("disvh", "display_description=full")
+        self.assertEqual(full.splitlines()[-1], prefix + 'First line\\nSecond line\\n\\nLast line with \\"quotes\\"')
+        self.assertEqual(self.run_scu("disvh", "--dd", "FULL"), full)
+        self.assertEqual(self.read_library()["header"]["versions"][0], entry)
+        audit = self.audit_lines()
+        self.run_scu("disvh", "dd=invalid", error="Expected one of [short (s), full (f)] for display_description")
+        self.assertEqual(self.audit_lines(), audit)
+        help_text = self.run_scu("display_command", "disvh")
+        self.assertIn("display_description (dd) : enum [short (s), full (f)] = short", help_text)
+        self.run_scu("crev", "1.1")
+        self.assertEqual(re.split(r" {2,}", self.run_scu("disvh").splitlines()[-1]), ["1.1", "open", "None"])
+        self.run_scu("verify_audit")
+
+    def test_version_history_short_handles_crlf_and_empty_first_lines(self):
+        for version, description, first in (("1.0", "First\r\nSecond", "First"),
+                                            ("1.1", "Next\rSecond", "Next"),
+                                            ("1.2", "\nLater", "")):
+            if version != "1.0":
+                self.run_scu("crev", version)
+            self.run_scu("locv", "description=" + description)
+            self.assertEqual(re.split(r" {2,}", self.run_scu("disvh").splitlines()[-1], maxsplit=3)[3:], [first] if first else [])
+        self.run_scu("verify_audit")
+
+    def test_enum_completion_and_default_history_mode_do_not_prompt(self):
+        self.run_scu("locv", "description=First\nSecond")
+        with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"disvh\n")
+            output = read_until(b"scu> ")
+            self.assertIn(b"First", output)
+            self.assertNotIn(b"Second", output)
+            os.write(terminal, b"disvh dd=fu\t\n")
+            self.assertIn(b"First\\nSecond", read_until(b"scu> "))
+            os.write(terminal, b"disvh --display_description sh\t\n")
+            self.assertNotIn(b"Second", read_until(b"scu> "))
+            os.write(terminal, b'quis\n')
+            self.assertEqual(process.wait(timeout=5), 0)
+        events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
+        histories = [event for event in events if event.get("command") == "display_version_history"]
+        self.assertEqual([event["parameters"]["display_description"] for event in histories], ["short", "full", "short"])
+
+    def test_enum_positional_arguments_validate_quote_prompt_and_complete(self):
+        executable = self.root / "scu"
+        shutil.copy2(SCU, executable)
+        catalog = json.loads(SCU.with_name("commands.json").read_bytes())
+        command = next(item for item in catalog["commands"] if item["name"] == "lock_version")
+        argument = command["arguments"][0]
+        argument["type"] = "enum"
+        argument["values"] = ["Ready now", "Wait later"]
+        (self.root / "commands.json").write_text(json.dumps(catalog))
+        self.run_scu("locv", "desc=not allowed", executable=executable,
+                     error="Expected one of [Ready now, Wait later] for description")
+        self.run_scu("locv", executable=executable, error="Missing required argument description")
+        with self.terminal_session(TERM="xterm", executable=executable) as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"locv\n")
+            prompt = read_until(b"description= ")
+            self.assertIn(b"description (desc) : enum [Ready now, Wait later] = scu$required", prompt)
+            os.write(terminal, b"Re\t\n")
+            self.assertIn(b"Locked version 1.0", read_until(b"scu> "))
+            os.write(terminal, b'quis\n')
+            self.assertEqual(process.wait(timeout=5), 0)
+        self.assertEqual(self.read_library()["header"]["versions"][0]["description"], "Ready now")
+        self.run_scu("crev", "1.1")
+        result = subprocess.run([executable], cwd=self.root, capture_output=True, text=True, timeout=20,
+                                input="locv desc=\"Wait later\"\nquis\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.read_library()["header"]["versions"][-1]["description"], "Wait later")
+
+    def test_enum_value_aliases_are_canonical_in_help_execution_and_audit(self):
+        self.run_scu("locv", "description=First line\nSecond line")
+        self.assertEqual(self.run_scu("disvh", "dd=s"), self.run_scu("disvh", "dd=short"))
+        self.assertEqual(self.run_scu("disvh", "dd=F"), self.run_scu("disvh", "dd=full"))
+        events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
+        histories = [event for event in events if event.get("command") == "display_version_history"]
+        self.assertEqual([event["parameters"]["display_description"] for event in histories],
+                         ["short", "short", "full", "full"])
+        self.assertIn("enum [short (s), full (f)]", self.run_scu("display_command", "disvh"))
+        with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            prefix = b"disvh dd="
+            os.write(terminal, prefix + b"\t\t")
+            output = read_until(b"scu> " + prefix)
+            self.assertIn(b"short", output)
+            self.assertIn(b"full", output)
+            self.assertIn(b"dd=f ", output)
+            self.assertIn(b"dd=s ", output)
+            os.write(terminal, b"f\n")
+            self.assertIn(b"First line\\nSecond line", read_until(b"scu> "))
+            os.write(terminal, b'quis\n')
+            self.assertEqual(process.wait(timeout=5), 0)
+        self.run_scu("verify_audit")
+
+    def test_enum_value_alias_defaults_and_quoted_argument_aliases(self):
+        executable = self.root / "scu"
+        shutil.copy2(SCU, executable)
+        catalog = json.loads(SCU.with_name("commands.json").read_bytes())
+        lock = next(c for c in catalog["commands"] if c["name"] == "lock_version")
+        lock["arguments"][0].update(type="enum", values=[
+            {"name": "Ready now", "aliases": ["publish", "r"]},
+            {"name": "Wait later", "aliases": ["do later", "w"]}])
+        history = next(c for c in catalog["commands"] if c["name"] == "display_version_history")
+        history["arguments"][0]["value"] = "f"
+        (self.root / "commands.json").write_text(json.dumps(catalog))
+        self.assertIn("enum [short (s), full (f)] = full", self.run_scu("display_command", "disvh", executable=executable))
+        with self.terminal_session(TERM="xterm", executable=executable) as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"locv desc=publ\t\n")
+            self.assertIn(b"Locked version 1.0", read_until(b"scu> "))
+            os.write(terminal, b'quis\n')
+            self.assertEqual(process.wait(timeout=5), 0)
+        self.assertEqual(self.read_library()["header"]["versions"][0]["description"], "Ready now")
+        self.run_scu("crev", "1.1")
+        result = subprocess.run([executable], cwd=self.root, input="locv desc=\"do later\"\ndisvh\nquis\n",
+                                capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.read_library()["header"]["versions"][-1]["description"], "Wait later")
+        events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
+        locks = [event for event in events if event.get("command") == "lock_version"]
+        self.assertEqual([event["parameters"]["description"] for event in locks], ["Ready now", "Wait later"])
+        history = next(event for event in events if event.get("command") == "display_version_history")
+        self.assertEqual(history["parameters"]["display_description"], "full")
+        self.run_scu("verify_audit")
+
+    def test_enum_value_alias_collisions_are_rejected_at_catalog_load(self):
+        executable = self.root / "scu"
+        shutil.copy2(SCU, executable)
+        original = json.loads(SCU.with_name("commands.json").read_bytes())
+        for values in (
+                [{"name": "short", "aliases": ["s"]}, {"name": "full", "aliases": ["S"]}],
+                [{"name": "short", "aliases": ["full"]}, {"name": "full"}],
+                [{"name": "short", "aliases": ["SHORT"]}],
+                [{"name": "short", "aliases": ["s", "S"]}],
+                [{"name": "short", "aliases": [""]}],
+                [{"name": "short", "aliases": [1]}],
+                [{"name": "short", "aliases": ["line\nbreak"]}]):
+            with self.subTest(values=values):
+                catalog = json.loads(json.dumps(original))
+                history = next(c for c in catalog["commands"] if c["name"] == "display_version_history")
+                history["arguments"][0]["values"] = values
+                (self.root / "commands.json").write_text(json.dumps(catalog))
+                self.run_scu("help", executable=executable, error="Could not load command catalog")
+
+    def test_yes_no_switches_use_enum_aliases_and_canonical_audit_values(self):
+        catalog = json.loads(SCU.with_name("commands.json").read_bytes())
+        parameters = [catalog["batch_argument"], *(p for c in catalog["commands"] for p in c["arguments"])]
+        self.assertFalse(any(p["type"] == "boolean" for p in parameters))
+        for parameter in parameters:
+            if parameter["name"] in ("build", "save_library", "continue_on_error", "ignore_space_changes"):
+                self.assertEqual(parameter["type"], "enum")
+                self.assertEqual(parameter["values"], [{"name": "yes", "aliases": ["y"]}, {"name": "no", "aliases": ["n"]}])
+        self.store("main", b"source")
+        self.run_scu("expd", "main", "expanded", "build=N")
+        event = json.loads(self.audit_lines()[-2].split(b" ", 1)[1])
+        self.assertEqual(event["parameters"]["build"], "no")
+        self.assertEqual((self.root / "expanded").read_bytes(), b"source")
+        result = subprocess.run([SCU, "coe=Y"], cwd=self.root, capture_output=True, text=True, timeout=20,
+                                input="unknown_command\ncred continued\nquis\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("continued version", result.stdout)
+        self.assertIn("continued\t", self.table_data(self.run_scu("disdl")))
+        self.assertEqual(self.run_scu("disc", "quis").splitlines()[-1], "  None")
+        self.run_scu("verify_audit")
+
+    def test_enum_definitions_and_defaults_are_validated_at_startup(self):
+        executable = self.root / "scu"
+        shutil.copy2(SCU, executable)
+        original = json.loads(SCU.with_name("commands.json").read_bytes())
+        audit = self.audit_lines()
+        for changes, message in (
+                ({"values": []}, "Expected nonempty enum values"),
+                ({"values": None}, 'Invalid JSON field "values"'),
+                ({"values": [1]}, "Expected an enum string or definition object"),
+                ({"values": [""]}, "Expected a nonempty enum value"),
+                ({"values": [" short"]}, "without surrounding whitespace"),
+                ({"values": ["short", "SHORT"]}, 'Duplicate enum value or alias "SHORT"'),
+                ({"values": ["line\nbreak"]}, "Enum values must be on one line"),
+                ({"value": "bad"}, "Expected one of [short (s), full (f)]"),
+                ({"value": 1}, "Expected a string default for enum"),
+                ({"type": "string"}, "Allowed values require enum type"),
+                ({"completion": "file"}, "Enum completion requires enum type and values")):
+            with self.subTest(changes=changes):
+                catalog = json.loads(json.dumps(original))
+                command = next(c for c in catalog["commands"] if c["name"] == "display_version_history")
+                command["arguments"][0].update(changes)
+                (self.root / "commands.json").write_text(json.dumps(catalog))
+                self.run_scu("help", executable=executable, error=message)
+        catalog = json.loads(json.dumps(original))
+        command = next(c for c in catalog["commands"] if c["name"] == "display_version_history")
+        del command["arguments"][0]["values"]
+        (self.root / "commands.json").write_text(json.dumps(catalog))
+        self.run_scu("help", executable=executable, error="Expected nonempty enum values")
+        self.assertEqual(self.audit_lines(), audit)
 
     def test_lock_version_records_description_and_utc_time(self):
         before = datetime.now().astimezone()
@@ -1077,11 +3264,11 @@ class ScuIntegration(unittest.TestCase):
         self.assertLessEqual(before.timestamp() - 0.001, stamp.timestamp())
         self.assertLessEqual(stamp.timestamp(), after.timestamp() + 0.001)
         self.assertEqual(self.run_scu("disvh").splitlines(), [
-            "Version\tStatus\tLocked (UTC)\tDescription",
-            f'1.0\tlocked\t{entry["locked_utc"]}\tFirst stable release',
+            f'{"Version":<7}  {"Status":<6}  {"Locked (UTC)":<24}  Description',
+            f'{"1.0":<7}  {"locked":<6}  {entry["locked_utc"]}  First stable release',
         ])
-        self.run_scu("start_version", "1.1")
-        self.assertEqual(self.run_scu("display_version_history").splitlines()[-1], "1.1\topen\tNone")
+        self.run_scu("create_version", "1.1")
+        self.assertEqual(re.split(r" {2,}", self.run_scu("display_version_history").splitlines()[-1]), ["1.1", "open", "None"])
         self.run_scu("cred", "main")
         self.assertEqual(self.read_library()["header"]["versions"][0], entry)
         self.run_scu("lock_version", "Second release")
@@ -1089,7 +3276,7 @@ class ScuIntegration(unittest.TestCase):
         self.assertEqual(latest["description"], "Second release")
         self.assertTrue(latest["locked_utc"].endswith("Z"))
         self.assertEqual(self.run_scu("disvh").splitlines()[-1],
-                         f'1.1\tlocked\t{latest["locked_utc"]}\tSecond release')
+                         f'{"1.1":<7}  {"locked":<6}  {latest["locked_utc"]}  Second release')
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
         attempt = next(event for event in events if event.get("command") == "lock_version")
         self.assertEqual(attempt["parameters"], {"description": "First stable release"})
@@ -1130,7 +3317,7 @@ class ScuIntegration(unittest.TestCase):
             self.assertIn(b"Locked version 1.0", read_until(b"scu> "))
             os.write(terminal, b"disvh\n")
             self.assertIn(b"Ready to publish", read_until(b"scu> "))
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=8), 0)
         self.assertEqual(self.read_library()["header"]["versions"][0]["description"], "Ready to publish")
 
@@ -1138,8 +3325,8 @@ class ScuIntegration(unittest.TestCase):
         document = self.read_library()
         document["header"]["versions"][0]["locked"] = True
         self.write_library(document)
-        self.assertEqual(self.run_scu("disvh").splitlines()[-1], "1.0\tlocked\tNone")
-        self.run_scu("start_version", "1.1")
+        self.assertEqual(re.split(r" {2,}", self.run_scu("disvh").splitlines()[-1]), ["1.0", "locked", "None"])
+        self.run_scu("create_version", "1.1")
         stored = self.read_library()["header"]["versions"][0]
         self.assertNotIn("locked_utc", stored)
         self.assertNotIn("description", stored)
@@ -1211,10 +3398,10 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         for termination, expected in ((signal.SIGINT, 0), (signal.SIGTERM, 143)):
             with self.subTest(signal=termination):
                 path = self.root / (termination.name + ".sqlite")
-                self.run_scu(path, "init")
+                self.run_scu(path, "inil")
                 result = subprocess.run(
                     [SCU, path], cwd=self.root,
-                    input='locv description="Completed command"\nquit\n',
+                    input="locv description=\"Completed command\"\nquis\n",
                     capture_output=True, text=True, timeout=10,
                     env=dict(os.environ, LD_PRELOAD=str(library), SCU_TEST_SIGNAL=str(int(termination))),
                 )
@@ -1222,16 +3409,16 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
                 if termination == signal.SIGINT:
                     self.assertIn("Locked version 1.0", result.stdout)
                 self.assertNotIn("Command cancelled", result.stderr)
-                self.assertIn("1.0\tlocked", self.run_scu(path, "lisv"))
+                self.assertIn("1.0\tlocked", self.table_data(self.run_scu(path, "lisv")))
                 events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines(path)]
                 self.assertTrue(all(event["success"] for event in events if event["phase"] == "end"))
                 self.assertIn("interrupted=0", self.run_scu(path, "verify_audit"))
 
     def test_explicit_extensionless_library_path(self):
         (self.root / "libs").mkdir()
-        self.run_scu("./libs/project", "init")
+        self.run_scu("./libs/project", "inil")
         self.run_scu("./libs/project", "cred", "new")
-        self.assertEqual(self.run_scu("./libs/project", "ddl"), "new\t1.0-0.000")
+        self.assertEqual(self.table_data(self.run_scu("./libs/project", "disdl")), "new\t1.0-0.000")
         self.run_scu("not_a_command", error='Unknown command "not_a_command"')
 
     def test_output_replacement_preserves_group(self):
@@ -1260,7 +3447,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         target = self.root / "destination"
         target.mkdir()
         (self.root / "alias").symlink_to(target, target_is_directory=True)
-        for command in ("extract_modified_decks", "expand_modified_decks"):
+        for command in ("extract_modified_decks", "expand_version"):
             with self.subTest(command=command):
                 self.run_scu(command, "1.0", "alias")
                 outcome = json.loads(self.audit_lines()[-1].split(b" ", 1)[1])
@@ -1291,9 +3478,9 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         replacement_db = self.root / "replacement.sqlite"
         source = self.root / "source"
         for database, contents in ((original_db, b"original"), (replacement_db, b"replacement")):
-            self.run_scu(database, "init")
+            self.run_scu(database, "inil")
             source.write_bytes(contents)
-            self.run_scu(database, "store_deck", "main", source)
+            self.run_scu(database, "import_deck", "main", source.name)
         head = self.run_scu(original_db, "verify_audit").split("head=")[1]
         with closing(sqlite3.connect(replacement_db)) as connection:
             payload, = connection.execute("SELECT payload FROM deck_revisions").fetchone()
@@ -1437,7 +3624,7 @@ end.
         recovery.write_text(json.dumps(document))
         restored = self.root / "restored.sqlite"
         self.run_scu(restored, "recover_library", recovery)
-        verification = self.run_scu(restored, "verify_audit_trail")
+        verification = self.run_scu(restored, "verify_audit")
         head = verification.split("head=")[1]
         contents = json.loads(self.audit_lines(restored)[-1].split(b" ", 1)[1])["saved_contents"]
 
@@ -1458,16 +3645,16 @@ end.
             database.execute("UPDATE library SET payload = ?", (json.dumps(metadata, indent=2),))
             database.execute("UPDATE deck_revisions SET payload = ?",
                              (json.dumps(json.loads(stored_revision), indent=2),))
-            self.assertEqual(self.run_scu(restored, "verify_audit_trail", f"head={head}"), verification)
+            self.assertEqual(self.run_scu(restored, "verify_audit", f"head={head}"), verification)
             self.run_scu(restored, "lock_version", "Test version")
-            self.run_scu(restored, "start_version")
-            self.run_scu(restored, "verify_audit_trail", f"head={head}")
+            self.run_scu(restored, "create_version")
+            self.run_scu(restored, "verify_audit", f"head={head}")
             payload, = database.execute("SELECT payload FROM library").fetchone()
             self.assertEqual(json.loads(payload)["header"]["extension"], header["extension"])
             self.assertEqual(json.loads(payload)["header"]["versions"][0]["extension"], ["retained"])
             database.execute("UPDATE deck_revisions SET payload = ?",
                              (json.dumps(json.loads(stored_revision), sort_keys=True),))
-            self.run_scu(restored, "verify_audit_trail", error="Library revision 1 does not match the audit log")
+            self.run_scu(restored, "verify_audit", error="Library revision 1 does not match the audit log")
 
     def test_json_diagnostics_identify_the_option_file_and_revision(self):
         original = self.read_library()["header"]
@@ -1493,7 +3680,7 @@ end.
     def test_filesystem_and_sqlite_diagnostics_identify_the_affected_path(self):
         invalid = self.root / "invalid database.sqlite"
         invalid.write_bytes(b"This is not a SQLite database." * 100)
-        self.run_scu(invalid, "verify_audit_trail", error=f'in "{invalid}": file is not a database')
+        self.run_scu(invalid, "verify_audit", error=f'in "{invalid}": file is not a database')
 
         lock = self.library.with_suffix(".sqlite.lock")
         lock.unlink()
@@ -1514,16 +3701,16 @@ end.
     def test_interactive_audit_detects_changes_from_other_processes(self):
         for mode in ("delete", "wal"):
             library = self.root / f"shared-{mode}.sqlite"
-            self.run_scu(library, "init")
+            self.run_scu(library, "inil")
             with self.subTest(mode=mode), closing(sqlite3.connect(library, isolation_level=None)) as db:
                 self.assertEqual(db.execute(f"PRAGMA journal_mode={mode}").fetchone(), (mode,))
                 with self.terminal_session(library, TERM="dumb") as (process, terminal, read_until):
                     read_until(b"scu> ")
                     # An independent SCU writer extends the chain between commands.
-                    self.run_scu(library, "list_versions")
+                    self.table_data(self.run_scu(library, "list_versions"))
                     head = self.run_scu(library, "verify_audit").split("head=")[1]
                     os.write(terminal, b"list_versions\n")
-                    self.assertIn(b"1.0\topen", read_until(b"scu> "))
+                    self.assertRegex(read_until(b"scu> "), rb"1.0 +open")
                     self.assertIn("records=8 interrupted=0", self.run_scu(library, "verify_audit", "head=" + head))
 
                     # Change an older record without changing the chain's tail.
@@ -1532,20 +3719,20 @@ end.
                                (original.replace('"phase"', '"phaze"', 1),))
                     os.write(terminal, b"list_versions\n")
                     self.assertIn(b"Audit digest mismatch at record 1", read_until(b"scu> "))
-                    self.run_scu(library, "verify_audit_trail", error="Audit digest mismatch at record 1")
+                    self.run_scu(library, "verify_audit", error="Audit digest mismatch at record 1")
 
                     db.execute("UPDATE audit_records SET line = ? WHERE sequence = 1", (original,))
                     os.write(terminal, b"list_versions\n")
-                    self.assertIn(b"1.0\topen", read_until(b"scu> "))
+                    self.assertRegex(read_until(b"scu> "), rb"1.0 +open")
                     self.assertIn("records=10 interrupted=0", self.run_scu(library, "verify_audit", "head=" + head))
-                    os.write(terminal, b"quit\n")
+                    os.write(terminal, b'quis\n')
                     self.assertEqual(process.wait(timeout=5), 1)
 
     def test_review_source_and_expansion_limits(self):
         source = self.root / "oversized"
         with source.open("wb") as stream:
             stream.truncate(64 * 1024 * 1024 + 1)
-        self.run_scu("store_deck", "large", source, error="File exceeds the 67108864-byte limit")
+        self.run_scu("import_deck", "large", source.name, error="File exceeds the 67108864-byte limit")
         self.store("empty", b"")
         self.store("many-copies", b"//SCU_COPY empty\n" * 10000)
         self.run_scu("expd", "many-copies", "too-many", error="Expansion exceeds 10000 deck visits")
@@ -1559,7 +3746,7 @@ end.
             name = f"chain-{index}"
             data = f"//SCU_COPY chain-{index + 1}\n" if index < 64 else ""
             (self.root / name).write_text(data)
-            commands.append(f"store_deck {name} {name}")
+            commands.append(f"import_deck {name} {name}")
         result = subprocess.run([SCU], cwd=self.root, input="\n".join(commands) + "\n",
                                 capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1636,35 +3823,90 @@ end.
             self.assertEqual(len(audit), len(before[2]) + 2)
             self.run_scu(path, "verify_audit", "--head", before_head.split("head=")[1])
 
-    def test_sqlite_audit_failure_leaves_interactive_save_available_for_retry(self):
-        path = self.root / "project.sqlite"
-        self.run_scu(path, "initialize_library")
-        with closing(sqlite3.connect(path, isolation_level=None)) as database:
-            with self.terminal_session(path, TERM="xterm") as (process, terminal, read_until):
-                read_until(b"scu> ")
-                os.write(terminal, b"create_deck staged\n")
-                self.assertIn(b"staged version 1.0 revision 0.000", read_until(b"scu> "))
-                before_head = self.run_scu(path, "verify_audit")
-                before = self.sqlite_state(database)
-                self.assertEqual(before[1], [])
-                self.reject_sqlite_audit_outcome(database)
+    def test_sqlite_journal_recovers_interactive_commands_killed_at_commit(self):
+        compiler = shutil.which("cc")
+        if compiler is None:
+            self.skipTest("A C compiler is required to inject a crash at commit.")
+        source = self.root / "crash_at_commit.c"
+        source.write_text(r"""
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+typedef int (*exec_fn)(void *, const char *, void *, void *, char **);
+int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **error) {
+    static exec_fn real_exec;
+    if (!real_exec) real_exec = (exec_fn)dlsym(RTLD_NEXT, "sqlite3_exec");
+    int commit = strcmp(sql, "COMMIT") == 0;
+    if (commit && strcmp(getenv("SCU_CRASH_STAGE"), "before") == 0) {
+        int (*flush)(void *) = dlsym(RTLD_NEXT, "sqlite3_db_cacheflush");
+        if (!flush || flush(db) != 0) _exit(90);
+        kill(getpid(), SIGKILL);
+    }
+    int result = real_exec(db, sql, callback, arg, error);
+    if (commit && result == 0) kill(getpid(), SIGKILL);
+    return result;
+}
+""")
+        shim = self.root / "crash_at_commit.so"
+        subprocess.run([compiler, "-shared", "-fPIC", "-o", shim, source, "-ldl"],
+                       check=True, capture_output=True, timeout=20)
+        for stage in ("before", "after"):
+            with self.subTest(stage=stage):
+                path = self.root / (stage + ".sqlite")
+                self.run_scu(path, "inil")
+                self.run_scu(path, "cred", "existing")
+                with closing(sqlite3.connect(path)) as database:
+                    before = self.sqlite_state(database)
+                    self.assertEqual(database.execute("PRAGMA journal_mode").fetchone(), ("delete",))
+                result = subprocess.run([SCU, path], cwd=self.root, input="cred staged\ncred never\n",
+                                        capture_output=True, text=True, timeout=10,
+                                        env=dict(os.environ, LD_PRELOAD=str(shim), SCU_CRASH_STAGE=stage))
+                self.assertEqual(result.returncode, -signal.SIGKILL, result.stderr)
+                if stage == "before":
+                    journal = Path(str(path) + "-journal")
+                    self.assertTrue(journal.exists())
+                    self.assertGreater(journal.stat().st_size, 512)
+                # Restart SCU itself first: its normal writable open performs recovery.
+                listing = self.table_data(self.run_scu(path, "disdl"))
+                self.assertIn("existing\t", listing)
+                self.assertEqual("staged\t" in listing, stage == "after")
+                with closing(sqlite3.connect(path)) as database:
+                    state = self.sqlite_state(database)
+                    self.assertEqual(database.execute("PRAGMA integrity_check").fetchone(), ("ok",))
+                    if stage == "before":
+                        self.assertEqual(state[:2], before[:2])
+                        self.assertEqual(state[2][:-2], before[2])
+                    else:
+                        self.assertEqual([row[1] for row in state[1]], ["existing", "staged"])
+                        self.assertEqual(len(state[2]), len(before[2]) + 4)
+                self.assertIn("interrupted=0", self.run_scu(path, "verify_audit"))
+                self.assertFalse(list(self.root.glob("*.recovery-*.json")))
 
-                os.write(terminal, b"save_library\n")
+    def test_sqlite_interactive_audit_failure_rolls_back_entire_command(self):
+        with closing(sqlite3.connect(self.library, isolation_level=None)) as database:
+            with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
+                read_until(b"scu> ")
+                before = self.sqlite_state(database)
+                head = self.run_scu("verify_audit")
+                state = database.execute("SELECT * FROM audit_state").fetchall()
+                self.reject_sqlite_audit_outcome(database)
+                os.write(terminal, b"cred staged\n")
                 self.assertIn(b"injected audit write failure", read_until(b"scu> "))
                 self.assertEqual(self.sqlite_state(database), before)
-                self.assertEqual(self.run_scu(path, "verify_audit"), before_head)
-
+                self.assertEqual(database.execute("SELECT * FROM audit_state").fetchall(), state)
+                self.assertEqual(self.run_scu("verify_audit"), head)
                 database.execute("DROP TRIGGER reject_audit_outcome")
-                os.write(terminal, b"save_library\n")
-                self.assertIn(b"Saved library.", read_until(b"scu> "))
-                metadata, revisions, audit = self.sqlite_state(database)
-                self.assertNotEqual(metadata, before[0])
-                self.assertEqual([row[1] for row in revisions], ["staged"])
-                self.assertEqual(audit[:-2], before[2])
-                self.assertEqual(len(audit), len(before[2]) + 2)
-                self.run_scu(path, "verify_audit", "--head", before_head.split("head=")[1])
-                os.write(terminal, b"quit\n")
+                os.write(terminal, b"disdl\n")
+                self.assertNotIn(b"staged ", read_until(b"scu> "))
+                os.write(terminal, b"cred staged\n")
+                self.assertIn(b"staged version", read_until(b"scu> "))
+                self.assertEqual([r[1] for r in self.sqlite_state(database)[1]], ["staged"])
+                os.write(terminal, b"quis\n")
                 self.assertEqual(process.wait(timeout=5), 1)
+        self.assertIn("interrupted=0", self.run_scu("verify_audit"))
 
     def test_sqlite_incremental_expansion_refreshes_only_changed_decks_and_copy_dependents(self):
         path = self.root / "project.sqlite"
@@ -1674,51 +3916,49 @@ end.
         output.mkdir()
         other_output.mkdir()
         alias.symlink_to(output, target_is_directory=True)
-        self.run_scu(path, "init")
-        self.run_scu(path, "modify_library", 'build_command=printf "%s\\n" "$1" >> builds')
+        self.run_scu(path, "inil")
+        self.run_scu(path, "configure_library", 'build_command=printf "%s\\n" "$1" >> builds')
         source = self.root / "source"
 
         def store(name, data, *options):
             source.write_bytes(data)
-            self.run_scu(path, "store_deck", name, source, *options)
+            self.run_scu(path, "import_deck", name, source.name, *options)
 
         store("main", b"main\n  //SCU_COPY Middle\n")
         store("middle", b"\t#SCU_COPY leaf\r\n", "comment_prefix=#")
         store("leaf", b"first\n")
         store("standalone", b"unrelated\n")
-        self.assertIn("Wrote 4 deck(s)", self.run_scu(path, "expmd", "1.0", output))
+        self.assertIn("Wrote 4 deck(s)", self.run_scu(path, "expv", "1.0", output))
         self.run_scu(path, "lock_version", "Test version")
-        self.run_scu(path, "start_version", "1.1")
+        self.run_scu(path, "create_version", "1.1")
         store("leaf", b"second\n")
         unrelated_inode = (output / "standalone").stat().st_ino
-        self.assertIn("Wrote 3 deck(s)", self.run_scu(path, "expmd", "1.1", output))
+        self.assertIn("Wrote 3 deck(s)", self.run_scu(path, "expv", "1.1", output))
         self.assertEqual((output / "main").read_bytes(), b"main\nsecond\n")
         self.assertEqual((output / "middle").read_bytes(), b"second\n")
         self.assertEqual((output / "standalone").stat().st_ino, unrelated_inode)
         inodes = {file.name: file.stat().st_ino for file in output.iterdir()}
-        self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expmd", "1.1", alias))
+        self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expv", "1.1", alias))
         self.assertEqual({file.name: file.stat().st_ino for file in output.iterdir()}, inodes)
-        self.assertIn("Wrote 3 deck(s)", self.run_scu(path, "expmd", "1.1", other_output))
-        self.assertEqual({file.name for file in other_output.iterdir()}, {"main", "middle", "leaf"})
+        self.assertIn("Wrote 3 deck(s)", self.run_scu(path, "expv", "1.1", other_output))
+        self.assertEqual({file.name for file in other_output.iterdir()}, {"main", "middle", "leaf", ".scu-exports.json"})
 
         store("standalone", b"changed alone\n")
-        self.assertIn("Wrote 1 deck(s)", self.run_scu(path, "expmd", "1.1", output))
+        self.assertIn("Wrote 1 deck(s)", self.run_scu(path, "expv", "1.1", output))
         self.assertEqual((output / "standalone").read_bytes(), b"changed alone\n")
         self.assertEqual({name: (output / name).stat().st_ino for name in ("main", "middle", "leaf")},
                          {name: inodes[name] for name in ("main", "middle", "leaf")})
         self.assertEqual((self.root / "builds").read_text().splitlines(),
                          [str(output), str(output), str(other_output), str(output)])
         first, _, alternate, latest = self.sqlite_build_times(path)
-        self.assertEqual(self.run_scu(path, "display_expansion_checkpoints").splitlines(), [
-            "Version\tOutput directory\tLast built library revision\tStatus\tLast successful build (UTC)"
-            "\tCheckpoint library revision",
+        self.assertEqual(self.table_data(self.run_scu(path, "display_expansion_checkpoints")).splitlines(), [
             f"1.0\t{output}\t4\tFull rebuild pending\t{first}\t4",
             f"1.1\t{output}\t6\tIncremental\t{latest}\t6",
             f"1.1\t{other_output}\t5\tIncremental\t{alternate}\t5",
         ])
-        self.assertIn("Wrote 4 deck(s)", self.run_scu(path, "expmd", "1.0", output))
+        self.assertIn("Wrote 4 deck(s)", self.run_scu(path, "expv", "1.0", output))
         self.assertEqual((output / "main").read_bytes(), b"main\nfirst\n")
-        self.assertIn("Wrote 4 deck(s)", self.run_scu(path, "expmd", "1.1", output))
+        self.assertIn("Wrote 4 deck(s)", self.run_scu(path, "expv", "1.1", output))
         self.assertEqual((output / "main").read_bytes(), b"main\nsecond\n")
 
     def test_incremental_expansion_uses_copy_metadata_without_decoding_unrelated_decks(self):
@@ -1728,7 +3968,7 @@ end.
         self.store("middle", b"  #SCU_COPY LEAF\r\n#SCU_COPY leaf\n", "comment_prefix=#")
         self.store("main", b"//SCU_COPY middle\n")
         self.store("unrelated", b"separate\n")
-        self.assertIn("Wrote 4 deck(s)", self.run_scu("expmd", "1.0", output))
+        self.assertIn("Wrote 4 deck(s)", self.run_scu("expv", "1.0", output))
         unrelated_inode = (output / "unrelated").stat().st_ino
         self.store("leaf", b"second\n")
         with closing(sqlite3.connect(self.library, isolation_level=None)) as database:
@@ -1739,13 +3979,13 @@ end.
             # A graph walk that opens unrelated source would fail the checksum.
             database.execute("UPDATE deck_revisions SET payload = json_set(payload, '$.sha1', ?) "
                              "WHERE deck_name = 'unrelated'", ("0" * 40,))
-            self.assertIn("Wrote 3 deck(s)", self.run_scu("expmd", "1.0", output))
+            self.assertIn("Wrote 3 deck(s)", self.run_scu("expv", "1.0", output))
             self.assertEqual((output / "main").read_bytes(), b"second\nsecond\n")
             self.assertEqual((output / "unrelated").stat().st_ino, unrelated_inode)
-            self.run_scu("verify_audit_trail", error="Library revision 4 does not match the audit log")
+            self.run_scu("verify_audit", error="Library revision 4 does not match the audit log")
             database.execute("UPDATE deck_revisions SET copy_metadata = json_set(copy_metadata, '$.targets', "
                              "json('[]')) WHERE deck_name = 'middle'")
-        self.run_scu("verify_audit_trail", error="SQLite COPY metadata does not match revision 2")
+        self.run_scu("verify_audit", error="SQLite COPY metadata does not match revision 2")
 
     def test_copy_dependency_scan_handles_prefix_overrides_and_caches_older_revisions(self):
         output = self.root / "expanded"
@@ -1758,9 +3998,9 @@ end.
             database.execute("UPDATE deck_revisions SET payload = json_remove(payload, '$.copy_metadata'), "
                              "copy_metadata = NULL WHERE deck_name = 'legacy'")
             legacy, = database.execute("SELECT payload FROM deck_revisions WHERE deck_name = 'legacy'").fetchone()
-            self.run_scu("expmd", "1.0", output, "comment_prefix=#")
+            self.run_scu("expv", "1.0", output, "comment_prefix=#")
             self.store("leaf", b"second\n")
-            self.assertIn("Wrote 3 deck(s)", self.run_scu("expmd", "1.0", output, "comment_prefix=#"))
+            self.assertIn("Wrote 3 deck(s)", self.run_scu("expv", "1.0", output, "comment_prefix=#"))
             self.assertEqual((output / "parent").read_bytes(), b"second\n")
             self.assertEqual((output / "legacy").read_bytes(), b"second\n")
             payload, metadata = database.execute(
@@ -1777,30 +4017,30 @@ end.
         path = self.root / "project.sqlite"
         output = self.root / "expanded"
         output.mkdir()
-        self.run_scu(path, "init")
+        self.run_scu(path, "inil")
         self.run_scu(path, "create_deck", "main")
-        self.assertEqual(self.run_scu(path, "disec"), "No expansion checkpoints.")
+        self.assertEqual(self.table_data(self.run_scu(path, "disec")), "No expansion checkpoints.")
         with closing(sqlite3.connect(path, isolation_level=None)) as database:
-            self.run_scu(path, "modify_library", "build_command=test ! -e fail-build")
-            self.assertIn("Wrote 1 deck(s)", self.run_scu(path, "expmd", "1.0", output))
+            self.run_scu(path, "configure_library", "build_command=test ! -e fail-build")
+            self.assertIn("Wrote 1 deck(s)", self.run_scu(path, "expv", "1.0", output))
             first_build, = self.sqlite_build_times(path)
             first_checkpoint = f"1.0\t{output}\t1\tIncremental\t{first_build}\t1"
             source = self.root / "source"
             source.write_bytes(b"//SCU_COPY missing\n")
-            self.run_scu(path, "store_deck", "main", source)
-            self.run_scu(path, "expmd", "1.0", output, error='Deck "missing" does not exist')
+            self.run_scu(path, "import_deck", "main", source.name)
+            self.run_scu(path, "expv", "1.0", output, error='Deck "missing" does not exist')
             self.assertEqual((output / "main").read_bytes(), b"")
             source.write_bytes(b"second\n")
-            self.run_scu(path, "store_deck", "main", source)
-            self.run_scu(path, "expmd", "1.0", output, "build=no")
+            self.run_scu(path, "import_deck", "main", source.name)
+            self.run_scu(path, "expv", "1.0", output, "build=no")
             self.assertEqual((output / "main").read_bytes(), b"second\n")
             self.assertEqual(database.execute("SELECT revision FROM expansion_checkpoints").fetchone(), (1,))
 
             failure = self.root / "fail-build"
             failure.touch()
-            self.run_scu(path, "expmd", "1.0", output, error="Build command failed")
+            self.run_scu(path, "expv", "1.0", output, error="Build command failed")
             self.assertEqual(database.execute("SELECT revision FROM expansion_checkpoints").fetchone(), (1,))
-            self.assertEqual(self.run_scu(path, "disec").splitlines()[-1], first_checkpoint)
+            self.assertEqual(self.table_data(self.run_scu(path, "disec")).splitlines()[-1], first_checkpoint)
             failure.unlink()
             database.execute("""
                 CREATE TRIGGER reject_build_audit BEFORE INSERT ON audit_records
@@ -1810,16 +4050,16 @@ end.
                     SELECT RAISE(ABORT, 'injected build audit failure');
                 END
             """)
-            self.run_scu(path, "expmd", "1.0", output, error="injected build audit failure")
+            self.run_scu(path, "expv", "1.0", output, error="injected build audit failure")
             self.assertEqual(database.execute("SELECT revision FROM expansion_checkpoints").fetchone(), (1,))
-            self.assertEqual(self.run_scu(path, "disec").splitlines()[-1], first_checkpoint)
+            self.assertEqual(self.table_data(self.run_scu(path, "disec")).splitlines()[-1], first_checkpoint)
             database.execute("DROP TRIGGER reject_build_audit")
-            self.assertIn("Wrote 1 deck(s)", self.run_scu(path, "expmd", "1.0", output))
+            self.assertIn("Wrote 1 deck(s)", self.run_scu(path, "expv", "1.0", output))
             self.assertEqual(database.execute("SELECT revision FROM expansion_checkpoints").fetchone(), (3,))
             latest_build = self.sqlite_build_times(path)[-1]
-            self.assertEqual(self.run_scu(path, "disec").splitlines()[-1],
+            self.assertEqual(self.table_data(self.run_scu(path, "disec")).splitlines()[-1],
                              f"1.0\t{output}\t3\tIncremental\t{latest_build}\t3")
-            self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expmd", "1.0", output))
+            self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expv", "1.0", output))
             events = [json.loads(row[0][65:]) for row in database.execute("SELECT line FROM audit_records")]
             self.assertEqual([event["success"] for event in events if event["phase"] == "build"],
                              [True, False, True])
@@ -1830,20 +4070,20 @@ end.
         output = self.root / "expanded"
         output.mkdir()
         source = self.root / "source"
-        self.run_scu(path, "init")
+        self.run_scu(path, "inil")
         self.run_scu(path, "create_deck", "main")
-        self.assertIn("Wrote 1 deck(s)", self.run_scu(path, "expmd", "1.0", output))
+        self.assertIn("Wrote 1 deck(s)", self.run_scu(path, "expv", "1.0", output))
         first = f"1.0\t{output}\tNone\tIncremental\tNone\t1"
-        self.assertEqual(self.run_scu(path, "disec").splitlines()[-1], first)
-        self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expmd", "1.0", output))
+        self.assertEqual(self.table_data(self.run_scu(path, "disec")).splitlines()[-1], first)
+        self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expv", "1.0", output))
         unchanged_inode = (output / "main").stat().st_ino
 
         source.write_bytes(b"//SCU_COPY missing\n")
-        self.run_scu(path, "store_deck", "other", source)
-        self.run_scu(path, "expmd", "1.0", output, error='Deck "missing" does not exist')
-        self.assertEqual(self.run_scu(path, "disec").splitlines()[-1], first)
+        self.run_scu(path, "import_deck", "other", source.name)
+        self.run_scu(path, "expv", "1.0", output, error='Deck "missing" does not exist')
+        self.assertEqual(self.table_data(self.run_scu(path, "disec")).splitlines()[-1], first)
         source.write_bytes(b"new deck\n")
-        self.run_scu(path, "store_deck", "other", source)
+        self.run_scu(path, "import_deck", "other", source.name)
         with closing(sqlite3.connect(path, isolation_level=None)) as database:
             database.execute("""
                 CREATE TRIGGER reject_expansion_audit BEFORE INSERT ON audit_records
@@ -1854,30 +4094,30 @@ end.
                 END
             """)
             before_head = self.run_scu(path, "verify_audit")
-            self.run_scu(path, "expmd", "1.0", output, error="injected expansion audit failure")
+            self.run_scu(path, "expv", "1.0", output, error="injected expansion audit failure")
             self.assertEqual(self.run_scu(path, "verify_audit"), before_head)
-            self.assertEqual(self.run_scu(path, "disec").splitlines()[-1], first)
+            self.assertEqual(self.table_data(self.run_scu(path, "disec")).splitlines()[-1], first)
             database.execute("DROP TRIGGER reject_expansion_audit")
 
-        self.assertIn("Wrote 1 deck(s)", self.run_scu(path, "expmd", "1.0", output, "build=no"))
+        self.assertIn("Wrote 1 deck(s)", self.run_scu(path, "expv", "1.0", output, "build=no"))
         self.assertEqual((output / "other").read_bytes(), b"new deck\n")
         self.assertEqual((output / "main").stat().st_ino, unchanged_inode)
-        self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expmd", "1.0", output))
+        self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expv", "1.0", output))
         self.assertEqual(self.sqlite_build_times(path), [])
 
-        self.run_scu(path, "modify_library", 'build_command=cat "$1/other" > built-source')
-        self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expmd", "1.0", output, "build=no"))
+        self.run_scu(path, "configure_library", 'build_command=cat "$1/other" > built-source')
+        self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expv", "1.0", output, "build=no"))
         self.assertFalse((self.root / "built-source").exists())
-        self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expmd", "1.0", output))
+        self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expv", "1.0", output))
         self.assertEqual((self.root / "built-source").read_bytes(), b"new deck\n")
         built, = self.sqlite_build_times(path)
-        self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expmd", "1.0", output))
+        self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expv", "1.0", output))
         self.assertEqual(self.sqlite_build_times(path), [built])
 
-        self.run_scu(path, "modify_library", "--build_command", "")
+        self.run_scu(path, "configure_library", "--build_command", "")
         self.run_scu(path, "create_deck", "third")
-        self.assertIn("Wrote 1 deck(s)", self.run_scu(path, "expmd", "1.0", output))
-        self.assertEqual(self.run_scu(path, "disec").splitlines()[-1],
+        self.assertIn("Wrote 1 deck(s)", self.run_scu(path, "expv", "1.0", output))
+        self.assertEqual(self.table_data(self.run_scu(path, "disec")).splitlines()[-1],
                          f"1.0\t{output}\t3\tIncremental\t{built}\t4")
 
     def test_sqlite_reset_expansion_checkpoint_rebuilds_only_the_selected_batch(self):
@@ -1888,17 +4128,17 @@ end.
         output.mkdir()
         other_output.mkdir()
         alias.symlink_to(output, target_is_directory=True)
-        self.run_scu(path, "init")
-        self.run_scu(path, "modify_library", "build_command=test ! -e fail-build")
+        self.run_scu(path, "inil")
+        self.run_scu(path, "configure_library", "build_command=test ! -e fail-build")
         self.assertIn("No expansion checkpoint", self.run_scu(path, "resec", "1.0", output))
         self.run_scu(path, "cred", "inherited")
         self.run_scu(path, "lock_version", "Test version")
-        self.run_scu(path, "start_version", "1.1")
+        self.run_scu(path, "create_version", "1.1")
         self.run_scu(path, "cred", "new")
-        self.run_scu(path, "expmd", "1.1", output)
-        self.run_scu(path, "expmd", "1.1", other_output)
-        self.assertEqual({file.name for file in output.iterdir()}, {"new"})
-        before = self.run_scu(path, "disec")
+        self.run_scu(path, "expv", "1.1", output)
+        self.run_scu(path, "expv", "1.1", other_output)
+        self.assertEqual({file.name for file in output.iterdir()}, {"new", ".scu-exports.json"})
+        before = self.table_data(self.run_scu(path, "disec"))
         before_head = self.run_scu(path, "verify_audit")
 
         with closing(sqlite3.connect(path, isolation_level=None)) as database:
@@ -1913,59 +4153,59 @@ end.
             self.run_scu(path, "resec", "1.1", alias, error="injected reset audit failure")
             self.assertEqual(self.run_scu(path, "verify_audit"), before_head)
             database.execute("DROP TRIGGER reject_reset_audit")
-        self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expmd", "1.1", output))
+        self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expv", "1.1", output))
 
         self.assertIn("Reset expansion checkpoint", self.run_scu(path, "resec", "v=1.1", f"od={alias}"))
         pending = before.replace(f"1.1\t{output}\t2\tIncremental", f"1.1\t{output}\t2\tFull rebuild pending")
         self.assertNotEqual(pending, before)
-        self.assertEqual(self.run_scu(path, "disec"), pending)
-        self.assertEqual({file.name for file in output.iterdir()}, {"new"})
-        self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expmd", "1.1", other_output))
-        self.assertIn("Wrote 2 deck(s)", self.run_scu(path, "expmd", "1.1", output, "build=no"))
-        self.assertEqual({file.name for file in output.iterdir()}, {"inherited", "new"})
-        self.assertEqual(self.run_scu(path, "disec"), pending)
+        self.assertEqual(self.table_data(self.run_scu(path, "disec")), pending)
+        self.assertEqual({file.name for file in output.iterdir()}, {"new", ".scu-exports.json"})
+        self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expv", "1.1", other_output))
+        self.assertIn("Wrote 2 deck(s)", self.run_scu(path, "expv", "1.1", output, "build=no"))
+        self.assertEqual({file.name for file in output.iterdir()}, {"inherited", "new", ".scu-exports.json"})
+        self.assertEqual(self.table_data(self.run_scu(path, "disec")), pending)
         failure = self.root / "fail-build"
         failure.touch()
-        self.run_scu(path, "expmd", "1.1", output, error="Build command failed")
-        self.assertEqual(self.run_scu(path, "disec"), pending)
+        self.run_scu(path, "expv", "1.1", output, error="Build command failed")
+        self.assertEqual(self.table_data(self.run_scu(path, "disec")), pending)
         failure.unlink()
-        self.assertIn("Wrote 2 deck(s)", self.run_scu(path, "expmd", "1.1", output))
+        self.assertIn("Wrote 2 deck(s)", self.run_scu(path, "expv", "1.1", output))
         first_build, other_build, rebuilt = self.sqlite_build_times(path)
         expected = before.replace(f"1.1\t{output}\t2\tIncremental\t{first_build}",
                                   f"1.1\t{output}\t2\tIncremental\t{rebuilt}")
         self.assertIn(f"1.1\t{other_output}\t2\tIncremental\t{other_build}\t2", expected.splitlines())
-        self.assertEqual(self.run_scu(path, "disec"), expected)
-        self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expmd", "1.1", output))
+        self.assertEqual(self.table_data(self.run_scu(path, "disec")), expected)
+        self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expv", "1.1", output))
 
     def test_sqlite_expansion_migrates_existing_schema_and_refreshes_changed_prefix(self):
         path = self.root / "project.sqlite"
         output = self.root / "expanded"
         output.mkdir()
-        self.run_scu(path, "init")
+        self.run_scu(path, "inil")
         with closing(sqlite3.connect(path, isolation_level=None)) as database:
             database.executescript("DROP TABLE expansion_checkpoints; PRAGMA user_version = 1;")
             self.run_scu(path, "verify_audit")
             self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (1,))
-            self.run_scu(path, "modify_library", "build_command=true")
+            self.run_scu(path, "configure_library", "build_command=true")
             self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (6,))
             source = self.root / "source"
             source.write_bytes(b"//SCU$VERSION\n")
-            self.run_scu(path, "store_deck", "main", source)
-            self.run_scu(path, "expmd", "1.0", output)
+            self.run_scu(path, "import_deck", "main", source.name)
+            self.run_scu(path, "expv", "1.0", output)
             database.executescript(
                 "ALTER TABLE expansion_checkpoints DROP COLUMN build_pending; PRAGMA user_version = 2;"
             )
             self.run_scu(path, "verify_audit")
             self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (2,))
-            self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expmd", "1.0", output))
+            self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expv", "1.0", output))
             self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (6,))
             self.assertEqual((output / "main").read_bytes(), b"1.0\n")
-            self.run_scu(path, "expmd", "1.0", output, "comment_prefix=#", "build=no")
+            self.run_scu(path, "expv", "1.0", output, "comment_prefix=#", "build=no")
             self.assertEqual((output / "main").read_bytes(), b"//1.0\n")
             self.assertEqual(database.execute("SELECT revision FROM expansion_checkpoints").fetchone(), (1,))
-            self.assertIn("Wrote 1 deck(s)", self.run_scu(path, "expmd", "1.0", output))
+            self.assertIn("Wrote 1 deck(s)", self.run_scu(path, "expv", "1.0", output))
             self.assertEqual((output / "main").read_bytes(), b"1.0\n")
-            self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expmd", "1.0", output))
+            self.assertIn("Wrote 0 deck(s)", self.run_scu(path, "expv", "1.0", output))
 
     def test_parallel_expansions_wait_for_the_same_output_directory(self):
         self.store("main", b"source\n")
@@ -1973,7 +4213,7 @@ end.
         output.mkdir()
         ready = self.root / "build-ready"
         release = self.root / "release-build"
-        self.run_scu("modify_library",
+        self.run_scu("configure_library",
                      "build_command=touch build-ready; while [ ! -e release-build ]; do sleep 0.02; done")
         with subprocess.Popen([SCU, "expand_deck", "main", output / "first"], cwd=self.root,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE) as first:
@@ -2014,16 +4254,16 @@ end.
             self.assertEqual(first.returncode, 0, error)
         self.assertEqual((output / "first").read_bytes(), b"source\n")
         self.assertEqual((output / "second").read_bytes(), b"source\n")
-        self.assertIn("interrupted=0", self.run_scu("verify_audit_trail"))
+        self.assertIn("interrupted=0", self.run_scu("verify_audit"))
 
     def test_single_and_bulk_builds_can_expand_another_deck_into_the_same_directory(self):
         self.store("main", b"main source\n")
         self.store("helper", b"helper source\n")
-        self.run_scu("modify_library",
+        self.run_scu("configure_library",
                      'build_command=if [ -d "$1" ]; then directory=$1; else directory=$(dirname "$1"); fi; '
                      f'{shlex.quote(str(SCU))} expand_deck helper "$directory/generated" build=no')
         for name, command in (("single", ("expand_deck", "main")),
-                              ("bulk", ("expand_modified_decks", "1.0"))):
+                              ("bulk", ("expand_version", "1.0"))):
             with self.subTest(name=name):
                 directory = self.root / name
                 directory.mkdir()
@@ -2034,13 +4274,13 @@ end.
                     self.assertIn("Wrote 0 deck(s)", self.run_scu(*command, directory))
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
         self.assertEqual([event["success"] for event in events if event["phase"] == "build"], [True, True])
-        self.assertIn("interrupted=0", self.run_scu("verify_audit_trail"))
+        self.assertIn("interrupted=0", self.run_scu("verify_audit"))
 
     def test_sqlite_expansion_build_checkpoints_the_snapshot_it_actually_expanded(self):
         path = self.root / "project.sqlite"
         output = self.root / "expanded"
         output.mkdir()
-        self.run_scu(path, "init")
+        self.run_scu(path, "inil")
         self.run_scu(path, "create_deck", "main")
         (self.root / "source").write_bytes(b"edit during build\n")
         (self.root / "edit-during-build").touch()
@@ -2048,111 +4288,118 @@ end.
         (self.root / "build-script").write_text(
             'if [ -e edit-during-build ]; then\n'
             '  rm edit-during-build\n'
-            f'  {command} expmd 1.0 "$1" > nested-output 2>&1 && exit 8\n'
+            f'  {command} expv 1.0 "$1" > nested-output 2>&1 && exit 8\n'
             f'  {command} resec 1.0 "$1" > nested-reset 2>&1 && exit 9\n'
-            f'  {command} store_deck main source\n'
+            f'  {command} import_deck main source\n'
             'fi\n'
         )
-        self.run_scu(path, "modify_library", 'build_command=sh build-script "$1"')
-        self.run_scu(path, "expmd", "1.0", output)
+        self.run_scu(path, "configure_library", 'build_command=sh build-script "$1"')
+        self.run_scu(path, "expv", "1.0", output)
         self.assertIn("An expansion is already using output directory", (self.root / "nested-output").read_text())
         self.assertIn("An expansion is already using output directory", (self.root / "nested-reset").read_text())
         self.assertEqual((output / "main").read_bytes(), b"")
         with closing(sqlite3.connect(path)) as database:
             self.assertEqual(database.execute("SELECT revision FROM expansion_checkpoints").fetchone(), (1,))
-        self.assertIn("Wrote 1 deck(s)", self.run_scu(path, "expmd", "1.0", output))
+        self.assertIn("Wrote 1 deck(s)", self.run_scu(path, "expv", "1.0", output))
         self.assertEqual((output / "main").read_bytes(), b"edit during build\n")
 
-    def test_sqlite_expansion_uses_saved_interactive_changes(self):
+    def test_sqlite_expansion_uses_automatically_saved_interactive_edits(self):
         output = self.root / "expanded"
         output.mkdir()
         path = output / "project.sqlite"
-        self.run_scu(path, "init")
-        self.run_scu(path, "modify_library", "build_command=true")
-        source = self.root / "input"
+        self.run_scu(path, "inil")
+        self.run_scu(path, "configure_library", "build_command=true")
+        source = output / "input"
         source.write_bytes(b"first\n")
-        self.run_scu(path, "store_deck", "main", source)
-        self.run_scu(path, "expmd", "1.0", output)
+        self.run_scu(path, "import_deck", "main", source.name)
+        self.run_scu(path, "expv", "1.0", output)
         self.run_scu(path, "lock_version", "Test version")
-        self.run_scu(path, "start_version", "1.1")
+        self.run_scu(path, "create_version", "1.1")
         source.write_bytes(b"second\n")
+        editor = self.root / "editor"
+        editor.write_text('#!/bin/sh\ncat ' + shlex.quote(str(source)) + ' > "$1"\n')
+        editor.chmod(0o700)
+        self.run_scu(path, "conl", "editor=" + json.dumps([str(editor)]))
         with self.terminal_session(path, TERM="xterm") as (process, terminal, read_until):
             read_until(b"scu> ")
-            os.write(terminal, b"store_deck main input\n")
+            os.write(terminal, b"edid main\n")
             self.assertIn(b"main version 1.1 revision 0.000", read_until(b"scu> "))
-            os.write(terminal, b"expmd\n")
-            self.assertIn(b"Save the SQLite library before running expand_modified_decks.",
-                          read_until(b"scu> "))
-            self.assertEqual((output / "main").read_bytes(), b"first\n")
-            os.write(terminal, b"savl\n")
-            self.assertIn(b"Saved library.", read_until(b"scu> "))
-            os.write(terminal, b"expmd\n")
+            os.write(terminal, b"expv\n")
             self.assertIn(b"Wrote 1 deck(s) for version 1.1", read_until(b"scu> "))
-            os.write(terminal, b"quit\n")
-            self.assertEqual(process.wait(timeout=5), 1)
-        self.assertEqual((output / "main").read_bytes(), b"second\n")
+            self.assertEqual((output / "main").read_bytes(), b"second\n")
+            os.write(terminal, b"expv\n")
+            self.assertIn(b"Wrote 0 deck(s) for version 1.1", read_until(b"scu> "))
+            source.write_bytes(b"third\n")
+            os.write(terminal, b"edid main\n")
+            self.assertIn(b"main version 1.1 revision 0.001", read_until(b"scu> "))
+            os.write(terminal, b"expv\n")
+            self.assertIn(b"Wrote 1 deck(s) for version 1.1", read_until(b"scu> "))
+            self.assertEqual((output / "main").read_bytes(), b"third\n")
+            os.write(terminal, b'quis\n')
+            self.assertEqual(process.wait(timeout=5), 0)
+        self.assertEqual((output / "main").read_bytes(), b"third\n")
         self.assertFalse((self.root / "main").exists())
-        self.assertEqual(self.run_scu(path, "expmd", "1.1", output), "Wrote 0 deck(s) for version 1.1")
-        self.assertIn(f"1.0\t{output}\t1\tFull rebuild pending", self.run_scu(path, "disec"))
+        self.assertEqual(self.run_scu(path, "expv", "1.1", output), "Wrote 0 deck(s) for version 1.1")
+        self.assertIn(f"1.0\t{output}\t1\tFull rebuild pending", self.table_data(self.run_scu(path, "disec")))
 
     def test_deck_history_and_aliases_use_canonical_audit_names(self):
         self.store("Main.pas", b"first")
         self.store("shared.inc", b"unrelated")
         self.store("main.pas", b"second")
         self.run_scu("lock_version", "Test version")
-        self.run_scu("start_version", "1.1")
+        self.run_scu("create_version", "1.1")
         self.run_scu("lock_version", "Test version")
-        self.run_scu("start_version", "1.2")
+        self.run_scu("create_version", "1.2")
         self.store("main.pas", b"third")
         revisions = self.read_library()["revisions"]
-        expected = "\n".join(
-            f"{number}\t{version}\t{revisions[number - 1]['modified_utc']}\t"
-            f"{version}-{revisions[number - 1]['deck_revision']}"
+        expected = ['Deck "main.pas".', "Deck version  Modified (UTC)            Status"] + [
+            f"{version + '-' + revisions[number - 1]['deck_revision']:<12}  "
+            f"{revisions[number - 1]['modified_utc']}  stored"
             for number, version in ((4, "1.2"), (3, "1.0"), (1, "1.0"))
-        )
+        ]
         for arguments in (
             ("display_deck", "deck_name=main.pas"),
             ("disd", "dn=main.pas"),
             ("disd", "main.pas"),
-            ("DD", "DN=main.pas"),
+            ("DISD", "DN=main.pas"),
         ):
-            self.assertEqual(self.run_scu(*arguments), expected)
-        self.run_scu("DD", "DN=", "main.pas", error="Too many arguments")
-        listing = self.run_scu("display_deck_list", "--version", "1.1")
-        self.assertEqual(self.run_scu("ddl", "v=1.1"), listing)
-        self.assertEqual(self.run_scu("list_decks", "version=1.1"), listing)
+            self.assertEqual(self.run_scu(*arguments).splitlines(), expected)
+        self.run_scu("DISD", "DN=", "main.pas", error="Expected integer value for limit")
+        listing = self.table_data(self.run_scu("display_deck_list", "--version", "1.1"))
+        self.assertEqual(self.table_data(self.run_scu("disdl", "v=1.1")), listing)
+        self.assertEqual(self.table_data(self.run_scu("display_deck_list", "version=1.1")), listing)
         self.run_scu("disd", "dn=missing", error="does not exist")
-        self.run_scu("dd", "main.pas", "dn=main.pas", error="Duplicate argument deck_name")
+        self.run_scu("disd", "main.pas", "dn=main.pas", error="Duplicate argument deck_name")
 
         records = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
         displays = [event for event in records if event.get("command") == "display_deck"]
         self.assertEqual([event["parameters"] for event in displays],
-                         [{"deck_name": "main.pas"}] * 4 + [{"deck_name": "missing"}])
+                         [{"deck_name": "main.pas", "limit": "10"}] * 4 + [{"deck_name": "missing", "limit": "10"}])
         lists = [event for event in records if event.get("command") == "display_deck_list"]
-        self.assertEqual([event["options"] for event in lists], [{"version": "1.1"}] * 3)
+        self.assertEqual([event["parameters"] for event in lists], [{"version": "1.1"}] * 3)
         self.run_scu("verify_audit")
 
     def test_diff_default_uses_prior_deck_revision_in_first_version(self):
         self.store("aap.c", b"first\n")
-        self.run_scu("disdd", error='Deck "aap.c" has no earlier revision')
+        self.run_scu("disdd", "output_format=unified", error='Deck "aap.c" has no earlier revision')
         self.store("aap.c", b"second\n")
         self.store("other", b"unrelated\n")
-        output = self.run_scu("disdd", "dn=aap.c", "to=1.0-0.001")
+        output = self.run_scu("disdd", "dn=aap.c", "to=1.0-0.001", "output_format=unified")
         self.assertIn("--- aap.c@1.0-0.000\n+++ aap.c@1.0-0.001", output)
         self.assertIn("-first\n+second", output)
 
         (self.root / "edited").write_bytes(b"third\n")
         result = subprocess.run(
             [SCU], cwd=self.root, capture_output=True, text=True, timeout=20,
-            input="store_deck aap.c edited\ndisd\ndisdd\nquit save_library=no\n",
+            input="import_deck aap.c edited\ndisd\ndisdd of=unified\nquis\n",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stderr, "From deck version 1.0-0.001.\nTo deck version 1.0-0.002.\n")
         self.assertIn("--- aap.c@1.0-0.001\n+++ aap.c@1.0-0.002\n", result.stdout)
         self.assertIn("-second\n+third", result.stdout)
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
-        outcome = events[-3]
-        self.assertEqual(events[-4]["command"], "display_deck_diff")
+        outcome = events[-1]
+        self.assertEqual(events[-2]["command"], "display_deck_diff")
         self.assertEqual(outcome["resolved_deck"], "aap.c")
         self.assertEqual(outcome["from_deck_version"], "1.0-0.001")
         self.assertEqual(outcome["to_deck_version"], "1.0-0.002")
@@ -2162,13 +4409,13 @@ end.
         self.store("inherited", b"unchanged\n")
         self.store("reverted", b"original\n")
         self.run_scu("locv", "First release")
-        self.run_scu("start_version", "1.1")
+        self.run_scu("create_version", "1.1")
         self.store("main", b"after\n")
         self.store("added", b"new deck\n")
         self.run_scu("cred", "empty")
         self.store("reverted", b"temporary edit\n")
         self.store("reverted", b"original\n")
-        result = subprocess.run([SCU, "display_version_diff"], cwd=self.root,
+        result = subprocess.run([SCU, "display_version_diff", "output_format=unified"], cwd=self.root,
                                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stderr, "From version 1.0.\nTo version 1.1.\n")
@@ -2179,29 +4426,29 @@ end.
         self.assertNotIn("inherited", result.stdout)
         self.assertNotIn("reverted", result.stdout)
         expected = result.stdout.strip()
-        self.assertEqual(self.run_scu("disvd", "fv=1.0", "tv=1.1"), expected)
-        self.assertEqual(self.run_scu("disvd", "scu$previous_version", "scu$current_version"), expected)
+        self.assertEqual(self.run_scu("disvd", "fv=1.0", "tv=1.1", "output_format=unified"), expected)
+        self.assertEqual(self.run_scu("disvd", "scu$previous_version", "scu$current_version", "output_format=unified"), expected)
         before, after = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()[-2:]]
         self.assertEqual(before["command"], "display_version_diff")
         self.assertEqual(after["from_snapshot"], {"version": "1.0", "library_revision": 3})
         self.assertEqual(after["to_snapshot"], {"version": "1.1", "library_revision": 8})
-        reverse = self.run_scu("disvd", "1.1", "1.0")
+        reverse = self.run_scu("disvd", "1.1", "1.0", "output_format=unified")
         self.assertIn("--- added@1.1-0.000\n+++ /dev/null\n", reverse)
         self.assertIn("-new deck", reverse)
         self.assertIn("Only in version 1.1: empty (empty deck)", reverse)
-        self.assertEqual(self.run_scu("disvd", "1.1", "1.1"), "")
+        self.assertEqual(self.run_scu("disvd", "1.1", "1.1", "output_format=unified"), "")
         self.assertIn("interrupted=0", self.run_scu("verify_audit"))
 
-    def test_version_diff_resolves_inherited_decks_and_pending_edits(self):
+    def test_version_diff_resolves_inherited_decks_and_interactive_edits(self):
         self.store("main", b"first\n")
         self.run_scu("locv", "First release")
-        self.run_scu("start_version", "1.1")
+        self.run_scu("create_version", "1.1")
         self.store("unrelated", b"unchanged\n")
         self.run_scu("locv", "Second release")
-        self.run_scu("start_version", "1.2")
+        self.run_scu("create_version", "1.2")
         (self.root / "pending").write_bytes(b"pending change\n")
         result = subprocess.run([SCU], cwd=self.root, capture_output=True, text=True,
-                                input="store_deck main pending\ndisvd\nquit save_library=no\n", timeout=10)
+                                input="import_deck main pending\ndisvd of=unified\nquis\n", timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("from_version=", result.stderr)
         self.assertNotIn("to_version=", result.stderr)
@@ -2209,7 +4456,7 @@ end.
         self.assertIn("-first\n+pending change", result.stdout)
         self.assertNotIn("unrelated@", result.stdout)
         self.run_scu("extd", "main", "original")
-        self.assertEqual((self.root / "original").read_bytes(), b"first\n")
+        self.assertEqual((self.root / "original").read_bytes(), b"pending change\n")
 
     def test_version_diff_missing_previous_and_unknown_version_fail_without_prompting(self):
         self.run_scu("disvd", error="No locked version precedes current version 1.0")
@@ -2234,15 +4481,19 @@ end.
 
     def test_version_diff_completion_suggests_library_selectors(self):
         self.run_scu("locv", "First")
-        self.run_scu("start_version", "1.1")
+        self.run_scu("create_version", "1.1")
         with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
             read_until(b"scu> ")
             os.write(terminal, b"disvd fv=scu$\t\t")
             response = read_until(b"scu$previous_version")
             self.assertIn(b"scu$current_version", response)
+            # Consume the complete draft redraw, even when writes split across reads.
+            while response.rfind(b"disvd fv=scu$") < response.rfind(b"scu$previous_version"):
+                self.assertTrue(select.select([terminal], [], [], 5)[0], response)
+                response += os.read(terminal, 4096)
             os.write(terminal, b"\x15disvd fv=1.0 tv=scu$cur\t\n")
             self.assertIn(b"To version 1.1", read_until(b"scu> "))
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=8), 0)
 
     def test_diff_compares_raw_source_at_deck_versions(self):
@@ -2251,9 +4502,9 @@ end.
         self.run_scu("lock_version", "Test version")
         current = "scu$current_deck_version"
         previous = "scu$previous_deck_version"
-        self.run_scu("display_deck_diff", "main.pas", previous,
+        self.run_scu("display_deck_diff", "main.pas", previous, "output_format=unified",
                      error="has no earlier revision to compare with")
-        self.run_scu("start_version", "1.1")
+        self.run_scu("create_version", "1.1")
         self.store("main.pas", b"//SCU_COPY new.inc\n' SCU$VERSION '\n")
         old, new = "1.0-0.000", "1.1-0.000"
 
@@ -2267,7 +4518,7 @@ end.
             if before is not None:
                 arguments.append(f"from={before}")
             result = subprocess.run(
-                [SCU, "display_deck_diff", *arguments],
+                [SCU, "display_deck_diff", *arguments, "output_format=unified"],
                 cwd=self.root, capture_output=True, text=True, timeout=20,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -2291,30 +4542,168 @@ end.
                       check_endpoints(current.upper(), old, new, old))
         result = subprocess.run(
             [SCU], cwd=self.root, capture_output=True, text=True, timeout=20,
-            input="display_deck_diff main.pas\nquit\n",
+            input="display_deck_diff of=unified main.pas\nquis\n",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stderr, "From deck version 1.0-0.000.\nTo deck version 1.1-0.000.\n")
         self.assertEqual(result.stdout, output)
-        self.assertEqual(self.run_scu("disdd", "dn=main.pas", old, old), "")
+        self.assertEqual(self.run_scu("disdd", "dn=main.pas", old, old, "output_format=unified"), "")
         self.run_scu("lock_version", "Test version")
         self.assertIn("-//SCU_COPY new.inc\n+//SCU_COPY old.inc\n",
                       check_endpoints(current, previous.upper(), new, old))
-        self.run_scu("start_version", "1.2")
+        self.run_scu("create_version", "1.2")
         self.assertEqual(check_endpoints(new, current, new, new), "")
         self.assertEqual(check_endpoints(previous, None, old, new), output)
-        self.run_scu("display_deck_diff", "main.pas", old, "9.9-0.000", error='Version "9.9"')
+        self.run_scu("display_deck_diff", "main.pas", old, "9.9-0.000", "output_format=unified", error='Version "9.9"')
         end = audit_outcome()
         self.assertFalse(end["success"])
         self.assertEqual(end["from_deck_version"], old)
         self.assertNotIn("to_deck_version", end)
         for selector in ("1.0", "2", "scu$current", "scu$previous"):
-            self.run_scu("display_deck_diff", "main.pas", selector, error="Expected VERSION-REVISION")
+            self.run_scu("display_deck_diff", "main.pas", selector, "output_format=unified", error="Expected VERSION-REVISION")
         self.store("binary", b"\x00old")
         self.store("binary", b"\x00new")
         self.assertIn("Binary files binary@1.2-0.000 and binary@1.2-0.001 differ",
-                      self.run_scu("display_deck_diff", "binary", "1.2-0.000", "1.2-0.001"))
+                      self.run_scu("display_deck_diff", "binary", "1.2-0.000", "1.2-0.001", "output_format=unified"))
         self.assertIn("interrupted=0", self.run_scu("verify_audit"))
+
+    def test_diff_ignores_whitespace_amount_changes_but_not_added_separators(self):
+        cases = (
+            (b"a b\n", b"a \t b \t\r\n", True),
+            (b"  a\n", b"\ta\n", True),
+            (b"a \t\v\f\r b\n", b"a b\n", True),
+            (b"x", b"x\n", True),
+            (b"x \t", b"x\n", True),
+            (b" \n", b"\t\r\n", True),
+            (b'"a b"\n', b'"a  b"\n', True),
+            (b"ab\n", b"a b\n", False),
+            (b"a\n", b" a\n", False),
+            (b"a\nb\n", b"a\n\nb\n", False),
+            (b"a,b\n", b"a, b\n", False),
+            (b"a\xc2\xa0b\n", b"a b\n", False),
+            (b"\0a  b\n", b"\0a b\n", False),
+        )
+        for index, (before, after, equal) in enumerate(cases):
+            deck = f"whitespace-{index}"
+            with self.subTest(before=before, after=after):
+                self.store(deck, before)
+                self.store(deck, after)
+                self.assertEqual(bool(self.run_scu("disdd", deck)), not equal)
+                exact = self.run_scu("disdd", deck, "isc=n")
+                self.assertTrue(exact)
+        self.run_scu("verify_audit")
+
+    def test_whitespace_diff_keeps_original_changed_lines_and_context(self):
+        old = b"prefix  context\nvalue  =  1;  \ntrailing context\n"
+        new = b"prefix\tcontext\nvalue\t= 2;\t\ntrailing\tcontext \n"
+        self.store("main", old)
+        self.store("main", new)
+        result = subprocess.run([SCU, "disdd", "main", "output_format=unified"], cwd=self.root,
+                                capture_output=True, timeout=20,
+                                env=dict(os.environ, PATH="", TMPDIR=str(self.root / "unavailable")))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout,
+                         b"--- main@1.0-0.000\n+++ main@1.0-0.001\n@@ -1,3 +1,3 @@\n"
+                         b" prefix  context\n-value  =  1;  \n+value\t= 2;\t\n trailing context\n")
+
+    def test_version_and_interactive_diffs_share_whitespace_defaults_and_exact_option(self):
+        self.store("main", b"a  b  \n")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("crev", "1.1")
+        self.store("main", b"a\tb\n")
+        self.assertEqual(self.run_scu("disvd"), "")
+        self.assertIn("< a  b  \n---\n> a\tb", self.run_scu("disvd", "ignore_space_changes=no"))
+        result = subprocess.run([SCU], cwd=self.root, capture_output=True, text=True, timeout=20,
+                                input="disdd main\ndisdd main isc=n\nquis\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count("1c1\n"), 1)
+        events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
+        diffs = [event for event in events if event.get("command") == "display_deck_diff"]
+        self.assertEqual([event["parameters"]["ignore_space_changes"] for event in diffs], ["yes", "no"])
+        self.assertIn("ignore_space_changes (isc) : enum [yes (y), no (n)] = yes", self.run_scu("display_command", "disdd"))
+        self.run_scu("disdd", "main", "isc=maybe", error="Expected one of [yes (y), no (n)]")
+        self.run_scu("verify_audit")
+
+    def test_whitespace_matching_is_used_in_diff_search_fallback(self):
+        self.store("main", b"  same\t\tend  \n" + b"old\n" * 1600 + b"tail  words   \n")
+        self.store("main", b"\tsame end\n" + b"new\n" * 1600 + b"tail\twords\n")
+        result = subprocess.run([SCU, "disdd", "main", "output_format=unified"], cwd=self.root, capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout,
+                         b"--- main@1.0-0.000\n+++ main@1.0-0.001\n@@ -1,1602 +1,1602 @@\n"
+                         b"   same\t\tend  \n" + b"-old\n" * 1600 + b"+new\n" * 1600 + b" tail  words   \n")
+
+    def test_normal_diff_reports_add_delete_and_change_ranges_without_context(self):
+        cases = (
+            (b"a\n", b"b\n", b"1c1\n< a\n---\n> b\n"),
+            (b"", b"one\ntwo\n", b"0a1,2\n> one\n> two\n"),
+            (b"one\ntwo\n", b"", b"1,2d0\n< one\n< two\n"),
+            (b"a\nc\n", b"a\nb\nc\n", b"1a2\n> b\n"),
+            (b"a\n", b"a\nb\nc\n", b"1a2,3\n> b\n> c\n"),
+            (b"a\nb\nc\n", b"a\nc\n", b"2d1\n< b\n"),
+            (b"a\nb\nc\n", b"a\n", b"2,3d1\n< b\n< c\n"),
+            (b"old\nkeep\n", b"keep\n", b"1d0\n< old\n"),
+            (b"keep\n", b"new\nkeep\n", b"0a1\n> new\n"),
+            (b"start\nold1\nold2\nend\n", b"start\nnew1\nnew2\nnew3\nend\n",
+             b"2,3c2,4\n< old1\n< old2\n---\n> new1\n> new2\n> new3\n"),
+            (b"a\nold\nmiddle\nold2\nend\n", b"a\nnew\nmiddle\nnew2\nend\n",
+             b"2c2\n< old\n---\n> new\n4c4\n< old2\n---\n> new2\n"),
+            (b"old", b"new", b"1c1\n< old\n\\ No newline at end of file\n---\n> new\n\\ No newline at end of file\n"),
+        )
+        for index, (old, new, expected) in enumerate(cases):
+            with self.subTest(index=index):
+                deck = f"normal-{index}"
+                self.store(deck, old)
+                self.store(deck, new)
+                result = subprocess.run([SCU, "disdd", deck], cwd=self.root, capture_output=True, timeout=20,
+                                        env=dict(os.environ, PATH="", TMPDIR=str(self.root / "unavailable")))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, expected)
+        self.run_scu("verify_audit")
+
+    def test_normal_version_diff_labels_changed_decks_and_missing_sides(self):
+        self.store("main", b"before\n")
+        self.store("removed", b"gone\n")
+        self.store("inherited", b"unchanged\n")
+        self.run_scu("locv", "desc=First")
+        self.run_scu("crev", "1.1")
+        self.store("main", b"after\n")
+        self.run_scu("deld", "removed")
+        self.store("added", b"new\n")
+        self.assertEqual(self.run_scu("disvd"),
+                         "diff /dev/null added@1.1-0.000\n0a1\n> new\n"
+                         "diff main@1.0-0.000 main@1.1-0.000\n1c1\n< before\n---\n> after\n"
+                         "diff removed@1.0-0.000 /dev/null\n1d0\n< gone")
+        outcome = json.loads(self.audit_lines()[-2].split(b" ", 1)[1])
+        self.assertEqual(outcome["parameters"]["output_format"], "normal")
+        self.run_scu("verify_audit")
+
+    def test_diff_output_format_aliases_defaults_prompts_and_validation(self):
+        self.store("main", b"old\ncontext\n")
+        self.store("main", b"new\ncontext\n")
+        expected = "1c1\n< old\n---\n> new"
+        self.assertEqual(self.run_scu("disdd", "main", "format=NORMAL"), expected)
+        self.assertIn("@@ -1,2 +1,2 @@", self.run_scu("disdd", "main", "of=UNIFIED"))
+        with self.terminal_session(TERM="dumb") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            os.write(terminal, b"disdd main\n")
+            result = read_until(b"scu> ")
+            self.assertIn(b"1c1\r\n< old\r\n---\r\n> new", result)
+            self.assertNotIn(b" context", result)
+            os.write(terminal, b'quis\n')
+            self.assertEqual(process.wait(timeout=5), 0)
+        self.run_scu("disdd", "main", "of=invalid", error="Expected one of [normal, unified] for output_format")
+        self.run_scu("disvd", "of=invalid", error="Expected one of [normal, unified] for output_format")
+        help_text = self.run_scu("display_command", "disdd")
+        self.assertIn("output_format (format, of) : enum [normal, unified] = normal", help_text)
+        self.assertIn("normal shows changed lines only", help_text)
+
+    def test_normal_diff_search_fallback_emits_ranges_without_shared_lines(self):
+        self.store("main", b"prefix\n" + b"old\n" * 1600 + b"suffix\n")
+        self.store("main", b"prefix\n" + b"new\n" * 1600 + b"suffix\n")
+        result = subprocess.run([SCU, "disdd", "main"], cwd=self.root, capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, b"2,1601c2,1601\n" + b"< old\n" * 1600 + b"---\n" + b"> new\n" * 1600)
 
     def test_native_diff_handles_context_line_endings_and_empty_decks(self):
         unchanged = b"".join(f"line {index}\n".encode() for index in range(1, 21))
@@ -2341,7 +4730,7 @@ end.
                 self.store("source", after)
                 old, new = f"1.0-0.{old_revision - 1:03d}", f"1.0-0.{new_revision - 1:03d}"
                 result = subprocess.run(
-                    [SCU, "display_deck_diff", "source", old, new],
+                    [SCU, "display_deck_diff", "source", old, new, "ignore_space_changes=no", "output_format=unified"],
                     cwd=self.root, capture_output=True, timeout=20,
                     env=dict(os.environ, PATH="", TMPDIR=str(self.root / "unavailable")),
                 )
@@ -2356,7 +4745,7 @@ end.
             changed[index] = f"changed {index:05}\n".encode()
         self.store("main", b"".join(lines))
         self.store("main", b"".join(changed))
-        patch = self.run_scu("display_deck_diff", "main")
+        patch = self.run_scu("display_deck_diff", "main", "output_format=unified")
         self.assertEqual(sum(line.startswith("@@ ") for line in patch.splitlines()), 599)
 
     def test_diff_search_limit_fallback_emits_a_complete_unified_patch(self):
@@ -2364,7 +4753,7 @@ end.
         new = "new\n" * 800 + "matching middle\n" + "new\n" * 800
         self.store("main", ("prefix\n" + old + "suffix\n").encode())
         self.store("main", ("prefix\n" + new + "suffix\n").encode())
-        patch = self.run_scu("disdd", "main").splitlines()
+        patch = self.run_scu("disdd", "main", "output_format=unified").splitlines()
         self.assertEqual(patch[:4], ["--- main@1.0-0.000", "+++ main@1.0-0.001",
                                     "@@ -1,1603 +1,1603 @@", " prefix"])
         self.assertEqual(len(patch), 3207)
@@ -2380,7 +4769,7 @@ end.
             left = count // 2
             for line in ("old\n", "new\n"):
                 self.store(deck, (line * left + "".join(shared) + line * (count - left)).encode())
-            patch = self.run_scu("disdd", deck)
+            patch = self.run_scu("disdd", deck, "output_format=unified")
             self.assertEqual(sum(line.startswith("@@ ") for line in patch.splitlines()), hunks)
 
     def test_diff_merges_hunks_across_at_most_six_context_lines(self):
@@ -2393,20 +4782,20 @@ end.
                 updated[5 + gap] = b"second edit\n"
                 self.store(deck, b"".join(lines))
                 self.store(deck, b"".join(updated))
-                patch = self.run_scu("display_deck_diff", deck)
+                patch = self.run_scu("display_deck_diff", deck, "output_format=unified")
                 self.assertEqual(sum(line.startswith("@@ ") for line in patch.splitlines()), expected)
 
     def test_typed_definitions_and_aliases_are_loaded_per_command(self):
         (self.root / "source with spaces").write_text("stored text")
         subprocess.run(
-            ["sh", "-c", '"$1" store_deck dn=1.25 source_file="source with spaces"', "sh", SCU],
+            ["sh", "-c", '"$1" import_deck dn=1.25 source_file="source with spaces"', "sh", SCU],
             cwd=self.root, check=True, capture_output=True, timeout=20,
         )
-        self.run_scu("extd", "dn=1.25", "output_file=output with spaces", "--r", "1")
+        self.run_scu("extd", "dn=1.25", "output_file=output with spaces", "--r", "0.000")
         self.assertEqual((self.root / "output with spaces").read_text(), "stored text")
-        self.run_scu("ddl", "r=1.25", error="Expected integer value for revision")
-        self.run_scu("ddl", "r=0x1", error="Expected integer value for revision")
-        self.run_scu("ddl", "r=9223372036854775808", error="Expected integer value for revision")
+        self.run_scu("disvh", "l=1.25", error="Expected integer value for limit")
+        self.run_scu("disvh", "l=0x1", error="Expected integer value for limit")
+        self.run_scu("disvh", "l=9223372036854775808", error="Expected integer value for limit")
 
         executable = self.root / "scu"
         shutil.copy2(SCU, executable)
@@ -2415,10 +4804,10 @@ end.
                        if command["name"] == "display_deck")
         display["aliases"].append("show_deck_history")
         display["arguments"][0].update(type="float", aliases=["number"], value="scu$required")
-        definitions["library_option"]["aliases"] = ["lib"]
+        definitions["library_argument"]["aliases"] = ["lib"]
         (self.root / "commands.json").write_text(json.dumps(definitions))
         self.assertIn("number", self.run_scu("display_command", "show_deck_history", executable=executable))
-        self.assertIn("1\t1.0\t", self.run_scu("--lib", self.library, "show_deck_history",
+        self.assertIn("1.0-0.000 ", self.run_scu("--lib", self.library, "show_deck_history",
                                                "number=1.25", executable=executable))
         self.run_scu("show_deck_history", "number=1,25", error="Expected float", executable=executable)
         self.run_scu("show_deck_history", "number=nan", error="Expected float", executable=executable)
@@ -2427,8 +4816,8 @@ end.
 
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
         extracts = [event for event in events if event.get("command") == "extract_deck"]
-        self.assertEqual(extracts[-1]["parameters"], {"deck_name": "1.25", "output_file": "old-alias"})
-        self.assertEqual(extracts[0]["options"], {"revision": "1"})
+        self.assertEqual(extracts[-1]["parameters"], {"deck_name": "1.25", "output_file": "old-alias", "version": "scu$current_version"})
+        self.assertEqual(extracts[0]["parameters"], {"deck_name": "1.25", "output_file": "output with spaces", "revision": "0.000", "version": "scu$current_version"})
 
     def test_executor_uses_argument_names_when_catalog_order_changes(self):
         self.store("main.pas", b"//SCU$VERSION\n")
@@ -2436,7 +4825,7 @@ end.
         shutil.copy2(SCU, executable)
         definitions = json.loads(SCU.with_name("commands.json").read_bytes())
         expand = next(command for command in definitions["commands"] if command["name"] == "expand_deck")
-        expand["arguments"].reverse()
+        expand["arguments"][:2] = reversed(expand["arguments"][:2])
         (self.root / "commands.json").write_text(json.dumps(definitions))
         directory = self.root / "build output"
         directory.mkdir()
@@ -2446,22 +4835,22 @@ end.
         self.assertEqual(path.read_bytes(), b"1.0\n")
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
         attempt = next(event for event in events if event.get("command") == "expand_deck")
-        self.assertEqual(attempt["arguments"], [str(path), "main.pas"])
-        self.assertEqual(attempt["parameters"], {"output_file": str(path), "deck_name": "main.pas"})
-        self.assertEqual(attempt["provided_arguments"], ["output_file", "deck_name"])
+        self.assertEqual(attempt["arguments"], [str(path), "main.pas", "no", "scu$current_version"])
+        self.assertEqual(attempt["parameters"], {"output_file": str(path), "deck_name": "main.pas", "build": "no", "version": "scu$current_version"})
+        self.assertEqual(attempt["provided_arguments"], ["output_file", "deck_name", "build"])
 
     def test_library_first_and_named_invocation_share_the_same_library(self):
         name = "project library"
-        self.run_scu(f"ln={name}", "init")
+        self.run_scu(f"ln={name}", "inil")
         (self.root / "source").write_text("project source")
-        self.run_scu(f"ln={name}", "store_deck", "main.pas", "source")
-        self.assertEqual(self.run_scu(f"library_name={name}", "ddl"), "main.pas\t1.0-0.000")
-        self.assertEqual(self.run_scu("--library", name, "ddl"), "main.pas\t1.0-0.000")
-        self.assertEqual(self.run_scu("--ln", name, "ddl"), "main.pas\t1.0-0.000")
-        self.run_scu("ln=", name, "ddl", error="Expected a library name")
-        self.assertEqual(self.run_scu("ddl"), "")
+        self.run_scu(f"ln={name}", "import_deck", "main.pas", "source")
+        self.assertEqual(self.table_data(self.run_scu(f"library_name={name}", "disdl")), "main.pas\t1.0-0.000")
+        self.assertEqual(self.table_data(self.run_scu("--library", name, "disdl")), "main.pas\t1.0-0.000")
+        self.assertEqual(self.table_data(self.run_scu("--ln", name, "disdl")), "main.pas\t1.0-0.000")
+        self.table_data(self.run_scu("ln=", name, "disdl", error="Expected a library name"))
+        self.assertEqual(self.table_data(self.run_scu("disdl")), "")
         self.run_scu("ln=", error="Expected a library name")
-        self.run_scu("ln=init", "init")
+        self.run_scu("ln=init", "inil")
         self.assertTrue((self.root / "init").is_file())
 
     def test_batch_stops_on_parse_and_execution_errors_and_saves_prior_changes(self):
@@ -2473,8 +4862,8 @@ end.
                     input=f"cred before{index}\n{failing}\ncred after{index}\n",
                 )
                 self.assertEqual(result.returncode, 1, result.stderr)
-                self.assertIn(f"before{index}\t", self.run_scu("ddl"))
-                self.assertNotIn(f"after{index}\t", self.run_scu("ddl"))
+                self.assertIn(f"before{index}\t", self.table_data(self.run_scu("disdl")))
+                self.assertNotIn(f"after{index}\t", self.table_data(self.run_scu("disdl")))
                 events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
                 self.assertFalse(any(e.get("parameters", {}).get("deck_name") == f"after{index}"
                                      for e in events))
@@ -2491,15 +4880,15 @@ end.
                     input=f"unknown_command\ncred continued{index}\n",
                 )
                 self.assertEqual(result.returncode, 1, result.stderr)
-                self.assertIn(f"continued{index}\t", self.run_scu("ddl"))
+                self.assertIn(f"continued{index}\t", self.table_data(self.run_scu("disdl")))
         for option in ("continue_on_error=no", "coe=n"):
             result = subprocess.run([SCU, option], cwd=self.root, capture_output=True,
                                     text=True, input="unknown_command\ncred skipped\n", timeout=20)
             self.assertEqual(result.returncode, 1)
-            self.assertNotIn("skipped\t", self.run_scu("ddl"))
-        self.run_scu("continue_on_error=maybe", error="Expected yes/y or no/n")
-        self.run_scu("--continue_on_error", error="Expected yes/y or no/n")
-        self.run_scu("continue_on_error=", error="Expected yes/y or no/n")
+            self.assertNotIn("skipped\t", self.table_data(self.run_scu("disdl")))
+        self.run_scu("continue_on_error=maybe", error="Expected one of [yes (y), no (n)]")
+        self.run_scu("--continue_on_error", error="Expected a value for continue_on_error: [yes (y), no (n)]")
+        self.run_scu("continue_on_error=", error="Expected one of [yes (y), no (n)]")
 
     def test_command_files_support_quoted_nested_paths_and_canonical_audit(self):
         directory = self.root / "scripts"
@@ -2513,7 +4902,7 @@ end.
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("scu>", result.stdout + result.stderr)
-        listing = self.run_scu("ddl")
+        listing = self.table_data(self.run_scu("disdl"))
         for name in ("parent", "nested", "after-file"):
             self.assertIn(name + "\t", listing)
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
@@ -2531,31 +4920,32 @@ end.
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn(str(self.root / "child.scu") + ":2:", result.stderr)
         self.assertIn("Missing required argument deck_name", result.stderr)
-        listing = self.run_scu("ddl")
+        listing = self.table_data(self.run_scu("disdl"))
         self.assertIn("before\t", listing)
         for name in ("child-after", "parent-after", "stdin-after"):
             self.assertNotIn(name + "\t", listing)
         result = subprocess.run([SCU, "coe=yes"], cwd=self.root, capture_output=True, text=True,
                                 input="!parent.scu\ncred stdin-after\n", timeout=20)
         self.assertEqual(result.returncode, 1, result.stderr)
-        listing = self.run_scu("ddl")
+        listing = self.table_data(self.run_scu("disdl"))
         for name in ("child-after", "parent-after", "stdin-after"):
             self.assertIn(name + "\t", listing)
 
-    def test_command_file_quit_exits_session_and_preserves_discard_option(self):
+    def test_command_file_quit_exits_session_and_keeps_committed_changes(self):
         (self.root / "quit.scu").write_text(
-            "cred discarded\nquit save_library=no\ncred after-quit\n")
+            "cred discarded\nquis\ncred after-quit\n")
         result = subprocess.run([SCU, "!quit.scu"], cwd=self.root, capture_output=True,
                                 text=True, input="cred after-file\n", timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
-        listing = self.run_scu("ddl")
-        for name in ("discarded", "after-quit", "after-file"):
+        listing = self.table_data(self.run_scu("disdl"))
+        self.assertIn("discarded\t", listing)
+        for name in ("after-quit", "after-file"):
             self.assertNotIn(name + "\t", listing)
         (self.root / "empty.scu").write_text("")
         result = subprocess.run([SCU], cwd=self.root, capture_output=True, text=True,
                                 input="!empty.scu\ncred after-empty\n", timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("after-empty\t", self.run_scu("ddl"))
+        self.assertIn("after-empty\t", self.table_data(self.run_scu("disdl")))
 
     def test_interactive_command_file_can_continue_after_errors_without_prompting(self):
         (self.root / "continue.scu").write_text("cred\ncred continued-file\n")
@@ -2565,9 +4955,9 @@ end.
             output = read_until(b"scu> ")
             self.assertIn(b"Missing required argument deck_name", output)
             self.assertIn(b"continued-file version", output)
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 1)
-        self.assertIn("continued-file\t", self.run_scu("ddl"))
+        self.assertIn("continued-file\t", self.table_data(self.run_scu("disdl")))
 
     def test_command_file_errors_are_bounded_and_do_not_execute_a_shell(self):
         for line, message in (("!", "Expected one command filename"),
@@ -2578,7 +4968,7 @@ end.
                                     input=line + "\ncred skipped\n", timeout=20)
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertIn(message, result.stderr)
-            self.assertNotIn("skipped\t", self.run_scu("ddl"))
+            self.assertNotIn("skipped\t", self.table_data(self.run_scu("disdl")))
         self.assertFalse((self.root / "shell-marker").exists())
         (self.root / "recursive.scu").write_text("!recursive.scu\n")
         result = subprocess.run([SCU, "!recursive.scu"], cwd=self.root, capture_output=True,
@@ -2597,9 +4987,9 @@ end.
             self.assertNotIn(b"deck_name= ", output)
             os.write(terminal, b"cred from-prompt\n")
             read_until(b"scu> ")
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 1)
-        listing = self.run_scu("ddl")
+        listing = self.table_data(self.run_scu("disdl"))
         self.assertIn("from-file\t", listing)
         self.assertIn("from-prompt\t", listing)
         self.assertNotIn("skipped\t", listing)
@@ -2609,38 +4999,37 @@ end.
         result = subprocess.run(
             [SCU, "ln=interactive library", "continue_on_error=yes"], cwd=self.root, capture_output=True, text=True,
             input=(
-                '\ninit\nstore_deck dn=main.pas source_file="source with spaces"\n'
+                "\ninil\nimport_deck dn=main.pas source_file=\"source with spaces\"\n"
                 'extd dn=main.pas output_file="unclosed\n'
                 "extd dn=main.pas output_file='working copy.pas'\n"
-                "ddl\nq\nstore_deck ignored 'source with spaces'\n"
+                "disdl\nquis\nimport_deck ignored 'source with spaces'\n"
             ),
             timeout=20,
         )
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("Unclosed quote", result.stderr)
-        self.assertIn("main.pas\t1.0-0.000", result.stdout)
+        self.assertRegex(result.stdout, r"main.pas +1.0-0.000")
         self.assertNotIn("scu>", result.stdout + result.stderr)
         self.assertEqual((self.root / "working copy.pas").read_text(), "interactive source")
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines(self.root / "interactive library")]
         commands = [event["command"] for event in events if event["phase"] == "begin"]
-        self.assertEqual(commands, ["initialize_library", "store_deck", "extract_deck", "display_deck_list",
-                                    "quit_session"])
+        self.assertEqual(commands, ["initialize_library", "import_deck", "extract_deck", "display_deck_list"])
         extract = next(event for event in events if event.get("command") == "extract_deck")
         self.assertEqual(extract["parameters"],
-                         {"deck_name": "main.pas", "output_file": "working copy.pas"})
-        self.assertIn("records=10 interrupted=0",
+                         {"deck_name": "main.pas", "output_file": "working copy.pas", "version": "scu$current_version"})
+        self.assertIn("records=8 interrupted=0",
                       self.run_scu("interactive library", "verify_audit"))
         result = subprocess.run(
             [SCU], cwd=self.root, capture_output=True, text=True, input="list_versions", timeout=20
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, "1.0\topen\t0\t0\n")
+        self.assertEqual(self.table_data(result.stdout), "1.0\topen")
 
     def test_interactive_missing_library_points_to_initialization(self):
         empty = self.root / "empty"
         empty.mkdir()
         result = subprocess.run(
-            [SCU, "continue_on_error=yes"], cwd=empty, input="disdl\ninil\ndisdl\nquit\n",
+            [SCU, "continue_on_error=yes"], cwd=empty, input="disdl\ninil\ndisdl\nquis\n",
             capture_output=True, text=True, timeout=20,
         )
         self.assertEqual(result.returncode, 1, result.stderr)
@@ -2649,7 +5038,7 @@ end.
         self.assertIn("Use initialize_library to create it.", result.stderr)
         self.assertNotIn("Could not open audit log", result.stderr)
         self.assertIn("Initialized version 1.0", result.stdout)
-        self.assertIn("Using version 1.0, library revision 0.", result.stderr)
+        self.assertIn("Using library version 1.0.", result.stderr)
         self.assertFalse((empty / "library.json").exists())
         self.assertFalse((empty / "library.sqlite.audit").exists())
         self.assertEqual((empty / "library.sqlite.lock").stat().st_size, 0)
@@ -2661,84 +5050,60 @@ end.
         legacy = self.root / "library.json"
         legacy.write_text('{"format":1,"header":{},"revisions":[]}')
         original = legacy.read_bytes()
-        self.run_scu(legacy, "ddl", error="file is not a database")
-        self.run_scu(legacy, "init", error="file is not a database")
+        self.table_data(self.run_scu(legacy, "disdl", error="file is not a database"))
+        self.run_scu(legacy, "inil", error="file is not a database")
         self.assertEqual(legacy.read_bytes(), original)
-        self.assertEqual(self.run_scu("ddl"), "")
+        self.assertEqual(self.table_data(self.run_scu("disdl")), "")
         self.assertFalse(legacy.with_suffix(".json.audit").exists())
 
-    def test_interactive_save_and_quit_control_when_library_changes_are_written(self):
-        original = self.read_library()
+    def test_interactive_commands_save_immediately_and_quit_cannot_discard(self):
         with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
             read_until(b"scu> ")
-            os.write(terminal, b"create_deck saved\n")
-            self.assertIn(b"saved version 1.0 revision 0.000", read_until(b"scu> "))
-            self.assertEqual(self.read_library(), original)
-            os.write(terminal, b"dd sa\t\n")
-            self.assertIn(b"1\t1.0\t", read_until(b"scu> "))
-            os.write(terminal, b"savl\n")
-            self.assertIn(b"Saved library.", read_until(b"scu> "))
-            saved = self.read_library()
+            os.write(terminal, b"cred saved\n")
+            self.assertIn(b"saved version", read_until(b"scu> "))
             self.assertEqual(self.read_library()["revisions"][0]["deck"], "saved")
-
-            os.write(terminal, b"create_deck discarded\n")
-            self.assertIn(b"discarded version 1.0 revision 0.000", read_until(b"scu> "))
-            os.write(terminal, b"quit save_library=maybe\n")
-            self.assertIn(b"Expected yes/y or no/n", read_until(b"scu> "))
-            os.write(terminal, b"quit save_library=n\t\n")
-            read_until(b"Discarded unsaved library changes.")
+            self.assertIn("saved\t", self.table_data(self.run_scu("disdl")))
+            os.write(terminal, b"savl\n")
+            self.assertIn(b"Library is already saved.", read_until(b"scu> "))
+            os.write(terminal, b"quis save_library=no\n")
+            self.assertIn(b"Too many arguments for quit_session", read_until(b"scu> "))
+            os.write(terminal, b"quis\n")
             self.assertEqual(process.wait(timeout=5), 1)
-        self.assertEqual(self.read_library(), saved)
-
-        result = subprocess.run([SCU], cwd=self.root, input="create_deck automatic\nquit\n",
-                                text=True, capture_output=True, timeout=20)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Saved library.", result.stdout)
-        self.assertEqual([entry["deck"] for entry in self.read_library()["revisions"]], ["saved", "automatic"])
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
-        self.assertTrue(any(event.get("pending_save") for event in events))
-        self.assertEqual(events[-2]["parameters"], {"save_library": "yes"})
-        self.assertEqual(events[-1]["snapshot"], {"version": "1.0", "library_revision": 2})
-        result = subprocess.run([SCU], cwd=self.root, input="create_deck end-of-input\n",
-                                text=True, capture_output=True, timeout=20)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.read_library()["revisions"][-1]["deck"], "end-of-input")
+        self.assertFalse(any(event.get("pending_save") for event in events))
+        self.assertEqual(self.read_library()["revisions"][0]["deck"], "saved")
+        self.assertIn("interrupted=0", self.run_scu("verify_audit"))
 
-    def test_interactive_save_refuses_to_overwrite_a_concurrent_update(self):
+    def test_interactive_commands_reload_concurrent_committed_changes(self):
         with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
             read_until(b"scu> ")
-            os.write(terminal, b"create_deck staged\n")
-            self.assertIn(b"staged version 1.0 revision 0.000", read_until(b"scu> "))
-            self.run_scu("create_deck", "external")
-            os.write(terminal, b"quit y\n")
-            self.assertIn(b"saved library changed outside this session", read_until(b"scu> "))
-            os.write(terminal, b"\x04")
-            self.assertIn(b"saved library changed outside this session", read_until(b"scu> "))
-            os.write(terminal, b"ddl\n")
-            self.assertIn(b"staged\t1.0-0.000", read_until(b"scu> "))
-            os.write(terminal, b"q sl=N\n")
-            read_until(b"Discarded unsaved library changes.")
-            self.assertEqual(process.wait(timeout=5), 1)
-        self.assertEqual([entry["deck"] for entry in self.read_library()["revisions"]], ["external"])
+            os.write(terminal, b"cred first\n")
+            read_until(b"scu> ")
+            self.run_scu("cred", "external")
+            os.write(terminal, b"cred last\n")
+            self.assertIn(b"last version", read_until(b"scu> "))
+            os.write(terminal, b"quis\n")
+            self.assertEqual(process.wait(timeout=5), 0)
+        self.assertEqual([r["deck"] for r in self.read_library()["revisions"]], ["first", "external", "last"])
         self.assertIn("interrupted=0", self.run_scu("verify_audit"))
 
     def test_command_help_and_required_argument_prompts(self):
         listing = self.run_scu("discl")
         self.assertEqual(listing, self.run_scu("help"))
-        self.assertEqual(listing, self.run_scu("--help"))
+        self.assertEqual(listing, self.run_scu("discl"))
         self.assertRegex(listing, r"(?m)^extract_deck, extd +Write the original source bytes to a file\.$")
         self.assertNotIn("output_file", listing)
         help_text = self.run_scu("display_command", "command_name=extd")
         self.assertEqual(help_text.splitlines()[0], "extract_deck, extd")
         self.assertIn("deck_name (deck, dn) : string = scu$last_modified_deck", help_text)
         self.assertIn("including COPY directives and macro text", help_text)
-        self.assertIn("output_file (o, output) : string = scu$deck_name\n"
-                      "    Path to write the original source bytes.", help_text)
-        self.assertIn("--revision (r) : integer = scu$optional\n"
-                      "    Library-wide snapshot after the specified saved change. Revision 0 is empty.",
+        self.assertIn("output_file (o, output) : string = scu$deck_name.scu\n"
+                      "    Destination for original source bytes. Defaults to the deck name plus .scu; an explicit output_file is used unchanged.", help_text)
+        self.assertIn("revision (r) : string = scu$optional\n"
+                      "    Deck revision within the selected library version, from 0.000 to 0.999. Omit to select the latest visible deck revision, including inherited decks.",
                       help_text)
-        self.assertIn("--version (v) : string = scu$optional\n"
-                      "    Latest snapshot of a named version, including inherited decks.", help_text)
+        self.assertIn("version (v) : string = scu$current_version\n"
+                      "    Library version containing the deck; defaults to scu$current_version. Combine with revision=0.001, or supply a complete deck version such as 1.1-0.001.", help_text)
         self.run_scu("display_command", error="Missing required argument command_name")
         self.run_scu("display_command", "command_name=", error='Unknown command ""')
 
@@ -2748,7 +5113,7 @@ end.
             self.assertIn(b"command_name (cn) : string = scu$required", read_until(b"command_name= "))
             os.write(terminal, b"extd\n")
             self.assertIn(help_text.replace("\n", "\r\n").encode(), read_until(b"scu> "))
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
 
     def test_command_catalog_is_alphabetically_sorted(self):
@@ -2758,20 +5123,21 @@ end.
         command_names = [command["name"] for command in commands]
         self.assertEqual(command_names, sorted(command_names), "commands by full name")
 
-        for option in ("library_option", "batch_option"):
+        for option in ("library_argument", "batch_argument"):
             aliases = definitions[option]["aliases"]
             self.assertEqual(aliases, sorted(aliases), f"{option} aliases")
         for command in commands:
             name = command["name"]
-            option_names = [option["name"] for option in command["options"]]
             with self.subTest(command=name):
-                self.assertEqual(option_names, sorted(option_names), "options by full name")
                 self.assertEqual(command["aliases"], sorted(command["aliases"]), "command aliases")
             # Positional arguments are listed in parsing order. Check only their aliases.
-            for parameter in command["arguments"] + command["options"]:
+            for parameter in command["arguments"]:
                 with self.subTest(command=name, parameter=parameter["name"]):
                     aliases = parameter["aliases"]
                     self.assertEqual(aliases, sorted(aliases), "parameter aliases")
+                    for value in parameter.get("values", []):
+                        if isinstance(value, dict):
+                            self.assertEqual(value.get("aliases", []), sorted(value.get("aliases", [])), "enum aliases")
 
     def test_format_commands_sorts_catalog_without_reordering_positional_arguments(self):
         project = Path(__file__).resolve().parents[1]
@@ -2780,14 +5146,16 @@ end.
         diff["arguments"].reverse()
         expected = json.loads(json.dumps(catalog))
 
-        catalog["library_option"]["aliases"].reverse()
-        catalog["batch_option"]["aliases"].reverse()
+        catalog["library_argument"]["aliases"].reverse()
+        catalog["batch_argument"]["aliases"].reverse()
         catalog["commands"].reverse()
         for command in catalog["commands"]:
             command["aliases"].reverse()
-            command["options"].reverse()
-            for parameter in command["arguments"] + command["options"]:
+            for parameter in command["arguments"]:
                 parameter["aliases"].reverse()
+                for value in parameter.get("values", []):
+                    if isinstance(value, dict):
+                        value.get("aliases", []).reverse()
 
         path = self.root / "commands.json"
         path.write_text(json.dumps(catalog), encoding="utf-8")
@@ -2799,36 +5167,27 @@ end.
         subprocess.run(formatter, check=True, timeout=20)
         self.assertEqual(path.read_bytes(), formatted)
 
-    def test_format_commands_accepts_legacy_catalogs_without_aliases(self):
+    def test_format_commands_accepts_argument_definitions_without_aliases(self):
         path = self.root / "commands.json"
         formatter = Path(__file__).resolve().parents[1] / "tools/format_commands.py"
-        for version in (1, 2):
-            with self.subTest(version=version):
-                if version == 1:
-                    arguments = ["second", "first"]
-                    options = {"z_option": "last", "a_option": "first"}
-                else:
-                    arguments = [{"name": "second"}, {"name": "first"}]
-                    options = [{"name": "z_option"}, {"name": "a_option"}]
-                catalog = {"format": version, "commands": [
-                    {"name": "z_command", "arguments": arguments, "options": options},
-                    {"name": "a_command", "arguments": [], "options": {} if version == 1 else []},
-                ]}
-                path.write_text(json.dumps(catalog))
-                subprocess.run([sys.executable, formatter, path], check=True, timeout=20)
-                first, last = json.loads(path.read_bytes())["commands"]
-                self.assertEqual(first["name"], "a_command")
-                self.assertEqual(last["arguments"], arguments)
-                names = list(last["options"]) if version == 1 else [item["name"] for item in last["options"]]
-                self.assertEqual(names, ["a_option", "z_option"])
+        arguments = [{"name": "second"}, {"name": "first"}]
+        catalog = {"format": 4, "commands": [
+            {"name": "z_command", "arguments": arguments},
+            {"name": "a_command", "arguments": []},
+        ]}
+        path.write_text(json.dumps(catalog))
+        subprocess.run([sys.executable, formatter, path], check=True, timeout=20)
+        first, last = json.loads(path.read_bytes())["commands"]
+        self.assertEqual(first["name"], "a_command")
+        self.assertEqual(last["arguments"], arguments)
 
     def test_command_catalog_rejects_legacy_formats_and_unknown_commands(self):
         executable = self.root / "scu"
         shutil.copy2(SCU, executable)
         catalog = self.root / "commands.json"
-        for version in (1, 2):
+        for version in (1, 2, 3):
             catalog.write_text(json.dumps({"format": version}))
-            self.run_scu("help", executable=executable, error="Expected format 3")
+            self.run_scu("help", executable=executable, error="Expected format 4")
         definitions = json.loads(SCU.with_name("commands.json").read_bytes())
         definitions["commands"][0]["name"] = "unregistered_command"
         catalog.write_text(json.dumps(definitions))
@@ -2840,13 +5199,12 @@ end.
         original = SCU.with_name("commands.json").read_bytes()
         audit = self.audit_lines()
         for section, name, field, value, message in (
-            ("options", "revision", "type", "int", 'Unknown argument type "int" for revision'),
-            ("options", "revision", "value", "one", "Expected integer value for revision"),
-            ("options", "revision", "completion", "revison", 'Unknown completion kind "revison"'),
-            ("options", "revision", "aliases", ["DN"], 'Ambiguous name or alias "DN"'),
-            ("options", "revision", "aliases", [1], 'Expected a nonempty alias string for "revision"'),
-            ("command", "", "aliases", ["DDL"], 'Ambiguous name or alias "DDL"'),
-            ("command", "", "exclusive_options", [["version", "missing"]], 'Unknown option "missing"'),
+            ("arguments", "revision", "type", "int", 'Unknown argument type "int" for revision'),
+            ("arguments", "revision", "completion", "revison", 'Unknown completion kind "revison"'),
+            ("arguments", "revision", "aliases", ["DN"], 'Ambiguous name or alias "DN"'),
+            ("arguments", "revision", "aliases", [1], 'Expected a nonempty alias string for "revision"'),
+            ("command", "", "aliases", ["DISDL"], 'Ambiguous name or alias "DISDL"'),
+            ("command", "", "exclusive_arguments", [["version", "missing"]], 'Unknown argument "missing"'),
             ("command", "", "default_values", {"versoin": "1.0"}, 'Unknown parameter "versoin"'),
         ):
             with self.subTest(field=field, value=value):
@@ -2868,14 +5226,14 @@ end.
         shutil.copy2(SCU, executable)
         catalog = json.loads(SCU.with_name("commands.json").read_bytes())
         command = next(item for item in catalog["commands"] if item["name"] == "expand_deck")
-        command["exclusive_options"] = [["v", "r"]]
+        command["exclusive_arguments"] = [["v", "r"]]
         path = self.root / "commands.json"
         path.write_text(json.dumps(catalog))
         with self.terminal_session(TERM="xterm", executable=executable) as (process, terminal, read_until):
             read_until(b"scu> ")
             path.write_text("invalid catalog")
             os.write(terminal, b"display_command expd\n")
-            self.assertIn(b"--v, --r", read_until(b"scu> "))
+            self.assertIn(b"v, r", read_until(b"scu> "))
 
             prefix = b"expd main expanded v=1.0 --"
             os.write(terminal, prefix + b"\t\t")
@@ -2885,7 +5243,7 @@ end.
             os.write(terminal, b"build no\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "expanded").read_bytes(), b"source")
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
 
     def test_command_catalog_has_consistent_names_and_resolves_every_alias(self):
@@ -2900,7 +5258,7 @@ end.
         command_names = set()
         command_verbs = {
             "configure", "create", "delete", "display", "edit", "expand", "extract",
-            "initialize", "list", "lock", "quit", "recover", "reset", "save",
+            "initialize", "import", "list", "lock", "quit", "recover", "reset", "save",
             "show", "start", "store", "verify",
         }
         for command in commands:
@@ -2914,13 +5272,13 @@ end.
             help_text = self.run_scu("display_command", f"command_name={name}")
             self.assertEqual(help_text.splitlines()[:2],
                              [", ".join([name, *command["aliases"]]), command["summary"]])
-            groups = command.get("exclusive_options", [])
+            groups = command.get("exclusive_arguments", [])
             if groups:
-                expected = ["Mutually exclusive options (choose at most one per group)"]
-                expected.extend("  " + ", ".join(f"--{option}" for option in group) for group in groups)
+                expected = ["Mutually exclusive arguments (choose at most one per group)"]
+                expected.extend("  " + ", ".join(group) for group in groups)
                 self.assertIn("\n".join(expected), help_text)
             else:
-                self.assertNotIn("Mutually exclusive options", help_text)
+                self.assertNotIn("Mutually exclusive arguments", help_text)
             examples = command.get("examples", [])
             if examples:
                 expected = ["Examples"]
@@ -2934,17 +5292,25 @@ end.
                 command_names.add(spelling.casefold())
                 self.assertEqual(self.run_scu("display_command", f"command_name={spelling}"), help_text)
             parameter_names = set()
-            for index, parameter in enumerate(command["arguments"] + command["options"]):
+            for index, parameter in enumerate(command["arguments"]):
                 self.assertTrue(parameter["aliases"])
                 for spelling in [parameter["name"], *parameter["aliases"]]:
                     self.assertNotIn(spelling.casefold(), parameter_names)
                     parameter_names.add(spelling.casefold())
-                prefix = "" if index < len(command["arguments"]) else "--"
+                prefix = ""
                 value = parameter["value"]
-                if isinstance(value, bool):
-                    value = "yes" if value else "no"
                 aliases = ", ".join(parameter["aliases"])
-                signature = f"{prefix}{parameter['name']} ({aliases}) : {parameter['type']} = {value}"
+                kind = parameter["type"]
+                if kind == "enum":
+                    choices = []
+                    for value_definition in parameter["values"]:
+                        if isinstance(value_definition, str):
+                            choices.append(value_definition)
+                        else:
+                            aliases_text = ", ".join(value_definition.get("aliases", []))
+                            choices.append(value_definition["name"] + (f" ({aliases_text})" if aliases_text else ""))
+                    kind += " [" + ", ".join(choices) + "]"
+                signature = f"{prefix}{parameter['name']} ({aliases}) : {kind} = {value}"
                 self.assertIn(signature + "\n    " + parameter["description"], help_text)
 
     def test_optional_default_is_shown_and_applied(self):
@@ -2956,14 +5322,15 @@ end.
                        if command["name"] == "extract_deck")
         extract["arguments"][1]["value"] = "default output"
         extract["arguments"][1]["prompt_for_default"] = True
-        extract["options"][0]["value"] = 1
+        next(p for p in extract["arguments"] if p["name"] == "revision")["value"] = "0.000"
+        next(p for p in extract["arguments"] if p["name"] == "revision")["prompt_for_default"] = True
         extract["help_file"] = "extract.txt"
         (self.root / "extract.txt").write_text("Help loaded from a file.")
         (self.root / "commands.json").write_text(json.dumps(definitions))
         help_text = self.run_scu("display_command", "extd", executable=executable)
         self.assertIn("Help loaded from a file.", help_text)
         self.assertIn("output_file (o, output) : string = default output", help_text)
-        self.assertIn("--revision (r) : integer = 1", help_text)
+        self.assertIn("revision (r) : string = 0.000", help_text)
         self.run_scu("extd", "main.pas", executable=executable)
         self.assertEqual((self.root / "default output").read_bytes(), b"source")
         self.run_scu("extd", "main.pas", "output_file=override", executable=executable)
@@ -2975,16 +5342,16 @@ end.
             os.write(terminal, b"extd main.pas\n")
             self.assertIn(b"output_file (o, output) : string = default output", read_until(b"output_file= "))
             os.write(terminal, b"\n")
-            self.assertIn(b"--revision (r) : integer = 1", read_until(b"revision= "))
+            self.assertIn(b"revision (r) : string = 0.000", read_until(b"revision= "))
             os.write(terminal, b"\n")
             read_until(b"scu> ")
             os.write(terminal, b"extd main.pas\n")
             read_until(b"output_file= ")
             os.write(terminal, b"interactive override\n")
             read_until(b"revision= ")
-            os.write(terminal, b"2\n")
+            os.write(terminal, b"0.001\n")
             read_until(b"scu> ")
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
         self.assertEqual((self.root / "default output").read_bytes(), b"source")
         self.assertEqual((self.root / "interactive override").read_bytes(), b"updated")
@@ -3027,7 +5394,7 @@ end.
             os.close(master)
 
     def test_display_command_list_wraps_at_the_terminal_width(self):
-        names = "configure_library, configure, conl, modify_library"
+        names = "configure_library, conl"
         description = "Set library defaults, numbering increments, editor, or build command."
         for columns in (72, 36, 12):
             with self.subTest(columns=columns), self.terminal_session(TERM="dumb", columns=columns) as (
@@ -3054,7 +5421,7 @@ end.
                     self.assertEqual(" ".join(listing[:start]), names)
                     self.assertTrue(all(line.startswith("  ") for line in listing[start:end]))
                     self.assertEqual(" ".join(line[2:] for line in listing[start:end]), description)
-                os.write(terminal, b"quit\n")
+                os.write(terminal, b'quis\n')
                 self.assertEqual(process.wait(timeout=5), 0)
 
     def test_display_command_wraps_help_and_preserves_description_indentation(self):
@@ -3088,24 +5455,25 @@ end.
                     self.assertEqual(" ".join(body[:separator]), paragraph)
                     self.assertTrue(all(line.startswith("    ") for line in body[separator + 1:]))
                     self.assertEqual(" ".join(line[4:] for line in body[separator + 1:]), indented)
-                start = lines.index("  --revision (r) : integer = scu$optional") + 1
-                end = lines.index("  --version (v) : string = scu$optional")
+                start = lines.index("  revision (r) : string = scu$optional") + 1
+                end = lines.index("  version (v) : string = scu$current_version")
                 self.assertGreater(end - start, 1)
                 self.assertTrue(all(line.startswith("    ") for line in lines[start:end]))
                 self.assertEqual(" ".join(line[4:] for line in lines[start:end]),
-                                 extract["options"][0]["description"])
+                                 next(p for p in extract["arguments"] if p["name"] == "revision")["description"])
                 self.assertIn("  " + extract["examples"][0]["command"], lines)
-                os.write(terminal, b"quit\n")
+                os.write(terminal, b'quis\n')
                 self.assertEqual(process.wait(timeout=5), 0)
 
     def test_interactive_parameter_prompt_wraps_to_the_terminal_width(self):
         executable = self.root / "scu"
         shutil.copy2(SCU, executable)
         definitions = json.loads(SCU.with_name("commands.json").read_bytes())
-        store = next(command for command in definitions["commands"] if command["name"] == "store_deck")
+        store = next(command for command in definitions["commands"] if command["name"] == "import_deck")
         description = "Use a source file from the working directory to create or revise the deck."
         store["arguments"][1]["description"] = "    " + description
         store["arguments"][1]["value"] = "input.txt"
+        store["arguments"][1]["prompt_for_default"] = True
         (self.root / "commands.json").write_text(json.dumps(definitions))
         (self.root / "input.txt").write_bytes(b"prompt source\n")
 
@@ -3113,7 +5481,7 @@ end.
             process, terminal, read_until
         ):
             read_until(b"scu> ")
-            os.write(terminal, b"store_deck sample\n")
+            os.write(terminal, b"import_deck sample\n")
             lines = read_until(b"source_file= ").decode().splitlines()
             self.assertTrue(all(len(line) <= 30 for line in lines), lines)
             body = [line for line in lines if line.startswith("    ")]
@@ -3122,40 +5490,170 @@ end.
             self.assertIn("Press Enter to accept the default.", " ".join(lines))
             self.assertEqual(lines[-1], "source_file= ")
             os.write(terminal, b"\n")
-            self.assertIn(b"sample version 1.0", read_until(b"scu> "))
-            os.write(terminal, b"quit\n")
+            self.assertRegex(read_until(b"scu> "), rb"sample +1.0-0.000 +new")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
 
         self.run_scu("extd", "sample", "result")
         self.assertEqual((self.root / "result").read_bytes(), b"prompt source\n")
 
+    def test_library_columns_omit_history_and_preserve_header_and_unknown_attributes(self):
+        self.run_scu("locv", "description=HISTORY_MARKER\nSecond line")
+        self.run_scu("crev", "123456789.1234567890")
+        document = self.read_library()
+        document["header"]["extra_setting"] = {"enabled": True, "count": 7}
+        document["header"]["multiline_setting"] = "line one\nline two\tend"
+        recovery = self.root / "recovery.json"
+        recovery.write_text(json.dumps(document))
+        restored = self.root / "restored.sqlite"
+        self.run_scu(restored, "recl", recovery)
+        before = json.loads(self.run_scu(restored, "show_library"))
+        with closing(sqlite3.connect(restored)) as database:
+            payload = database.execute("SELECT payload FROM library").fetchone()
+        result = self.run_scu(restored, "disl")
+        summary, table = result.split("\n", 1)
+        self.assertEqual(summary, f'Library "{restored}".')
+        self.assertNotIn("\t", table)
+        self.assertNotIn("HISTORY_MARKER", result)
+        rows = dict(re.split(r" {2,}", line, maxsplit=1) for line in table.splitlines()[1:])
+        self.assertNotIn("versions", rows)
+        self.assertEqual(set(rows), (set(before) - {"versions"}) | {"previous_locked_version"})
+        self.assertEqual(rows["previous_locked_version"], "1.0")
+        self.assertEqual(json.loads(rows["extra_setting"]), {"enabled": True, "count": 7})
+        self.assertEqual(rows["multiline_setting"], "line one\\nline two\\tend")
+        positions = [line.index(value) for key, value in rows.items()
+                     for line in table.splitlines()[1:] if line.startswith(key + " ")]
+        self.assertEqual(len(set(positions)), 1)
+        self.assertEqual(json.loads(self.run_scu(restored, "show_library")), before)
+        self.assertIn("HISTORY_MARKER", self.run_scu(restored, "disvh", "dd=full"))
+        with closing(sqlite3.connect(restored)) as database:
+            self.assertEqual(database.execute("SELECT payload FROM library").fetchone(), payload)
+        self.run_scu(restored, "verify_audit")
+
+    def test_library_configuration_columns_wrap_values_and_stack_on_narrow_terminals(self):
+        command = "make " + " ".join(f"target-{index}" for index in range(12))
+        self.run_scu("conl", "bc=" + command)
+        for columns in (48, 24, 1):
+            with self.subTest(columns=columns), self.terminal_session(
+                    TERM="xterm", columns=columns, rows=30) as (process, terminal, read_until):
+                startup = read_until(b"scu> ").decode().replace("\r\n", "\n")
+                table = startup.split(f'Library "{self.library}".\n', 1)[1].rsplit("scu> ", 1)[0]
+                self.assertNotIn("\t", table)
+                self.assertTrue(all(len(line) <= columns for line in table.splitlines()), table)
+                if columns == 48:
+                    lines = table.splitlines()
+                    index = next(i for i, line in enumerate(lines) if line.startswith("build_command "))
+                    indent = lines[index].index("make")
+                    parts = [lines[index][indent:]]
+                    for line in lines[index + 1:]:
+                        if not line.startswith(" " * indent):
+                            break
+                        parts.append(line[indent:])
+                    self.assertEqual(" ".join(parts), command)
+                    self.assertGreater(len(parts), 1)
+                elif columns == 24:
+                    self.assertIn("build_command\n  make", table)
+                os.write(terminal, b'quis\n')
+                self.assertEqual(process.wait(timeout=5), 0)
+
+    def test_version_history_wraps_descriptions_before_locked_timestamps(self):
+        descriptions = ["After clang-format", "Without the aspiration window in case of an absolute win or loss " * 3]
+        self.run_scu("locv", "description=" + descriptions[0])
+        self.run_scu("crev", "1.1")
+        self.run_scu("locv", "description=" + descriptions[1])
+        self.run_scu("crev", "1.2")
+        entries = self.read_library()["header"]["versions"]
+        for columns in (96, 80, 48, 32):
+            with self.subTest(columns=columns), self.terminal_session(
+                    TERM="dumb", columns=columns, rows=200) as (process, terminal, read_until):
+                read_until(b"scu> ")
+                os.write(terminal, b"disvh limit=5\n")
+                body = read_until(b"scu> ").decode().splitlines()[1:-1]
+                self.assertTrue(all(len(line) <= columns for line in body), body)
+                for entry in entries[:-1]:
+                    self.assertTrue(any(entry["locked_utc"] in line for line in body), body)
+                if columns >= 48:
+                    starts = []
+                    for entry in entries[:-1]:
+                        row = next(line for line in body if line.startswith(entry["name"] + " "))
+                        self.assertIn(entry["locked_utc"], row)
+                        starts.append(row.index(entry["locked_utc"]))
+                    self.assertEqual(len(set(starts)), 1)
+                if columns >= 80:
+                    indent = body[0].index("Description")
+                    first = next(i for i, line in enumerate(body) if line.startswith("1.1 "))
+                    last = next(i for i in range(first + 1, len(body)) if body[i].startswith("1.2 "))
+                    self.assertGreater(last - first, 1)
+                    self.assertTrue(all(line[:indent].isspace() for line in body[first + 1:last]), body)
+                    self.assertEqual("".join(line[indent:] for line in body[first:last]), descriptions[1])
+                os.write(terminal, b"quis\n")
+                self.assertEqual(process.wait(timeout=5), 0)
+        self.assertEqual(self.read_library()["header"]["versions"], entries)
+        self.run_scu("verify_audit")
+
+    def test_version_history_uses_aligned_space_columns_for_long_versions_and_full_descriptions(self):
+        self.run_scu("locv", "description=First\nMore detail")
+        self.run_scu("crev", "123456789.1234567890")
+        self.run_scu("locv", "description=Second\nOther detail")
+        self.run_scu("crev", "123456789.1234567891")
+        entries = self.read_library()["header"]["versions"]
+        widths = [len("123456789.1234567891"), len("locked"), len(entries[0]["locked_utc"])]
+        for mode in ("short", "full"):
+            result = self.run_scu("disvh", "dd=" + mode)
+            self.assertNotIn("\t", result)
+            lines = result.splitlines()
+            expected = [f'{"Version":<{widths[0]}}  {"Status":<{widths[1]}}  {"Locked (UTC)":<{widths[2]}}  Description']
+            for entry in entries:
+                status = "locked" if entry["locked"] else "open"
+                stamp = entry.get("locked_utc", "None")
+                description = entry.get("description", "")
+                if mode == "short":
+                    description = description.split("\n")[0]
+                description = description.replace("\n", "\\n")
+                expected.append(f'{entry["name"]:<{widths[0]}}  {status:<{widths[1]}}  {stamp:<{widths[2]}}  {description}')
+            self.assertEqual(lines, ("\n".join(expected)).rstrip().splitlines())
+        self.assertEqual(self.read_library()["header"]["versions"], entries)
+        self.run_scu("verify_audit")
+
     def test_display_library_runs_when_opening_an_existing_library_at_a_terminal(self):
         project = self.root / "project library.sqlite"
-        self.run_scu(project, "init")
+        self.run_scu(project, "inil")
         self.run_scu(project, "lock_version", "Test version")
         summary, header = self.run_scu(project, "disl").split("\n", 1)
-        self.assertEqual(summary, f'Library "{project}", current version 1.0, previous locked version none.')
-        self.assertEqual(json.loads(header)["editor"], ["vi"])
-        self.assertEqual(json.loads(header)["build_command"], "")
-        self.run_scu(project, "start_version", "1.1")
+        self.assertEqual(summary, f'Library "{project}".')
+        rows = dict(re.split(r" {2,}", line, maxsplit=1) for line in header.splitlines()[1:])
+        self.assertEqual(json.loads(rows["editor"]), ["vi"])
+        self.assertEqual(rows["build_command"], "(not set)")
+        self.assertNotIn("versions", rows)
+        self.assertNotIn("Test version", header)
+        self.run_scu(project, "create_version", "1.1")
         editor = ["code", "--wait", "editor argument"]
         build_command = 'make -C "$1"'
         self.run_scu(project, "configure_library", "editor=" + json.dumps(editor),
                      "build_command=" + build_command, "comment_prefix=#", "version_increment=0.05")
-        expected = f'Library "{project}", current version 1.1, previous locked version 1.0.'
+        expected = f'Library "{project}".'
         expected_header = json.loads(self.run_scu(project, "show_library"))
         self.assertEqual(expected_header["editor"], editor)
         self.assertEqual(expected_header["build_command"], build_command)
         summary, header = self.run_scu(project, "disl").split("\n", 1)
         self.assertEqual(summary, expected)
-        self.assertEqual(json.loads(header), expected_header)
+        formatted_header = header
+        rows = dict(re.split(r" {2,}", line, maxsplit=1) for line in header.splitlines()[1:])
+        self.assertEqual(set(rows), (set(expected_header) - {"versions"}) | {"previous_locked_version"})
+        self.assertEqual(rows["previous_locked_version"], "1.0")
+        self.assertEqual(json.loads(rows["editor"]), editor)
+        self.assertEqual(rows["build_command"], build_command)
+        self.assertEqual(rows["comment_prefix"], "#")
+        self.assertEqual(rows["version_increment"], "0.05")
+        self.assertNotIn("Test version", header)
 
         with self.terminal_session(f"ln={project}") as (process, terminal, read_until):
             startup = read_until(b"scu> ").decode().replace("\r\n", "\n")
             self.assertIn(expected + "\n", startup)
             header = startup.split(expected + "\n", 1)[1].rsplit("scu> ", 1)[0]
-            self.assertEqual(json.loads(header), expected_header)
-            os.write(terminal, b"quit\n")
+            self.assertEqual(header.rstrip(), formatted_header)
+            self.assertNotIn("Test version", header)
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
 
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines(project)]
@@ -3170,19 +5668,19 @@ end.
             self.assertNotIn(b"scu:", startup)
             self.assertNotIn(b"Library ", startup)
             self.assertFalse((self.root / "new.sqlite").exists())
-            os.write(terminal, b"init\n")
+            os.write(terminal, b'inil\n')
             self.assertIn(b"Initialized version 1.0", read_until(b"scu> "))
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
 
     def test_interrupt_cancels_pending_command_and_keeps_session_open(self):
         with self.terminal_session() as (process, terminal, read_until):
             read_until(b"scu> ")
-            os.write(terminal, b"store_deck\n")
+            os.write(terminal, b"create_deck\n")
             self.assertIn(b"deck_name (deck, dn) : string = scu$required", read_until(b"deck_name= "))
             process.send_signal(signal.SIGINT)
             self.assertIn(b"Command cancelled.", read_until(b"scu> "))
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
         self.assertIn("records=4", self.run_scu("verify_audit"))
 
@@ -3205,8 +5703,8 @@ end.
                 self.assertNotIn(b"Locked version", response)
                 self.assertEqual(self.audit_lines(), before)
             os.write(terminal, b"list_versions\n")
-            self.assertIn(b"1.0\topen", read_until(b"scu> "))
-            os.write(terminal, b"quit\n")
+            self.assertRegex(read_until(b"scu> "), rb"1.0 +open")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
 
     def test_ctrl_c_during_nested_copy_is_reported_once(self):
@@ -3247,15 +5745,15 @@ end.
                         self.assertIn(b"injected cancelled outcome failure", response)
                         self.assertEqual(self.audit_lines(), before)
                     os.write(terminal, b"list_versions\n")
-                    self.assertIn(b"1.0\topen", read_until(b"scu> "))
-                    os.write(terminal, b"quit\n")
+                    self.assertRegex(read_until(b"scu> "), rb"1.0 +open")
+                    os.write(terminal, b'quis\n')
                     self.assertEqual(process.wait(timeout=5), 0)
         self.assertEqual(destination.read_bytes(), b"existing output")
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
         begin = next(i for i, event in enumerate(events) if event.get("command") == "expand_deck")
         self.assertFalse(events[begin + 1]["success"])
         self.assertEqual(events[begin + 1]["detail"], "Command cancelled.")
-        self.assertIn("interrupted=0", self.run_scu("verify_audit_trail"))
+        self.assertIn("interrupted=0", self.run_scu("verify_audit"))
 
     def test_review_interrupt_during_build_preserves_pending_changes(self):
         self.store("main", b"source")
@@ -3268,9 +5766,9 @@ end.
             read_until(b"build-started")
             process.send_signal(signal.SIGINT)
             self.assertIn(b"Build command interrupted", read_until(b"scu> "))
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 1)
-        self.assertIn("pending\t", self.run_scu("ddl"))
+        self.assertIn("pending\t", self.table_data(self.run_scu("disdl")))
         self.assertIn("interrupted=0", self.run_scu("verify_audit"))
 
     def test_review_hangup_saves_and_termination_restores_terminal(self):
@@ -3281,7 +5779,7 @@ end.
             process.send_signal(signal.SIGHUP)
             self.assertEqual(process.wait(timeout=5), 0)
             self.assertTrue(termios.tcgetattr(terminal)[3] & termios.ICANON)
-        self.assertIn("pending\t", self.run_scu("ddl"))
+        self.assertIn("pending\t", self.table_data(self.run_scu("disdl")))
         for termination in (signal.SIGTERM, signal.SIGQUIT):
             with self.subTest(signal=termination), self.terminal_session(TERM="xterm") as (
                 process, terminal, read_until
@@ -3293,27 +5791,24 @@ end.
                 process.send_signal(termination)
                 self.assertEqual(process.wait(timeout=5), 128 + termination)
                 self.assertTrue(termios.tcgetattr(terminal)[3] & termios.ICANON)
-                self.assertIn(f"{name}\t", self.run_scu("ddl"))
+                self.assertIn(f"{name}\t", self.table_data(self.run_scu("disdl")))
         self.assertIn("interrupted=0", self.run_scu("verify_audit"))
 
-    def test_termination_recovers_pending_changes_when_library_lock_is_busy(self):
+    def test_termination_needs_no_save_when_library_lock_is_busy(self):
         lock_path = self.library.with_suffix(".sqlite.lock")
         with self.terminal_session(TERM="dumb") as (process, terminal, read_until), lock_path.open("rb") as lock:
             read_until(b"scu> ")
-            os.write(terminal, b"cred pending\n")
-            self.assertIn(b"pending version", read_until(b"scu> "))
+            os.write(terminal, b"cred committed\n")
+            self.assertIn(b"committed version", read_until(b"scu> "))
             fcntl.flock(lock, fcntl.LOCK_EX)
             process.send_signal(signal.SIGTERM)
             self.assertEqual(process.wait(timeout=5), 128 + signal.SIGTERM)
-        recovery, = self.root.glob("library.sqlite.recovery-*.json")
-        document = json.loads(recovery.read_bytes())
-        self.assertEqual([entry["deck"] for entry in document["revisions"]], ["pending"])
-        self.assertEqual(recovery.stat().st_mode & 0o777, 0o600)
-        self.assertNotIn("pending\t", self.run_scu("ddl"))
+        self.assertEqual(list(self.root.glob("*.recovery-*.json")), [])
+        self.assertIn("committed\t", self.table_data(self.run_scu("disdl")))
 
     def test_sigterm_during_build_saves_pending_changes(self):
         database = self.root / "project.sqlite"
-        self.run_scu(database, "init")
+        self.run_scu(database, "inil")
         self.run_scu(database, "cred", "main")
         self.run_scu(database, "conl", "bc=echo build-started; exec sleep 30")
         with self.terminal_session(database, TERM="dumb", controlling=True) as (process, terminal, read_until):
@@ -3324,8 +5819,8 @@ end.
             read_until(b"build-started")
             process.send_signal(signal.SIGTERM)
             self.assertEqual(process.wait(timeout=5), 128 + signal.SIGTERM)
-        self.assertIn("pending\t", self.run_scu(database, "ddl"))
-        self.assertIn("interrupted=0", self.run_scu(database, "verify_audit_trail"))
+        self.assertIn("pending\t", self.table_data(self.run_scu(database, "disdl")))
+        self.assertIn("interrupted=0", self.run_scu(database, "verify_audit"))
 
     def test_build_uses_the_controlling_terminal_and_returns_it_to_scu(self):
         self.store("main", b"source")
@@ -3342,7 +5837,7 @@ end.
             read_until(b"Build answer? ")
             os.write(terminal, b"\x03")
             self.assertIn(b"Build command interrupted", read_until(b"scu> "))
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 1)
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
         self.assertEqual([event["success"] for event in events if event["phase"] == "build"], [True, False])
@@ -3354,7 +5849,7 @@ end.
             read_until(b"scu> ")
             os.write(terminal, b"expd main output\n")
             self.assertIn(b"Build command stopped before it finished", read_until(b"scu> "))
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 1)
 
     def test_ctrl_z_suspends_and_foreground_resumes_build_and_completion_pager(self):
@@ -3393,9 +5888,9 @@ end.
             os.write(terminal, b"fg\n")
             read_until(b"--More--")
             os.write(terminal, b"q00\n")
-            self.assertIn(b"Using version", read_until(b"library revision 1."))
+            self.assertIn(b"Using library version", read_until(b"deck_version 1.0-0.000."))
             self.assertEqual((self.root / "choice-00").read_bytes(), b"source")
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             read_until(b"test-shell> ")
             os.write(terminal, b"exit\n")
             self.assertEqual(shell.wait(timeout=10), 0)
@@ -3441,7 +5936,7 @@ end.
             while os.tcgetpgrp(terminal) != scu_group:
                 self.assertLess(time.monotonic(), deadline, "SCU did not return to the foreground")
                 time.sleep(0.02)
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             deadline = time.monotonic() + 8
             while os.tcgetpgrp(terminal) != shell.pid:
                 self.assertLess(time.monotonic(), deadline, "The shell did not regain the terminal")
@@ -3493,7 +5988,7 @@ end.
                 time.sleep(0.02)
             os.write(terminal, b"answer\n")
             self.assertIn(b"BUILD-GOT=answer", read_until(b"scu> "))
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             read_until(b"test-shell> ")
             os.write(terminal, b"exit\n")
             self.assertEqual(shell.wait(timeout=8), 0)
@@ -3513,7 +6008,7 @@ end.
             process.send_signal(signal.SIGTERM)
             self.assertEqual(process.wait(timeout=8), 128 + signal.SIGTERM)
             self.assertTrue(termios.tcgetattr(terminal)[3] & termios.ICANON)
-        self.assertIn("pending\t", self.run_scu("ddl"))
+        self.assertIn("pending\t", self.table_data(self.run_scu("disdl")))
 
     def test_sigterm_to_suspended_prompt_saves_without_foreground_resume(self):
         bash = shutil.which("bash")
@@ -3534,7 +6029,7 @@ end.
             self.assertEqual(os.tcgetpgrp(terminal), shell.pid)
             os.write(terminal, b"exit\n")
             self.assertEqual(shell.wait(timeout=8), 0)
-        self.assertIn("pending\t", self.run_scu("ddl"))
+        self.assertIn("pending\t", self.table_data(self.run_scu("disdl")))
 
     def test_nested_build_requires_build_no(self):
         self.store("main", b"source")
@@ -3560,7 +6055,7 @@ end.
             response += read_until(b"scu> ")
             self.assertEqual(response.count(b"editor-caught"), 1, response)
             self.assertIn(b"main version 1.0 revision 0.001", response)
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
         self.run_scu("extd", "main", "saved")
         self.assertEqual((self.root / "saved").read_bytes(), b"original\nedited\n")
@@ -3569,28 +6064,25 @@ end.
         path = self.root / "project.sqlite"
         source = self.root / "pending-source"
         source.write_bytes(b"pending source\r\n\xff")
-        self.run_scu(path, "init")
+        self.run_scu(path, "inil")
         self.run_scu(path, "cred", "base")
-        with self.terminal_session(path, TERM="xterm") as (process, terminal, read_until):
-            read_until(b"scu> ")
-            os.write(terminal, b"cred pending from_file=pending-source\n")
-            read_until(b"scu> ")
-            self.run_scu(path, "cred", "concurrent")
-            process.send_signal(signal.SIGHUP)
-            self.assertEqual(process.wait(timeout=5), 1)
-        recovery, = self.root.glob("project.sqlite.recovery-*.json")
-        document = json.loads(recovery.read_bytes())
-        self.assertEqual([entry["deck"] for entry in document["revisions"]], ["base", "pending"])
-        self.assertEqual(recovery.stat().st_mode & 0o777, 0o600)
-        self.assertIn("concurrent\t", self.run_scu(path, "ddl"))
+        self.run_scu(path, "cred", "pending", "from_file=pending-source")
+        with closing(sqlite3.connect(path)) as database:
+            document = json.loads(database.execute("SELECT payload FROM library").fetchone()[0])
+            document["revisions"] = [json.loads(row[0]) for row in database.execute("SELECT payload FROM deck_revisions ORDER BY sequence")]
+        recovery = self.root / "legacy-full-recovery.json"
+        recovery.write_text(json.dumps(document))
+        recovery.chmod(0o600)
+        self.run_scu(path, "cred", "concurrent")
+        self.assertIn("concurrent\t", self.table_data(self.run_scu(path, "disdl")))
         self.run_scu(path, "recover_library", recovery, error="destination already exists")
         restored = self.root / "restored.sqlite"
         self.assertIn("Restored 2 revision(s)", self.run_scu(restored, "recl", recovery))
         self.assertEqual(restored.stat().st_mode & 0o777, 0o600)
-        self.assertIn("records=2 interrupted=0", self.run_scu(restored, "verify_audit_trail"))
-        history = self.run_scu(restored, "show_history")
+        self.assertIn("records=2 interrupted=0", self.run_scu(restored, "verify_audit"))
+        history = self.table_data(self.run_scu(restored, "show_history"))
         self.assertIn("recover_library recovery_file=", history)
-        self.assertEqual(self.run_scu(restored, "ddl"), "base\t1.0-0.000\npending\t1.0-0.000")
+        self.assertEqual(self.table_data(self.run_scu(restored, "disdl")), "base\t1.0-0.000\npending\t1.0-0.000")
         self.run_scu(restored, "extd", "pending", "restored-source")
         self.assertEqual((self.root / "restored-source").read_bytes(), source.read_bytes())
         self.assertTrue(recovery.exists())
@@ -3606,19 +6098,18 @@ end.
         self.store("main", b"saved\n")
         base = self.root / "saved-base.sqlite"
         (self.root / "pending-source").write_bytes(b"new version\n")
-        with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
-            read_until(b"scu> ")
-            for command in (b"lock_version Test_version", b"start_version 1.1", b"store_deck main pending-source"):
-                os.write(terminal, command + b"\n")
-                self.assertNotIn(b"scu: ", read_until(b"scu> "))
-            self.library.rename(base)
-            process.send_signal(signal.SIGHUP)
-            self.assertEqual(process.wait(timeout=5), 1)
-        recovery, = self.root.glob("library.sqlite.recovery-*.json")
-        document = json.loads(recovery.read_bytes())
-        self.assertEqual(document["format"], "scu-pending-recovery-v1")
-        self.assertEqual(document["base_library_revision"], 1)
-        self.assertEqual(recovery.stat().st_mode & 0o777, 0o600)
+        shutil.copy2(self.library, base)
+        with closing(sqlite3.connect(base)) as database:
+            identity, generation = database.execute("SELECT identity, generation FROM library").fetchone()
+        self.run_scu("locv", "Test_version")
+        self.run_scu("crev", "1.1")
+        self.run_scu("import_deck", "main", "pending-source")
+        complete = self.read_library()
+        document = {"format": "scu-pending-recovery-v1", "base_library_revision": 1,
+                    "base_library_state": f"{identity}:{generation}", "header": complete["header"],
+                    "pending_revisions": complete["revisions"][1:]}
+        recovery = self.root / "legacy-pending.json"
+        recovery.write_text(json.dumps(document))
         restored = self.root / "restored.sqlite"
         self.run_scu(restored, "recover_library", recovery, error="requires base_library")
         self.assertFalse(restored.exists())
@@ -3631,12 +6122,12 @@ end.
         self.assertFalse(restored.exists())
         self.assertIn("Restored 2 revision(s)",
                       self.run_scu(restored, "recover_library", recovery, f"bl={base}"))
-        self.assertIn("records=2 interrupted=0", self.run_scu(restored, "verify_audit_trail"))
+        self.assertIn("records=2 interrupted=0", self.run_scu(restored, "verify_audit"))
         self.run_scu(restored, "extd", "main", "restored-source", "version=1.1")
         self.assertEqual((self.root / "restored-source").read_bytes(), b"new version\n")
         self.run_scu(restored, "extd", "main", "restored-base", "version=1.0")
         self.assertEqual((self.root / "restored-base").read_bytes(), b"saved\n")
-        self.assertEqual(self.run_scu(base, "ddl"), "main\t1.0-0.000")
+        self.assertEqual(self.table_data(self.run_scu(base, "disdl")), "main\t1.0-0.000")
 
         # Older pending-only files did not record the base identity and generation.
         del document["base_library_state"]
@@ -3644,21 +6135,19 @@ end.
         legacy.write_text(json.dumps(document))
         restored_legacy = self.root / "legacy.sqlite"
         self.run_scu(restored_legacy, "recover_library", legacy, f"base_library={base}")
-        self.assertIn("records=2 interrupted=0", self.run_scu(restored_legacy, "verify_audit_trail"))
+        self.assertIn("records=2 interrupted=0", self.run_scu(restored_legacy, "verify_audit"))
 
     def test_pending_recovery_without_saved_revisions_needs_no_base(self):
-        with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
-            read_until(b"scu> ")
-            os.write(terminal, b"create_deck pending\n")
-            self.assertIn(b"pending version", read_until(b"scu> "))
-            self.library.unlink()
-            process.send_signal(signal.SIGHUP)
-            self.assertEqual(process.wait(timeout=5), 1)
-        recovery, = self.root.glob("library.sqlite.recovery-*.json")
-        self.assertEqual(json.loads(recovery.read_bytes())["base_library_revision"], 0)
+        self.run_scu("cred", "pending")
+        complete = self.read_library()
+        document = {"format": "scu-pending-recovery-v1", "base_library_revision": 0,
+                    "header": complete["header"], "pending_revisions": complete["revisions"]}
+        recovery = self.root / "legacy-pending.json"
+        recovery.write_text(json.dumps(document))
+        self.library.unlink()
         self.run_scu("recover_library", recovery)
-        self.assertIn("records=2 interrupted=0", self.run_scu("verify_audit_trail"))
-        self.assertEqual(self.run_scu("ddl"), "pending\t1.0-0.000")
+        self.assertIn("records=2 interrupted=0", self.run_scu("verify_audit"))
+        self.assertEqual(self.table_data(self.run_scu("disdl")), "pending\t1.0-0.000")
 
     def test_terminal_editor_handles_utf8_keys_and_ctrl_c_and_restores_terminal(self):
         (self.root / "café").write_bytes(b"source")
@@ -3667,12 +6156,12 @@ end.
             cooked_flags = termios.ICANON | termios.ECHO | termios.ISIG
             self.assertEqual(termios.tcgetattr(terminal)[3] & cooked_flags, 0)
 
-            os.write(terminal, "Xstore_deck sample cafe界".encode() + b"\x1b[D\x7f" +
+            os.write(terminal, "Ximport_deck sample cafe界".encode() + b"\x1b[D\x7f" +
                      "é".encode() + b"\x1b[C\x7f\x1b[H\x1b[3~\x1b[F\r")
-            self.assertIn(b"sample version 1.0 revision 0.000", read_until(b"scu> "))
+            self.assertRegex(read_until(b"scu> "), rb"sample +1.0-0.000 +new")
 
-            os.write(terminal, b"store_deck cancelled\n")
-            read_until(b"source_file= ")
+            os.write(terminal, b"create_deck\n")
+            read_until(b"deck_name= ")
             os.write(terminal, b"unfinished\x03")
             self.assertIn(b"Command cancelled.", read_until(b"scu> "))
             os.write(terminal, b"partial\x03")
@@ -3685,79 +6174,79 @@ end.
         self.run_scu("extract_deck", "sample", "copy")
         self.assertEqual((self.root / "copy").read_bytes(), b"source")
         self.assertEqual(json.loads((self.root / "state/scu/history.json").read_bytes()),
-                         ["store_deck sample café", "store_deck cancelled"])
+                         ["import_deck sample café", "create_deck"])
         with self.terminal_session(TERM="xterm", LC_ALL="C.UTF-8") as (process, terminal, read_until):
             read_until(b"scu> ")
             os.write(terminal, b"\x1b[A\x1b[A\n")
-            self.assertIn(b"No changes to sample", read_until(b"scu> "))
-            os.write(terminal, b"quit\n")
+            self.assertIn(b"1 unchanged", read_until(b"scu> "))
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
 
     def test_terminal_history_recalls_and_edits_commands(self):
         with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
             read_until(b"scu> ")
-            os.write(terminal, b"display_command cn=init\n")
-            self.assertIn(b"initialize_library, inil, init", read_until(b"scu> "))
-            os.write(terminal, b"\x1b[A\x7f\x7f\x7f\x7fquit\n")
-            self.assertIn(b"quit_session, q, quis, quit", read_until(b"scu> "))
-            os.write(terminal, b"display_command cn=quit")
+            os.write(terminal, b'display_command cn=inil\n')
+            self.assertIn(b'initialize_library, inil', read_until(b"scu> "))
+            os.write(terminal, b"\x1b[A\x7f\x7f\x7f\x7fquis\n")
+            self.assertIn(b'quit_session, quis', read_until(b"scu> "))
+            os.write(terminal, b'display_command cn=quis')
             os.write(terminal, b"\x1b[A\x1b[A\x1b[B\x1b[B\n")
-            self.assertIn(b"quit_session, q, quis, quit", read_until(b"scu> "))
+            self.assertIn(b'quit_session, quis', read_until(b"scu> "))
             os.write(terminal, b"unfinished")
             read_until(b"unfinished")
             process.send_signal(signal.SIGINT)
             self.assertIn(b"Command cancelled.", read_until(b"scu> "))
-            os.write(terminal, b"store_deck\n")
+            os.write(terminal, b"create_deck\n")
             read_until(b"deck_name= ")
             process.send_signal(signal.SIGINT)
             self.assertIn(b"Command cancelled.", read_until(b"scu> "))
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
 
     def test_terminal_reverse_search_recalls_saved_history_for_editing(self):
-        saved = ["display_command cn=quit", "display_command_list", "display_command cn=init"]
+        saved = ["display_command cn=quis", "display_command_list", "display_command cn=inil"]
         with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
             read_until(b"scu> ")
             for command in saved:
                 os.write(terminal, command.encode() + b"\n")
                 read_until(b"scu> ")
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
 
         history = self.root / "state/scu/history.json"
         with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
             read_until(b"scu> ")
             os.write(terminal, b"\x12cn=")
-            read_until(b"cn= => display_command cn=init")
+            read_until(b'cn= => display_command cn=inil')
             os.write(terminal, b"\x12")
-            read_until(b"cn= => display_command cn=quit")
+            read_until(b'cn= => display_command cn=quis')
             os.write(terminal, b"\n")
-            read_until(b"scu> display_command cn=quit")
+            read_until(b'scu> display_command cn=quis')
             self.assertEqual(json.loads(history.read_bytes()), saved)
             os.write(terminal, b"\x7f" * 4 + b"extd\n")
             self.assertIn(b"extract_deck, extd", read_until(b"scu> "))
 
-            os.write(terminal, b"display_command cn=quit\x12initx")
-            read_until(b"initx => (no match)")
+            os.write(terminal, b"display_command cn=quis\x12inilx")
+            read_until(b"inilx => (no match)")
             os.write(terminal, b"\x7f")
-            read_until(b"init => display_command cn=init")
+            read_until(b'inil => display_command cn=inil')
             os.write(terminal, b"\x1b")
-            read_until(b"scu> display_command cn=quit")
+            read_until(b'scu> display_command cn=quis')
             os.write(terminal, b"\n")
-            self.assertIn(b"quit_session, q, quis, quit", read_until(b"scu> "))
+            self.assertIn(b'quit_session, quis', read_until(b"scu> "))
 
             os.write(terminal, b"partial\x12cn=\x03")
             self.assertIn(b"Command cancelled.", read_until(b"scu> "))
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
 
         self.assertEqual(json.loads(history.read_bytes()),
-                         saved + ["display_command cn=extd", "display_command cn=quit"])
+                         saved + ["display_command cn=extd", "display_command cn=quis"])
 
     def test_terminal_history_loads_escaped_utf8_in_the_c_locale(self):
         history = self.root / "state/scu/history.json"
         history.parent.mkdir(parents=True, mode=0o700)
-        command = "store_deck sample café"
+        command = "import_deck sample café"
         history.write_text(json.dumps([command]))
         (self.root / "café").write_bytes(b"source")
         with self.terminal_session(TERM="xterm", LC_ALL="C") as (process, terminal, read_until):
@@ -3765,8 +6254,8 @@ end.
             os.write(terminal, b"\x1b")
             time.sleep(0.32)
             os.write(terminal, b"[A\n")
-            self.assertIn(b"sample version 1.0 revision 0.000", read_until(b"scu> "))
-            os.write(terminal, b"quit\n")
+            self.assertRegex(read_until(b"scu> "), rb"sample +1.0-0.000 +new")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
         self.assertEqual(json.loads(history.read_bytes()), [command, command])
 
@@ -3777,32 +6266,30 @@ end.
         }
         (self.root / "prompt answer").write_bytes(b"source")
         history = self.root / "home" / ".local" / "state" / "scu" / "history.json"
-        with self.terminal_session(**environment) as (first, terminal, read_until), \
+        with self.terminal_session(**environment) as (first, terminal, read_until),\
              self.terminal_session(**environment) as (second, other_terminal, other_read_until):
             self.assertNotIn(b"Could not load command history", read_until(b"scu> "))
             self.assertNotIn(b"Could not load command history", other_read_until(b"scu> "))
-            os.write(terminal, b"store_deck remembered\n")
-            read_until(b"source_file= ")
-            os.write(terminal, b"prompt answer\n")
-            self.assertIn(b"remembered version 1.0 revision 0.000", read_until(b"scu> "))
-            os.write(other_terminal, b"display_command cn=quit\n")
-            self.assertIn(b"quit_session, q, quis, quit", other_read_until(b"scu> "))
+            os.write(terminal, b'import_deck remembered "prompt answer"\n')
+            self.assertRegex(read_until(b"scu> "), rb"remembered +1.0-0.000 +new")
+            os.write(other_terminal, b'display_command cn=quis\n')
+            self.assertIn(b'quit_session, quis', other_read_until(b"scu> "))
             self.assertEqual(json.loads(history.read_bytes()),
-                             ["store_deck remembered", "display_command cn=quit"])
+                             ['import_deck remembered "prompt answer"', "display_command cn=quis"])
             self.assertEqual(history.stat().st_mode & 0o777, 0o600)
-            os.write(terminal, b"quit\n")
-            os.write(other_terminal, b"q\n")
+            os.write(terminal, b'quis\n')
+            os.write(other_terminal, b'quis\n')
             self.assertEqual(first.wait(timeout=5), 0)
             self.assertEqual(second.wait(timeout=5), 0)
 
         with self.terminal_session(**environment) as (process, terminal, read_until):
             read_until(b"scu> ")
-            os.write(terminal, b"\x1b[A\x7f\x7f\x7f\x7finit\n")
-            self.assertIn(b"initialize_library, inil, init", read_until(b"scu> "))
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b"\x1b[A\x7f\x7f\x7f\x7finil\n")
+            self.assertIn(b'initialize_library, inil', read_until(b"scu> "))
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
         self.assertEqual(json.loads(history.read_bytes()),
-                         ["store_deck remembered", "display_command cn=quit", "display_command cn=init"])
+                         ['import_deck remembered "prompt answer"', "display_command cn=quis", "display_command cn=inil"])
 
     def test_terminal_tab_completes_command_and_parameter_names_and_aliases(self):
         (self.root / "source file").write_bytes(b"source")
@@ -3813,17 +6300,17 @@ end.
             self.assertIn(b"display_command_list", matches)
             self.assertIn(b"display_deck_list", matches)
             os.write(terminal, b"\x15")
-            os.write(terminal, b'store_de\tdeck_na\tmain.pas s\t"source file"\n')
-            self.assertIn(b"main.pas version 1.0 revision 0.000", read_until(b"scu> "))
-            os.write(terminal, b"extd\tdn\tmain.pas output_f\tcopy --rev\t1\n")
+            os.write(terminal, b'import_de\tdeck_na\tmain.pas s\t"source file"\n')
+            self.assertRegex(read_until(b"scu> "), rb"main.pas +1.0-0.000 +new")
+            os.write(terminal, b"extd\tdn\tmain.pas output_f\tcopy --rev\t0.000\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "copy").read_bytes(), b"source")
-            os.write(terminal, b"extd\tdn=main.pas o\tsecond rev\t1\n")
+            os.write(terminal, b"extd\tdn=main.pas o\tsecond rev\t0.000\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "second").read_bytes(), b"source")
-            os.write(terminal, b"ddl\t--r\t1\n")
-            self.assertIn(b"main.pas\t1.0-0.000", read_until(b"scu> "))
-            os.write(terminal, b"q\t\n")
+            os.write(terminal, b'disdl\t--v\t1.0\n')
+            self.assertRegex(read_until(b"scu> "), rb"main.pas +1.0-0.000")
+            os.write(terminal, b'quis\t\n')
             self.assertEqual(process.wait(timeout=5), 0)
 
     def test_tab_completes_a_long_option_after_an_unfilled_required_option(self):
@@ -3832,7 +6319,7 @@ end.
         shutil.copy2(SCU, executable)
         definitions = json.loads(SCU.with_name("commands.json").read_bytes())
         expand = next(command for command in definitions["commands"] if command["name"] == "expand_deck")
-        version = next(option for option in expand["options"] if option["name"] == "version")
+        version = next(option for option in expand["arguments"] if option["name"] == "version")
         version["value"] = "scu$required"
         (self.root / "commands.json").write_text(json.dumps(definitions))
 
@@ -3843,11 +6330,11 @@ end.
             os.write(terminal, b"1.0\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "expanded").read_bytes(), b"source")
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
         attempt = next(event for event in events if event.get("command") == "expand_deck")
-        self.assertEqual(attempt["options"], {"build": "no", "version": "1.0"})
+        self.assertEqual(attempt["parameters"], {"deck_name": "main.pas", "output_file": "expanded", "build": "no", "version": "1.0"})
 
     def test_tab_skips_a_positional_argument_with_an_empty_quoted_value_after_the_cursor(self):
         self.store("main", b"source")
@@ -3858,7 +6345,7 @@ end.
             matches = read_until(b"scu> " + prefix + tail)
             self.assertIn(b"revision", matches)
             self.assertNotIn(b"output_file", matches)
-            os.write(terminal, b"\x05\x15quit\n")
+            os.write(terminal, b'\x05\x15quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
 
     def test_terminal_tab_completion_lists_aligned_columns(self):
@@ -3899,7 +6386,7 @@ end.
                     self.assertEqual(rows, [part for label in labels for part in (label[:20], label[20:])])
                     os.write(terminal, b"\x15")
 
-                os.write(terminal, b"quit\n")
+                os.write(terminal, b'quis\n')
                 self.assertEqual(process.wait(timeout=5), 0)
 
     def test_review_completion_shows_longer_aliases_and_complete_paths(self):
@@ -3918,7 +6405,7 @@ end.
             os.write(terminal, b"\x15extd o=back\t\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "back\\slash.txt").read_bytes(), b"source")
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
 
     def test_terminal_tab_completion_pages_and_restores_the_draft_cursor(self):
@@ -3960,13 +6447,13 @@ end.
             os.write(terminal, b"19\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "pick-19").read_bytes(), b"source")
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
 
     def test_terminal_tab_completes_library_values_and_paths(self):
         self.store("main.pas", b"old\n")
         self.run_scu("lock_version", "Test version")
-        self.run_scu("start_version", "2.0")
+        self.run_scu("create_version", "2.0")
         for index in range(8):
             self.store("main.pas", f"edit {index}\n".encode())
         self.store("main.pas", b"new\n")
@@ -3978,37 +6465,35 @@ end.
         with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
             read_until(b"scu> ")
             audit_before = self.audit_lines()
-            os.write(terminal, b"ddl r=1\t\t")
-            self.assertIn(b"r=10", read_until(b"scu> ddl r=1"))
+            os.write(terminal, b'extd main.pas v=2.0 r=0.00\t\t')
+            self.assertIn(b"r=0.008", read_until(b'scu> extd main.pas v=2.0 r=0.00'))
             self.assertEqual(self.audit_lines(), audit_before)
-            os.write(terminal, b"\x15extd ma\t o=out\twork\t --r 1\n")
+            os.write(terminal, b"\x15extd ma\t o=out\twork\t --v 1.0 --r 0.000\n")
             read_until(b"scu> ")
             self.assertEqual((directory / "working copy").read_bytes(), b"old\n")
             os.write(terminal, b"expd dn=ma\t v=2.\t o=expanded\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "expanded").read_bytes(), b"new\n")
-            os.write(terminal, b"disdd ma\t 1.\t 2.0-0.008\t\n")
+            os.write(terminal, b"disdd of=unified ma\t 1.\t 2.0-0.008\t\n")
             self.assertIn(b"+++ main.pas@2.0-0.008", read_until(b"scu> "))
-            os.write(terminal, b"disdd ma\t 1.\t scu$cur\t\n")
+            os.write(terminal, b"disdd of=unified ma\t 1.\t scu$cur\t\n")
             self.assertIn(b"+++ main.pas@2.0-0.008", read_until(b"scu> "))
-            os.write(terminal, b"disdd ma\t 1.\t\n")
+            os.write(terminal, b"disdd of=unified ma\t 1.\t\n")
             self.assertIn(b"+++ main.pas@2.0-0.008", read_until(b"scu> "))
-            os.write(terminal, b"disdd ma\t scu$pre\t\n")
+            os.write(terminal, b"disdd of=unified ma\t scu$pre\t\n")
             self.assertIn(b"From deck version 2.0-0.007.", read_until(b"scu> "))
-            os.write(terminal, b"disdd ma\t\n")
+            os.write(terminal, b"disdd of=unified ma\t\n")
             self.assertIn(b"From deck version 2.0-0.007.", read_until(b"scu> "))
-            os.write(terminal, b"store_deck prompted\n")
-            read_until(b"source_file= ")
-            os.write(terminal, b"prompt c\t\n")
-            self.assertIn(b"prompted version 2.0 revision 0.000", read_until(b"scu> "))
+            os.write(terminal, b'import_deck prompted source_file="prompt c\t\n')
+            self.assertRegex(read_until(b"scu> "), rb"prompted +2.0-0.000 +new")
             os.write(terminal, b"extd prompted\n")
             read_until(b"scu> ")
-            self.assertEqual((self.root / "prompted").read_bytes(), b"prompt source\n")
+            self.assertEqual((self.root / "prompted.scu").read_bytes(), b"prompt source\n")
             os.write(terminal, b'cred latest ff="source f\t\n')
             self.assertIn(b"latest version 2.0 revision 0.000", read_until(b"scu> "))
-            os.write(terminal, b"disdd latest scu$\t\n")
+            os.write(terminal, b"disdd of=unified latest scu$\t\n")
             self.assertIn(b"From deck version 2.0-0.000.", read_until(b"scu> "))
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
 
     def test_completion_snapshot_refreshes_after_another_process_saves(self):
@@ -4022,14 +6507,14 @@ end.
             os.write(terminal, b"extd sec\t o=second-out\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "second-out").read_bytes(), b"second")
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
 
     def test_terminal_tab_filters_decks_by_snapshot_and_revisions_by_deck(self):
         self.store("alpha-old", b"old\n")
         self.store("inherited", b"inherited\n")
         self.run_scu("lock_version", "Test version")
-        self.run_scu("start_version", "2.0")
+        self.run_scu("create_version", "2.0")
         self.store("alpha-new", b"new deck\n")
         for index in range(6):
             self.store("other", f"other {index}\n".encode())
@@ -4041,7 +6526,7 @@ end.
             for command, output, source in (
                 (b"extd --v 1.0 dn=alpha-\t o=old-version\n", "old-version", b"old\n"),
                 (b"extd v=2.0 inh\t o=inherited-copy\n", "inherited-copy", b"inherited\n"),
-                (b"extd r=1 dn=alpha-\t o=old-revision\n", "old-revision", b"old\n"),
+                (b"extd v=1.0 r=0.000 dn=alpha-\t o=old-revision\n", "old-revision", b"old\n"),
             ):
                 os.write(terminal, command)
                 read_until(b"scu> ")
@@ -4052,30 +6537,30 @@ end.
             read_until(b"scu> ")
             self.assertEqual((self.root / "version-after").read_bytes(), b"old\n")
 
-            os.write(terminal, b"disdd fs=2.0-0.000 ts=1.0-0.000 dn=alpha-\t\n")
+            os.write(terminal, b"disdd of=unified fs=2.0-0.000 ts=1.0-0.000 dn=alpha-\t\n")
             self.assertIn(b"+++ alpha-old@1.0-0.000", read_until(b"scu> "))
 
-            os.write(terminal, b"extd ALPHA-OLD r=1\t\t")
-            revisions = read_until(b"scu> extd ALPHA-OLD r=1")
-            self.assertIn(b"r=10", revisions)
-            self.assertNotIn(b"r=11", revisions)
-            os.write(terminal, b"\x15disdd dn=alpha-old ts=1.0-0.000 fs=2.0-\t\n")
+            os.write(terminal, b"extd ALPHA-OLD r=0.\t\t")
+            revisions = read_until(b"extd ALPHA-OLD r=0.000 ")
+            self.assertIn(b"r=0.000", revisions)
+            self.assertNotIn(b"r=0.001", revisions)
+            os.write(terminal, b"\x15disdd of=unified dn=alpha-old ts=1.0-0.000 fs=2.0-\t\n")
             self.assertIn(b"--- alpha-old@2.0-0.000", read_until(b"scu> "))
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
 
     def test_terminal_tab_filters_versions_to_snapshots_containing_the_deck(self):
         self.store("earlier", b"old")
         self.run_scu("lock_version", "Test version")
-        self.run_scu("start_version", "1.1")
+        self.run_scu("create_version", "1.1")
         self.store("later", b"source")
         self.run_scu("lock_version", "Test version")
-        self.run_scu("start_version", "1.2")
+        self.run_scu("create_version", "1.2")
 
         with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
             read_until(b"scu> ")
-            os.write(terminal, b"ddl v=1.\t\t")
-            self.assertIn(b"v=1.0", read_until(b"scu> ddl v=1."))
+            os.write(terminal, b'disdl v=1.\t\t')
+            self.assertIn(b"v=1.0", read_until(b'scu> disdl v=1.'))
 
             os.write(terminal, b"\x15extd dn=LATER v=1.\t\t")
             matches = read_until(b"scu> extd dn=LATER v=1.")
@@ -4088,14 +6573,14 @@ end.
 
             os.write(terminal, b"disdd dn=later ts=scu$current_deck_version fs=1.\t\n")
             self.assertIn(b"From deck version 1.1-0.000.", read_until(b"scu> "))
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
 
     def test_terminal_tab_skips_supplied_parameters_and_all_their_aliases(self):
         self.store("main.pas", b"source")
         with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
             read_until(b"scu> ")
-            command = b"expd main.pas o=copy --r 1 "
+            command = b"expd main.pas o=copy --r 0.000 "
             os.write(terminal, command + b"\t\t\t")
             matches = read_until(b"scu> " + command)
             self.assertIn(b"comment-prefix", matches)
@@ -4104,30 +6589,29 @@ end.
                 rb"(?:^|\s)(?:deck_name|deck|dn|output_file|output|o|revision|r|version|v)(?:\s|$)",
             )
 
-            command = b"expd dn=main.pas o=copy r=1 --"
+            command = b"expd dn=main.pas o=copy r=0.000 --"
             os.write(terminal, b"\x15" + command + b"\t\t\t")
             matches = read_until(b"scu> " + command)
             self.assertIn(b"--comment-prefix", matches)
-            self.assertNotRegex(matches, rb"(?:^|\s)--(?:revision|r|version|v)(?:\s|$)")
+            self.assertNotRegex(matches, rb"(?:^|\s)--(?:revision|r)(?:\s|$)")
 
             prefix = b"expd main.pas build=no --"
-            tail = b" --r 1 o=copy"
+            tail = b" --r 0.000 o=copy"
             os.write(terminal, b"\x15" + prefix + tail + b"\x02" * len(tail) + b"\t\t\t")
-            matches = read_until(b"scu> " + prefix + b"c" + tail)
+            matches = read_until(b"scu> " + prefix + tail)
             self.assertIn(b"--comment-prefix", matches)
             self.assertNotIn(b"--revision", matches)
-            self.assertNotIn(b"--version", matches)
+            self.assertIn(b"--version", matches)
 
-            os.write(terminal, b"\x05\x15expd dn=main.pas o=expanded r=1 cp\t//\n")
+            os.write(terminal, b"\x05\x15expd dn=main.pas o=expanded r=0.000 cp\t//\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "expanded").read_bytes(), b"source")
-            os.write(terminal, b"quit\n")
+            os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
 
-    def test_terminal_tab_skips_revision_when_version_is_selected(self):
+    def test_terminal_tab_allows_revision_when_version_is_selected(self):
         self.store("main.pas", b"source")
-        self.run_scu("expd", "main.pas", "unused", "v=1.0", "r=1",
-                     error="Choose either --version or --revision.")
+        self.run_scu("expd", "main.pas", "unused", "v=1.0", "r=0.000")
         with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
             read_until(b"scu> ")
             command = b"expd main.pas o=copy --"
@@ -4140,14 +6624,14 @@ end.
             os.write(terminal, b"\x15" + command + b"\t\t\t")
             matches = read_until(b"scu> " + command)
             self.assertIn(b"comment-prefix", matches)
-            self.assertNotRegex(matches, rb"(?:^|\s)(?:revision|r)(?:\s|$)")
+            self.assertRegex(matches, rb"(?:^|\s)(?:revision|r)=(?:\s|$)")
 
             command = b"expd main.pas o=copy v=1.0 --"
             os.write(terminal, b"\x15" + command + b"\t\t\t")
             matches = read_until(b"scu> " + command)
             self.assertIn(b"--comment-prefix", matches)
-            self.assertNotRegex(matches, rb"(?:^|\s)--(?:revision|r)(?:\s|$)")
-            os.write(terminal, b"\x15quit\n")
+            self.assertRegex(matches, rb"(?:^|\s)--(?:revision|r)(?:\s|$)")
+            os.write(terminal, b'\x15quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
 
     def test_concurrent_stores_preserve_all_revisions(self):
@@ -4156,9 +6640,9 @@ end.
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as workers:
             list(workers.map(
-                lambda number: self.run_scu("store_deck", f"deck{number}", source), range(8)
+                lambda number: self.run_scu("import_deck", f"deck{number}", source.name), range(8)
             ))
-        self.assertEqual(len(self.run_scu("ddl").splitlines()), 8)
+        self.assertEqual(len(self.table_data(self.run_scu("disdl")).splitlines()), 8)
         self.assertIn("records=20 interrupted=0", self.run_scu("verify_audit"))
         self.assertEqual(len(self.read_library()["revisions"]), 8)
 

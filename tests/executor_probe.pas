@@ -3,7 +3,7 @@ program ExecutorProbe;
 {$mode objfpc}{$H+}
 
 uses
-  Classes, SysUtils, ScuCommand, ScuErrors, ScuExecutor, ScuLibraryModel, ScuLibraryStore, ScuOutput, ScuSQLite;
+  Classes, SysUtils, ScuCommand, ScuErrors, ScuExecutor, ScuLibraryModel, ScuLibraryStore, ScuOutput, ScuSQLite, ScuTable;
 
 type
   TCapturedOutput = class(TScuOutput)
@@ -26,6 +26,33 @@ end;
 
 procedure TCapturedOutput.Flush;
 begin
+end;
+
+procedure CheckTableDisplayWidths;
+var
+  Capture: TCapturedOutput;
+  Table: TScuTable;
+begin
+  Capture := TCapturedOutput.Create;
+  Table := nil;
+  try
+    Table := TScuTable.Create(['Name', 'Value']);
+    Table.AddRow([#$E7#$95#$8C, 'wide']);
+    Table.AddRow(['caf'#$C3#$A9, 'accent']);
+    Table.WriteTo(Capture);
+    if Capture.Text <> 'Name  Value' + LineEnding +
+      #$E7#$95#$8C'    wide' + LineEnding + 'caf'#$C3#$A9'  accent' + LineEnding then
+      raise Exception.Create('Table columns use byte counts instead of display widths.');
+    Capture.Text := '';
+    Table.WriteTo(Capture, 10);
+    if Capture.Text <> 'Nam  Value' + LineEnding + 'e    ' + LineEnding +
+      #$E7#$95#$8C'   wide' + LineEnding + 'caf  accen' + LineEnding +
+      #$C3#$A9'    t' + LineEnding then
+      raise Exception.Create('Wrapped table cells lost characters or column alignment.');
+  finally
+    Table.Free;
+    Capture.Free;
+  end;
 end;
 
 procedure CheckUnloadedPayloadGuards;
@@ -90,14 +117,12 @@ var
   Executor: TScuExecutor;
   Command: TScuCommand;
   Arguments: TScuArguments;
-  Options: TStringList;
 
 begin
   Capture := TCapturedOutput.Create;
   Executor := TScuExecutor.Create(ParamStr(1), False, Capture);
-  Options := TStringList.Create;
   try
-    Command := TScuCommand.Create('unregistered_command', nil, nil);
+    Command := TScuCommand.Create('unregistered_command', nil);
     try
       try
         Executor.Execute(Command);
@@ -113,42 +138,44 @@ begin
       Command.Free;
     end;
 
-    Command := TScuCommand.Create('initialize_library', nil, nil);
+    Command := TScuCommand.Create('initialize_library', nil);
     try
       Executor.Execute(Command);
     finally
       Command.Free;
     end;
 
-    SetLength(Arguments, 2);
+    SetLength(Arguments, 3);
     Arguments[0].Name := 'deck_name';
     Arguments[0].Value := 'example.pas';
     Arguments[0].Provided := True;
     Arguments[1].Name := 'from_file';
-    Options.Add('comment-prefix=#');
-    Command := TScuCommand.Create('create_deck', Arguments, Options);
+    Arguments[2].Name := 'comment-prefix';
+    Arguments[2].Value := '#';
+    Arguments[2].Provided := True;
+    Command := TScuCommand.Create('create_deck', Arguments);
     try
       Arguments[0].Value := 'other.pas';
-      Options.Values['comment-prefix'] := '//';
+      Arguments[2].Value := '//';
       Executor.Execute(Command);
     finally
       Command.Free;
     end;
 
     Capture.Text := '';
-    Command := TScuCommand.Create('display_deck_list', nil, nil);
+    Command := TScuCommand.Create('display_deck_list', nil);
     try
       Executor.Execute(Command);
     finally
       Command.Free;
     end;
-    if (Capture.Text <> 'example.pas'#9'1.0-0.000' + LineEnding) or
-      (Capture.Diagnostics <> 'Using version 1.0, library revision 1.' + LineEnding) then
+    if (Capture.Text <> 'Deck name    Deck version' + LineEnding + 'example.pas  1.0-0.000' + LineEnding) or
+      (Capture.Diagnostics <> 'Using library version 1.0.' + LineEnding) then
       raise Exception.Create('Unexpected executor output.');
     CheckLazyRevision(ParamStr(1));
     CheckUnloadedPayloadGuards;
+    CheckTableDisplayWidths;
   finally
-    Options.Free;
     Executor.Free;
     Capture.Free;
   end;

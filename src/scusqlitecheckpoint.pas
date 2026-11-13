@@ -25,7 +25,7 @@ type
     function ReadExpansionCheckpoint(const Version, Directory: string; out Revision: Integer;
       out Refresh, BuildPending: Boolean): Boolean;
     function ResetExpansionCheckpoint(const Version, Directory: string): Boolean;
-    function InvalidateExpansionOutput(const Version, Directory, Prefix: string): Boolean;
+    function InvalidateExpansionOutput(const Version, Directory, Prefix: string; FullSnapshot: Boolean = False): Boolean;
     procedure SaveExpansionCheckpoint(const Version, Directory, Prefix: string; Revision: Integer;
       BuildPending: Boolean);
   end;
@@ -58,7 +58,7 @@ begin
       'JOIN events AS attempt ON attempt.digest = json_extract(outcome.payload, ''$.begin'') ' +
       'WHERE json_extract(build.payload, ''$.phase'') = ''build'' ' +
         'AND json_extract(build.payload, ''$.success'') = 1 ' +
-        'AND json_extract(attempt.payload, ''$.command'') = ''expand_modified_decks''' +
+        'AND json_extract(attempt.payload, ''$.command'') IN (''expand_version'', ''expand_modified_decks'')' +
     ') ' +
     'SELECT checkpoint.version, checkpoint.output_directory, checkpoint.revision, ' +
       'checkpoint.comment_prefix IS NULL, last_build.built_utc, last_build.revision ' +
@@ -133,7 +133,7 @@ begin
   end;
 end;
 
-function TSQLiteCheckpointStore.InvalidateExpansionOutput(const Version, Directory, Prefix: string): Boolean;
+function TSQLiteCheckpointStore.InvalidateExpansionOutput(const Version, Directory, Prefix: string; FullSnapshot: Boolean): Boolean;
 var
   Statement: TSQLiteStatement;
 begin
@@ -141,14 +141,15 @@ begin
   // A batch with work can also replace files from a different version.
   Statement := FDatabase.Prepare('UPDATE expansion_checkpoints SET comment_prefix = NULL ' +
     'WHERE output_directory = ?2 AND comment_prefix IS NOT NULL AND (' +
-    '(version = ?1 AND comment_prefix <> ?3) OR (version <> ?1 AND EXISTS (' +
+    '(version = ?1 AND (?4 <> 0 OR comment_prefix <> ?3)) OR (version <> ?1 AND (?4 <> 0 OR EXISTS (' +
     'SELECT 1 FROM deck_revisions WHERE library_version = ?1 AND sequence > COALESCE((' +
     'SELECT revision FROM expansion_checkpoints WHERE version = ?1 AND output_directory = ?2 ' +
-    'AND comment_prefix = ?3), 0))))');
+    'AND comment_prefix = ?3), 0)))))');
   try
     Statement.Bind(1, Version);
     Statement.Bind(2, Directory);
     Statement.Bind(3, Prefix);
+    Statement.Bind(4, Ord(FullSnapshot));
     Statement.Step;
     Result := FDatabase.Changes <> 0;
   finally

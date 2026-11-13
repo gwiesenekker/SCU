@@ -1,0 +1,191 @@
+unit ScuLibraryDisplay;
+
+{$mode objfpc}{$H+}
+
+interface
+
+uses
+  FPJSON, ScuLibrary, ScuOutput;
+
+type
+  TVersionHistoryDisplayRow = record
+    Version, Status, LockedUTC, Description: string;
+  end;
+  TVersionHistoryDisplayRows = array of TVersionHistoryDisplayRow;
+
+// Configuration is borrowed; rendering never changes the library header.
+procedure WriteLibraryConfiguration(Configuration: TJSONObject; Sink: TScuOutput; Columns: SizeInt);
+procedure WriteVersionHistoryRows(const Rows: TVersionHistoryDisplayRows; Sink: TScuOutput);
+procedure WriteDeckList(const Rows: TDeckListEntries; Sink: TScuOutput);
+procedure WriteVersionDecks(const Rows: TVersionDeckEntries; Sink: TScuOutput);
+procedure WriteDeckHistory(const Rows: TDeckHistoryEntries; Sink: TScuOutput);
+
+implementation
+
+uses
+  SysUtils, ScuSignals, ScuTable, ScuTerminal;
+
+function DisplayText(const Text: string): string;
+var
+  Character: Char;
+begin
+  Result := '';
+  for Character in Text do
+    case Character of
+      #9: Result := Result + '\t';
+      #10: Result := Result + '\n';
+      #13: Result := Result + '\r';
+      #0..#8, #11, #12, #14..#31, #127:
+        Result := Result + '\x' + IntToHex(Ord(Character), 2);
+      else Result := Result + Character;
+    end;
+end;
+
+function DisplayValue(Value: TJSONData): string;
+begin
+  if Value.JSONType = jtString then
+  begin
+    if Value.AsString = '' then
+      Exit('(not set)');
+    Exit(DisplayText(Value.AsString));
+  end;
+  Result := DisplayText(Value.AsJSON);
+end;
+
+procedure WriteLibraryConfiguration(Configuration: TJSONObject; Sink: TScuOutput; Columns: SizeInt);
+var
+  Index, Width, Indent, NameWidth: SizeInt;
+  Name, Rendered: string;
+  Stacked: Boolean;
+
+  function WidthOf(const Text: string): SizeInt;
+  begin
+    if Columns = 0 then
+      Exit(Length(Text));
+    Result := TextWidth(Text, 0, Length(Text));
+  end;
+
+  procedure WriteRow(const Name, Value: string);
+  begin
+    if Stacked then
+    begin
+      Sink.WriteLine(FormatTerminalLines(Name, Columns));
+      Sink.WriteLine(FormatTerminalLines(Value, Columns, Indent));
+    end
+    else
+    begin
+      Rendered := FormatTerminalLines(Value, Columns, Indent);
+      Sink.WriteLine(Name + StringOfChar(' ', Indent - WidthOf(Name)) +
+        Copy(Rendered, Indent + 1, MaxInt));
+    end;
+  end;
+
+begin
+  if Columns > 0 then
+    UseTerminalLocale;
+  Width := Length('Attribute');
+  for Index := 0 to Configuration.Count - 1 do
+  begin
+    NameWidth := WidthOf(DisplayText(Configuration.Names[Index]));
+    if NameWidth > Width then
+      Width := NameWidth;
+  end;
+  Indent := Width + 2;
+  Stacked := (Columns > 0) and (Columns - Indent < 12);
+  if Stacked then
+  begin
+    Indent := 2;
+    if Columns < 3 then
+      Indent := Columns - 1;
+  end
+  else
+    WriteRow('Attribute', 'Value');
+  for Index := 0 to Configuration.Count - 1 do
+  begin
+    CheckSessionInterrupt;
+    Name := DisplayText(Configuration.Names[Index]);
+    WriteRow(Name, DisplayValue(Configuration.Items[Index]));
+  end;
+end;
+
+procedure WriteVersionHistoryRows(const Rows: TVersionHistoryDisplayRows; Sink: TScuOutput);
+var
+  Table: TScuTable;
+  Row: TVersionHistoryDisplayRow;
+begin
+  Table := TScuTable.Create(['Version', 'Status', 'Locked (UTC)', 'Description'], 3);
+  try
+    for Row in Rows do
+    begin
+      CheckSessionInterrupt;
+      Table.AddRow([Row.Version, Row.Status, Row.LockedUTC, Row.Description]);
+    end;
+    Table.WriteTo(Sink, TerminalColumns(StdOutputHandle));
+  finally
+    Table.Free;
+  end;
+end;
+
+procedure WriteDeckList(const Rows: TDeckListEntries; Sink: TScuOutput);
+var
+  Table: TScuTable;
+  Row: TDeckListEntry;
+begin
+  Table := TScuTable.Create(['Deck name', 'Deck version']);
+  try
+    for Row in Rows do
+    begin
+      CheckSessionInterrupt;
+      Table.AddRow([DisplayText(Row.Name), Row.DeckVersion]);
+    end;
+    Table.WriteTo(Sink, TerminalColumns(StdOutputHandle));
+  finally
+    Table.Free;
+  end;
+end;
+
+procedure WriteVersionDecks(const Rows: TVersionDeckEntries; Sink: TScuOutput);
+var
+  Table: TScuTable;
+  Row: TVersionDeckEntry;
+  Status: string;
+begin
+  Table := TScuTable.Create(['Deck name', 'Deck version', 'Modified (UTC)', 'Status']);
+  try
+    for Row in Rows do
+    begin
+      CheckSessionInterrupt;
+      Status := 'stored';
+      if Row.Deleted then
+        Status := 'deleted';
+      Table.AddRow([DisplayText(Row.Name), Row.DeckVersion, Row.ModifiedUTC, Status]);
+    end;
+    Table.WriteTo(Sink, TerminalColumns(StdOutputHandle));
+  finally
+    Table.Free;
+  end;
+end;
+
+procedure WriteDeckHistory(const Rows: TDeckHistoryEntries; Sink: TScuOutput);
+var
+  Table: TScuTable;
+  Row: TDeckHistoryEntry;
+  Status: string;
+begin
+  Table := TScuTable.Create(['Deck version', 'Modified (UTC)', 'Status']);
+  try
+    for Row in Rows do
+    begin
+      CheckSessionInterrupt;
+      Status := 'stored';
+      if Row.Deleted then
+        Status := 'deleted';
+      Table.AddRow([Row.DeckVersion, Row.ModifiedUTC, Status]);
+    end;
+    Table.WriteTo(Sink, TerminalColumns(StdOutputHandle));
+  finally
+    Table.Free;
+  end;
+end;
+
+end.

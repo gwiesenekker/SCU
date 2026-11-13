@@ -1,19 +1,35 @@
 {
-  "format": 3,
-  "library_option": {
+  "format": 4,
+  "library_argument": {
     "name": "library",
     "type": "string",
     "aliases": ["library_name", "ln"],
     "default": "library.sqlite",
     "description": "Path to the source library to open."
   },
+  "batch_argument": {
+    "name": "continue_on_error",
+    "type": "enum",
+    "aliases": ["coe", "continue-on-error"],
+    "value": "no",
+    "description": "Continue reading batch commands after an error; the final exit status remains nonzero.",
+    "values": [
+      {
+        "name": "yes",
+        "aliases": ["y"]
+      },
+      {
+        "name": "no",
+        "aliases": ["n"]
+      }
+    ]
+  },
   "commands": [
     {
       "name": "configure_library",
-      "aliases": ["configure", "conl", "modify_library"],
+      "aliases": ["conl"],
       "summary": "Set library defaults, numbering increments, editor, or build command.",
-      "arguments": [],
-      "options": [
+      "arguments": [
         {
           "name": "build_command",
           "type": "string",
@@ -50,7 +66,7 @@
           "description": "Step for automatically starting a library version, in hundredths. The default is 0.01."
         }
       ],
-      "help": "Specify at least one option. Set the default prefix before the current version receives its first revision. Supply editor arguments as a JSON array and quote the build command as one string."
+      "help": "Specify at least one argument. Set the default prefix before the current version receives its first revision. Supply editor arguments as a JSON array and quote the build command as one string."
     },
     {
       "name": "create_deck",
@@ -71,9 +87,7 @@
           "value": "scu$optional",
           "description": "Path to the initial source. Omit to create an empty deck.",
           "completion": "file"
-        }
-      ],
-      "options": [
+        },
         {
           "name": "comment-prefix",
           "type": "string",
@@ -95,6 +109,21 @@
       ]
     },
     {
+      "name": "create_version",
+      "aliases": ["crev"],
+      "summary": "Create a higher version after locking the current version.",
+      "arguments": [
+        {
+          "name": "version",
+          "type": "string",
+          "aliases": ["v"],
+          "value": "scu$optional",
+          "description": "New library version. Omit to advance by version_increment."
+        }
+      ],
+      "help": "Lock the current version first. Supply a higher version or let SCU apply version_increment."
+    },
+    {
       "name": "delete_deck",
       "aliases": ["deld"],
       "summary": "Record the deletion of a deck in the open version.",
@@ -109,8 +138,7 @@
           "completion": "deck"
         }
       ],
-      "options": [],
-      "help": "Append a deletion revision without removing earlier source. The deck disappears from the current snapshot and later versions until create_deck or store_deck recreates it. Locked versions cannot be changed. Existing extracted or expanded files are left in place.",
+      "help": "Append a deletion revision without removing earlier source. The deck disappears from the current snapshot and later versions until create_deck or import_deck recreates it. Locked versions cannot be changed. Existing extracted or expanded files are left in place.",
       "examples": [
         {
           "command": "delete_deck main.pas",
@@ -132,21 +160,19 @@
           "completion": "command"
         }
       ],
-      "options": [],
       "help": "Use a full command name or alias. Example: display_command command_name=extd."
     },
     {
       "name": "display_command_list",
-      "aliases": ["--help", "-h", "discl", "help"],
+      "aliases": ["discl", "help"],
       "summary": "List commands alphabetically with aliases and short descriptions.",
       "arguments": [],
-      "options": [],
       "help": "Run display_command command_name=NAME for details about a command."
     },
     {
       "name": "display_deck",
-      "aliases": ["dd", "deck_history", "disd"],
-      "summary": "List a deck's versions and UTC modification times, newest first.",
+      "aliases": ["disd"],
+      "summary": "Show deck versions, UTC modification times, and stored/deleted status.",
       "arguments": [
         {
           "name": "deck_name",
@@ -156,14 +182,25 @@
           "prompt_for_default": false,
           "description": "Name of the deck whose revision history to show.",
           "completion": "deck"
+        },
+        {
+          "name": "limit",
+          "type": "integer",
+          "aliases": ["l"],
+          "value": 10,
+          "prompt_for_default": false,
+          "description": "Number of most recent deck history entries to show. Default 10; use 0 for the complete history."
         }
       ],
-      "options": [],
-      "help": "Show each stored revision with its library revision number, library version, UTC modification time, and deck version.",
+      "help": "Show the resolved deck name above its history, newest first, in aligned Deck version, Modified (UTC), and Status columns. A deck version identifies its library version and per-deck revision; internal library-wide snapshot numbers are omitted. Default limit is 10 most recent entries; use limit=0 for the complete history. Long cells wrap to the terminal width without truncation; redirected output remains unwrapped.",
       "examples": [
         {
           "command": "scu display_deck",
           "description": "Show the revision history of the last modified deck."
+        },
+        {
+          "command": "scu display_deck limit=0",
+          "description": "Show the complete revision history of the last modified deck."
         }
       ]
     },
@@ -198,10 +235,36 @@
           "prompt_for_default": false,
           "description": "Deck version, scu$current_deck_version, or scu$previous_deck_version. Omit to use the deck's latest version.",
           "completion": "deck_version"
+        },
+        {
+          "name": "ignore_space_changes",
+          "type": "enum",
+          "aliases": ["isc"],
+          "value": "yes",
+          "prompt_for_default": false,
+          "description": "Ignore trailing whitespace and changes in the amount of existing whitespace, like diff -b. Set no for exact comparison.",
+          "values": [
+            {
+              "name": "yes",
+              "aliases": ["y"]
+            },
+            {
+              "name": "no",
+              "aliases": ["n"]
+            }
+          ]
+        },
+        {
+          "name": "output_format",
+          "type": "enum",
+          "aliases": ["format", "of"],
+          "value": "normal",
+          "prompt_for_default": false,
+          "description": "Diff output format: normal shows changed lines only; unified shows three lines of unchanged context. Default normal.",
+          "values": ["normal", "unified"]
         }
       ],
-      "options": [],
-      "help": "Compare the original deck bytes at two deck versions such as 1.04-0.007. scu$current_deck_version and scu$previous_deck_version select the latest and preceding versions of the named deck.",
+      "help": "Compare the original deck bytes at two deck versions such as 1.04-0.007. scu$current_deck_version and scu$previous_deck_version select the latest and preceding versions of the named deck. By default ignore whitespace amount changes and trailing whitespace, like diff -b. Set ignore_space_changes=no for exact comparison. Default to normal diff output; use output_format=unified for unified output with three context lines.",
       "examples": [
         {
           "command": "scu display_deck_diff",
@@ -218,42 +281,33 @@
         {
           "command": "scu display_deck_diff main.pas",
           "description": "Compare the latest revision of main.pas with its preceding revision."
+        },
+        {
+          "command": "scu display_deck_diff output_format=unified",
+          "description": "Show unified output with three context lines."
         }
       ]
     },
     {
       "name": "display_deck_list",
-      "aliases": ["ddl", "disdl", "list_decks"],
+      "aliases": ["disdl"],
       "summary": "List decks and their deck versions in the selected snapshot.",
-      "arguments": [],
-      "options": [
-        {
-          "name": "revision",
-          "type": "integer",
-          "aliases": ["r"],
-          "value": "scu$optional",
-          "description": "Library-wide snapshot after the specified saved change. Revision 0 is empty.",
-          "completion": "revision"
-        },
+      "arguments": [
         {
           "name": "version",
           "type": "string",
           "aliases": ["v"],
-          "value": "scu$optional",
-          "description": "Latest snapshot of a named version, including inherited decks.",
-          "completion": "version"
+          "value": "scu$current_version",
+          "description": "Library version whose visible decks to list, including inherited decks. Defaults to scu$current_version.",
+          "completion": "library_version",
+          "prompt_for_default": false
         }
       ],
-      "exclusive_options": [["version", "revision"]],
-      "help": "Show each deck name and its deck version in the selected snapshot. Inherited decks retain their stored deck version. Specify either revision or version.",
+      "help": "Show aligned Deck name and Deck version columns in the selected library version, defaulting to scu$current_version. Include inherited decks with their stored deck versions. Deck revisions apply to individual decks, so this command has no revision argument. Long cells wrap to terminal width; redirected output remains unwrapped.",
       "examples": [
         {
           "command": "scu display_deck_list version=1.1",
           "description": "See which decks are available in named version 1.1."
-        },
-        {
-          "command": "scu display_deck_list revision=7",
-          "description": "Inspect the deck list immediately after the seventh saved deck change."
         },
         {
           "command": "scu display_deck_list",
@@ -266,16 +320,41 @@
       "aliases": ["disec"],
       "summary": "List SQLite expansion checkpoints and their last successful builds.",
       "arguments": [],
-      "options": [],
-      "help": "Show each SQLite expansion checkpoint's version, absolute output directory, revision, rebuild status, and the last successful build's revision and UTC time."
+      "help": "Show each SQLite expansion checkpoint's version, absolute output directory, revision, rebuild status, and the last successful build's revision and UTC time. Use aligned columns with headers and at least two spaces between columns."
     },
     {
       "name": "display_library",
       "aliases": ["disl"],
-      "summary": "Show the library path, versions, and full configuration.",
+      "summary": "Show the library summary and configuration in attribute/value columns.",
       "arguments": [],
-      "options": [],
-      "help": "Show the library path, current version, and most recent locked predecessor, followed by the full configuration header, including the editor and build command. SCU also runs this command when opening an existing library at a terminal."
+      "help": "Show the library path, followed by aligned configuration attributes and values, including current_version, previous_locked_version, editor, and build_command. Omit the versions array; use display_version_history for history. SCU also runs this command when opening an existing library at a terminal. Use show_library for the complete JSON header."
+    },
+    {
+      "name": "display_version",
+      "aliases": ["disv"],
+      "summary": "List decks changed in a library version.",
+      "arguments": [
+        {
+          "name": "version",
+          "type": "string",
+          "aliases": ["v"],
+          "value": "scu$current_version",
+          "prompt_for_default": false,
+          "description": "Library version whose changed decks to list. Defaults to the current library version.",
+          "completion": "library_version"
+        }
+      ],
+      "help": "Show the selected library version and an alphabetically sorted table of decks stored, edited, deleted, or recreated in that version. Show each deck once, using its latest revision within the selected version, with Deck name, Deck version, Modified (UTC), and Status columns. Omit inherited decks that were not changed in that version. Interactive edits are saved automatically. Default to scu$current_version without prompting. Long cells wrap to the terminal width without truncation; redirected output remains unwrapped.",
+      "examples": [
+        {
+          "command": "scu display_version",
+          "description": "Show changed decks in the current library version."
+        },
+        {
+          "command": "scu display_version version=1.1",
+          "description": "Show decks changed in version 1.1, including deletions."
+        }
+      ]
     },
     {
       "name": "display_version_diff",
@@ -297,12 +376,38 @@
           "aliases": ["to", "tv"],
           "value": "scu$current_version",
           "prompt_for_default": false,
-          "description": "Library version to compare to. Defaults to the current library version, including pending edits.",
+          "description": "Library version to compare to. Defaults to the current library version, including automatically saved interactive edits.",
           "completion": "library_version"
+        },
+        {
+          "name": "ignore_space_changes",
+          "type": "enum",
+          "aliases": ["isc"],
+          "value": "yes",
+          "prompt_for_default": false,
+          "description": "Ignore trailing whitespace and changes in the amount of existing whitespace, like diff -b. Set no for exact comparison.",
+          "values": [
+            {
+              "name": "yes",
+              "aliases": ["y"]
+            },
+            {
+              "name": "no",
+              "aliases": ["n"]
+            }
+          ]
+        },
+        {
+          "name": "output_format",
+          "type": "enum",
+          "aliases": ["format", "of"],
+          "value": "normal",
+          "prompt_for_default": false,
+          "description": "Diff output format: normal shows changed lines only; unified shows three lines of unchanged context. Default normal.",
+          "values": ["normal", "unified"]
         }
       ],
-      "options": [],
-      "help": "Show unified source diffs for all decks whose contents differ between the selected versions. Include inherited decks and represent added or removed source with /dev/null. Added or removed empty decks have an explicit notice.",
+      "help": "Show source diffs for all decks whose contents differ between the selected versions. Include inherited decks and represent added or removed source with /dev/null. Added or removed empty decks have an explicit notice. By default ignore whitespace amount changes and trailing whitespace, like diff -b. Set ignore_space_changes=no for exact comparison. Default to normal diff output; use output_format=unified for unified output with three context lines.",
       "examples": [
         {
           "command": "scu display_version_diff",
@@ -315,6 +420,10 @@
         {
           "command": "scu display_version_diff 1.0 'scu$current_version'",
           "description": "Compare a named version with the current library version."
+        },
+        {
+          "command": "scu display_version_diff output_format=unified",
+          "description": "Show unified output with three context lines."
         }
       ]
     },
@@ -322,9 +431,57 @@
       "name": "display_version_history",
       "aliases": ["disvh"],
       "summary": "Show versions, lock status, lock times, and descriptions.",
-      "arguments": [],
-      "options": [],
-      "help": "Display every library version in chronological order with its lock status, UTC lock timestamp, and description. Older versions without a recorded timestamp show None."
+      "arguments": [
+        {
+          "name": "display_description",
+          "type": "enum",
+          "values": [
+            {
+              "name": "short",
+              "aliases": ["s"]
+            },
+            {
+              "name": "full",
+              "aliases": ["f"]
+            }
+          ],
+          "aliases": ["dd"],
+          "value": "short",
+          "prompt_for_default": false,
+          "description": "Show only the first description line (short), or the complete description (full)."
+        },
+        {
+          "name": "limit",
+          "type": "integer",
+          "aliases": ["l"],
+          "value": 10,
+          "prompt_for_default": false,
+          "description": "Number of most recent versions to show, including the current version. Default 10; use 0 for all versions."
+        }
+      ],
+      "help": "Display the most recent library versions in chronological order, including the current version. The default limit is 10; use limit=0 for every version. Show each version with its lock status, UTC lock timestamp, and description. Older versions without a recorded timestamp show None. By default show only the first line of each description. Use display_description=full to include the complete description; embedded line breaks are escaped so each version stays on one output line. Positional arguments are display_description followed by limit; named arguments and aliases may be mixed with positional values. Wrap descriptions first, preserving full UTC timestamps when space permits; use labelled fields on very narrow terminals.",
+      "examples": [
+        {
+          "command": "scu display_version_history display_description=full",
+          "description": "Show all description lines, with escaped line breaks."
+        },
+        {
+          "command": "scu display_version_history limit=5",
+          "description": "Show the five most recent versions, including the current one."
+        },
+        {
+          "command": "scu display_version_history limit=0",
+          "description": "Show the complete version history."
+        },
+        {
+          "command": "scu disvh short 0",
+          "description": "Show the first description line for every version."
+        },
+        {
+          "command": "scu disvh f 5",
+          "description": "Show complete descriptions for the five most recent versions."
+        }
+      ]
     },
     {
       "name": "edit_deck",
@@ -341,8 +498,20 @@
           "completion": "deck"
         }
       ],
-      "options": [],
       "help": "Open the stored deck in the configured editor. Save a new revision when the bytes change."
+    },
+    {
+      "name": "edit_file_patterns",
+      "aliases": ["edifp"],
+      "summary": "Edit the library file patterns, one wildcard or filename per line.",
+      "arguments": [],
+      "help": "Open the file_patterns list in the configured editor. Enter one wildcard or exact filename per line, for files directly in the library directory; blank lines are ignored and surrounding whitespace is trimmed. Preserve spaces within filenames. Save and close the editor to store the list automatically. An empty list clears the selection. Directory components, including subdirectory patterns, are rejected; subdirectory support is planned as a future library option. Configure GUI editors with a wait option, such as editor=[\"code\", \"--wait\"]. The list is library-wide and can be edited while the current version is locked. Run import_deck without arguments to snapshot the configured files; this editor command itself does not import files.",
+      "examples": [
+        {
+          "command": "scu edit_file_patterns",
+          "description": "Edit entries such as *.pas, *.inc, and Makefile, one per line."
+        }
+      ]
     },
     {
       "name": "expand_deck",
@@ -366,16 +535,24 @@
           "prompt_for_default": false,
           "description": "Path to write the expanded source.",
           "completion": "file"
-        }
-      ],
-      "options": [
+        },
         {
           "name": "build",
-          "type": "boolean",
+          "type": "enum",
           "aliases": ["b"],
-          "value": true,
+          "value": "yes",
           "prompt_for_default": false,
-          "description": "Run the configured build command after writing the expanded file."
+          "description": "Run the configured build command after writing the expanded file.",
+          "values": [
+            {
+              "name": "yes",
+              "aliases": ["y"]
+            },
+            {
+              "name": "no",
+              "aliases": ["n"]
+            }
+          ]
         },
         {
           "name": "comment-prefix",
@@ -386,31 +563,31 @@
         },
         {
           "name": "revision",
-          "type": "integer",
+          "type": "string",
           "aliases": ["r"],
           "value": "scu$optional",
-          "description": "Library-wide snapshot after the specified saved change. Revision 0 is empty.",
+          "description": "Deck revision within the selected library version, from 0.000 to 0.999. Omit to select the latest visible deck revision, including inherited decks.",
           "completion": "revision"
         },
         {
           "name": "version",
           "type": "string",
           "aliases": ["v"],
-          "value": "scu$optional",
-          "description": "Latest snapshot of a named version, including inherited decks.",
-          "completion": "version"
+          "value": "scu$current_version",
+          "description": "Library version containing the deck; defaults to scu$current_version. Combine with revision=0.001, or supply a complete deck version such as 1.1-0.001.",
+          "completion": "version",
+          "prompt_for_default": false
         }
       ],
-      "exclusive_options": [["version", "revision"]],
-      "help": "Resolve COPY directives and substitute macros using one library snapshot. The configured build command runs after expansion unless build=no.",
+      "help": "Select a library version (default scu$current_version) and optionally a deck revision within that version. With no revision, select the latest visible deck, including inherited decks. Version and revision may be combined, for example version=1.1 revision=0.001. A complete deck version such as version=1.1-0.001 is equivalent; do not combine it with a separate revision. Expand COPY directives and macros. COPY dependencies use the selected library version, independently of the root deck revision. Internal library revision numbers are not command selectors.",
       "examples": [
         {
           "command": "scu expand_deck main.pas release-1.1.pas version=1.1",
           "description": "Generate compiler input for named version 1.1, resolving COPY from that version."
         },
         {
-          "command": "scu expand_deck main.pas before-fix.pas revision=7",
-          "description": "Recreate compiler input from the library snapshot immediately after revision 7."
+          "command": "scu expand_deck main.pas before-fix.pas version=1.1 revision=0.001",
+          "description": "Select deck revision 0.001 stored in library version 1.1."
         },
         {
           "command": "scu expand_deck",
@@ -419,18 +596,18 @@
       ]
     },
     {
-      "name": "expand_modified_decks",
-      "aliases": ["expmd"],
-      "summary": "Expand decks changed in a version, with incremental builds for SQLite.",
+      "name": "expand_version",
+      "aliases": ["expv"],
+      "summary": "Expand a version incrementally, or all latest visible decks.",
       "arguments": [
         {
           "name": "version",
           "type": "string",
           "aliases": ["v"],
-          "value": "scu$current_library_version",
+          "value": "scu$current_version",
           "prompt_for_default": false,
-          "description": "Version whose changed decks to expand.",
-          "completion": "version"
+          "description": "Library version whose changed decks to expand. Default scu$current_version uses incremental selection; scu$latest_version expands every live deck, including inherited decks.",
+          "completion": "library_version"
         },
         {
           "name": "output_directory",
@@ -440,16 +617,24 @@
           "prompt_for_default": false,
           "description": "Existing directory for the expanded source files.",
           "completion": "directory"
-        }
-      ],
-      "options": [
+        },
         {
           "name": "build",
-          "type": "boolean",
+          "type": "enum",
           "aliases": ["b"],
-          "value": true,
+          "value": "yes",
           "prompt_for_default": false,
-          "description": "Run the configured build command once after writing the batch."
+          "description": "Run the configured build command once after writing the batch.",
+          "values": [
+            {
+              "name": "yes",
+              "aliases": ["y"]
+            },
+            {
+              "name": "no",
+              "aliases": ["n"]
+            }
+          ]
         },
         {
           "name": "comment-prefix",
@@ -459,7 +644,21 @@
           "description": "Temporarily override the comment prefix for all decks visited in this expansion."
         }
       ],
-      "help": "Expand decks changed in the selected version into an existing directory. By default, use the current library version and the directory containing the library. SQLite expands changes since the checkpoint, including direct and indirect COPY dependents. A successful build advances the checkpoint. With no configured build command, a successful expansion advances it. Save pending SQLite edits before running the batch."
+      "help": "Default to scu$current_version and expand decks changed in the current library version since the checkpoint, refreshing direct and indirect COPY dependents as needed. Named versions and scu$previous_version select that version similarly. Use scu$latest_version for a full checkout of every live deck at its latest visible deck version, including inherited decks; this deliberately ignores incremental checkpoints and rewrites the full batch on each run. COPY uses the selected library snapshot. Default output_directory is scu$library_directory. Run the configured build after expansion when build=yes; advance checkpoints only under the existing successful expansion/build rules. Interactive edits are saved automatically before this command. List each written deck and its resolved deck version in aligned columns before the batch summary.",
+      "examples": [
+        {
+          "command": "scu expand_version",
+          "description": "Expand new changes in the current version and refresh COPY dependents."
+        },
+        {
+          "command": "scu expand_version version='scu$latest_version'",
+          "description": "Populate a fresh checkout with every live deck, including inherited decks."
+        },
+        {
+          "command": "scu expand_version version=1.1 output_directory=build",
+          "description": "Expand changes in version 1.1 into build."
+        }
+      ]
     },
     {
       "name": "extract_deck",
@@ -479,44 +678,42 @@
           "name": "output_file",
           "type": "string",
           "aliases": ["o", "output"],
-          "value": "scu$deck_name",
+          "value": "scu$deck_name.scu",
           "prompt_for_default": false,
-          "description": "Path to write the original source bytes.",
+          "description": "Destination for original source bytes. Defaults to the deck name plus .scu; an explicit output_file is used unchanged.",
           "completion": "file"
-        }
-      ],
-      "options": [
+        },
         {
           "name": "revision",
-          "type": "integer",
+          "type": "string",
           "aliases": ["r"],
           "value": "scu$optional",
-          "description": "Library-wide snapshot after the specified saved change. Revision 0 is empty.",
+          "description": "Deck revision within the selected library version, from 0.000 to 0.999. Omit to select the latest visible deck revision, including inherited decks.",
           "completion": "revision"
         },
         {
           "name": "version",
           "type": "string",
           "aliases": ["v"],
-          "value": "scu$optional",
-          "description": "Latest snapshot of a named version, including inherited decks.",
-          "completion": "version"
+          "value": "scu$current_version",
+          "description": "Library version containing the deck; defaults to scu$current_version. Combine with revision=0.001, or supply a complete deck version such as 1.1-0.001.",
+          "completion": "version",
+          "prompt_for_default": false
         }
       ],
-      "exclusive_options": [["version", "revision"]],
-      "help": "Write the original source, including COPY directives and macro text, to the output file.",
+      "help": "Select a library version (default scu$current_version) and optionally a deck revision within that version. With no revision, select the latest visible deck, including inherited decks. Version and revision may be combined, for example version=1.1 revision=0.001. A complete deck version such as version=1.1-0.001 is equivalent; do not combine it with a separate revision. Write the original source bytes, including COPY directives and macro text. Internal library revision numbers are not command selectors. Default to <deck_name>.scu so extraction does not overwrite the default expanded file; honor an explicit output_file unchanged.",
       "examples": [
         {
           "command": "scu extract_deck main.pas release-1.1.pas version=1.1",
           "description": "Retrieve the source from named version 1.1, such as a locked release."
         },
         {
-          "command": "scu extract_deck main.pas before-fix.pas revision=7",
-          "description": "Recover the source as it stood after revision 7, before a fix saved in revision 8."
+          "command": "scu extract_deck main.pas before-fix.pas version=1.1 revision=0.001",
+          "description": "Select deck revision 0.001 stored in library version 1.1."
         },
         {
           "command": "scu extract_deck",
-          "description": "Write the last modified deck's original bytes to a file with the same name in the current directory."
+          "description": "Write the last modified deck to <deck_name>.scu in the current directory."
         }
       ]
     },
@@ -529,37 +726,102 @@
           "name": "version",
           "type": "string",
           "aliases": ["v"],
-          "value": "scu$required",
-          "description": "Version whose changed decks to extract.",
-          "completion": "version"
+          "value": "scu$current_version",
+          "description": "Library version whose changed decks to extract. Defaults to scu$current_version without prompting.",
+          "completion": "library_version",
+          "prompt_for_default": false
         },
         {
           "name": "output_directory",
           "type": "string",
           "aliases": ["directory", "od"],
-          "value": "scu$required",
-          "description": "Existing directory for the extracted source files.",
-          "completion": "directory"
+          "value": "scu$library_directory",
+          "description": "Existing directory for the raw .scu files. Defaults to the directory containing the library.",
+          "completion": "directory",
+          "prompt_for_default": false
         }
       ],
-      "options": [],
-      "help": "Write the original source of each deck changed in the selected version to an existing directory."
+      "help": "Write the original source of each deck changed in the selected version to an existing directory. Write raw files as <deck_name>.scu; expansion writes <deck_name>. Default the version to scu$current_version without prompting; an explicit version selects another library version. Default output_directory to scu$library_directory without prompting, so the command can run without arguments. List each written deck and its resolved deck version in aligned columns before the file-count summary.",
+      "examples": [
+        {
+          "command": "scu extract_modified_decks output_directory=build",
+          "description": "Extract decks changed in the current library version as .scu files."
+        },
+        {
+          "command": "scu extract_modified_decks",
+          "description": "Extract changed decks from the current version as .scu files beside the library."
+        }
+      ]
+    },
+    {
+      "name": "import_deck",
+      "aliases": ["impd"],
+      "summary": "Snapshot selected files or import one deck, creating, updating, or deleting revisions.",
+      "arguments": [
+        {
+          "name": "deck_name",
+          "type": "string",
+          "aliases": ["deck", "dn"],
+          "value": "scu$optional",
+          "prompt_for_default": false,
+          "description": "Deck to create, revise, or recreate. Omit to snapshot file_patterns in the library directory.",
+          "completion": "deck"
+        },
+        {
+          "name": "source_file",
+          "type": "string",
+          "aliases": ["s", "source"],
+          "value": "scu$optional",
+          "description": "Bare source filename in the library directory. Directory components and absolute paths are errors. Defaults to the deck's recorded filename. Requires deck_name.",
+          "completion": "library_file",
+          "prompt_for_default": false
+        },
+        {
+          "name": "comment-prefix",
+          "type": "string",
+          "aliases": ["comment_prefix", "cp"],
+          "value": "scu$optional",
+          "description": "Comment prefix for new or changed revisions. Omit to retain each deck prefix or use the version default for new decks."
+        }
+      ],
+      "help": "With deck_name, import a source file into a new, existing, or deleted deck. source_file must be a bare filename in the library directory; directory components and absolute paths are rejected. Omit it to use the deck's recorded filename. Without deck_name or source_file, scan file_patterns relative to the library directory: store new files, revise changed files, and create deletion revisions for missing decks covered by those patterns. Compare exact source bytes; unchanged decks keep their deck versions, including inherited decks. Show changed decks, resolved deck versions, and new/changed/deleted status in aligned columns, followed by counts. Commit the whole snapshot and its audit records together. A failed scan leaves the library unchanged. Scan only the directory containing the library, without descending into subdirectories. Directory components in file_patterns are rejected; subdirectory support is planned as a future library option. Unsupported deck filenames and case-normalized name collisions are errors. Ignore directories, operational SQLite files, and the export manifest; reject selected symlinks. Wildcards use *, ?, and bracket expressions in filenames. Narrowing file_patterns does not delete decks outside the new selection. Requires an unlocked version.",
+      "examples": [
+        {
+          "command": "scu import_deck",
+          "description": "Snapshot all configured file patterns, including deletions and unchanged-file counts."
+        },
+        {
+          "command": "scu import_deck main.pas",
+          "description": "Import main.pas from its source path in the library directory."
+        },
+        {
+          "command": "scu import_deck main.pas main.pas.scu",
+          "description": "Create or revise main.pas from an edited extraction; keep its existing source-path association."
+        }
+      ]
     },
     {
       "name": "initialize_library",
-      "aliases": ["inil", "init"],
+      "aliases": ["inil"],
       "summary": "Create an empty source library.",
-      "arguments": [],
-      "options": [],
-      "help": "Initialize the selected library with an open version 1.0."
+      "arguments": [
+        {
+          "name": "version",
+          "type": "string",
+          "aliases": ["v"],
+          "value": "1.0",
+          "prompt_for_default": false,
+          "description": "Initial library version in MAJOR.MINOR form. Defaults to 1.0."
+        }
+      ],
+      "help": "Initialize the selected library with an open version. The default initial version is 1.0."
     },
     {
       "name": "list_versions",
       "aliases": ["lisv"],
       "summary": "List versions and their snapshot boundaries.",
       "arguments": [],
-      "options": [],
-      "help": "Print the version, lock state, base revision, and end revision."
+      "help": "Show aligned Version and Status columns, separated by at least two spaces. Internal library revision numbers are not part of this listing."
     },
     {
       "name": "lock_version",
@@ -574,7 +836,6 @@
           "description": "Describe the changes completed in this version."
         }
       ],
-      "options": [],
       "help": "Lock the current version with a required description and record the lock date and time in UTC.",
       "examples": [
         {
@@ -585,20 +846,10 @@
     },
     {
       "name": "quit_session",
-      "aliases": ["q", "quis", "quit"],
+      "aliases": ["quis", "quit"],
       "summary": "Leave the interactive session.",
-      "arguments": [
-        {
-          "name": "save_library",
-          "type": "boolean",
-          "aliases": ["sl"],
-          "value": true,
-          "prompt_for_default": false,
-          "description": "Save pending changes before quitting. Accepts yes/y or no/n."
-        }
-      ],
-      "options": [],
-      "help": "Exit the interactive session. Pending library changes are saved by default. Use quit save_library=no to discard them."
+      "arguments": [],
+      "help": "Exit the interactive session. Every successful modifying command is already saved automatically."
     },
     {
       "name": "recover_library",
@@ -612,9 +863,7 @@
           "value": "scu$required",
           "description": "SCU recovery JSON file to restore.",
           "completion": "file"
-        }
-      ],
-      "options": [
+        },
         {
           "name": "base_library",
           "type": "string",
@@ -637,7 +886,7 @@
           "aliases": ["v"],
           "value": "scu$required",
           "description": "Library version of the checkpoint to reset.",
-          "completion": "version"
+          "completion": "library_version"
         },
         {
           "name": "output_directory",
@@ -648,16 +897,14 @@
           "completion": "directory"
         }
       ],
-      "options": [],
-      "help": "Mark an existing SQLite checkpoint for a full rebuild. The next expand_modified_decks run for this version and directory expands every deck in the selected snapshot. A successful build clears the reset. With no configured build command, a successful expansion clears it."
+      "help": "Mark an existing SQLite checkpoint for a full rebuild. The next expand_version run for this version and directory expands every deck in the selected snapshot. A successful build clears the reset. With no configured build command, a successful expansion clears it."
     },
     {
       "name": "save_library",
       "aliases": ["savl"],
-      "summary": "Save pending library changes.",
+      "summary": "Confirm the library is saved.",
       "arguments": [],
-      "options": [],
-      "help": "Save the current library without leaving the session."
+      "help": "The library is saved automatically after every successful modifying command. This command confirms the saved state without leaving the session."
     },
     {
       "name": "show_history",
@@ -673,72 +920,20 @@
           "description": "Maximum number of recent command attempts to display."
         }
       ],
-      "options": [],
-      "help": "Show recent audited commands in chronological order, with their canonical names, arguments, options, and outcomes."
+      "help": "Show recent audited commands in chronological order, with their canonical names and named arguments, in aligned Command and Status columns separated by at least two spaces."
     },
     {
       "name": "show_library",
       "aliases": ["shol"],
       "summary": "Show the library header as JSON.",
       "arguments": [],
-      "options": [],
       "help": "Display the library header, including version history, the editor, and the build command, in JSON."
     },
     {
-      "name": "start_version",
-      "aliases": ["stav"],
-      "summary": "Start a higher version after locking the current version.",
-      "arguments": [
-        {
-          "name": "version",
-          "type": "string",
-          "aliases": ["v"],
-          "value": "scu$optional",
-          "description": "New library version. Omit to advance by version_increment."
-        }
-      ],
-      "options": [],
-      "help": "Lock the current version first. Supply a higher version or let SCU apply version_increment."
-    },
-    {
-      "name": "store_deck",
-      "aliases": ["stod"],
-      "summary": "Store source as a new revision of a deck.",
-      "arguments": [
-        {
-          "name": "deck_name",
-          "type": "string",
-          "aliases": ["deck", "dn"],
-          "value": "scu$required",
-          "description": "Name of the deck to create or revise.",
-          "completion": "deck"
-        },
-        {
-          "name": "source_file",
-          "type": "string",
-          "aliases": ["s", "source"],
-          "value": "scu$required",
-          "description": "Path to the source file to store.",
-          "completion": "file"
-        }
-      ],
-      "options": [
-        {
-          "name": "comment-prefix",
-          "type": "string",
-          "aliases": ["comment_prefix", "cp"],
-          "value": "scu$optional",
-          "description": "Comment prefix for the new revision. Omit to keep the deck's prefix or use the version default for a new deck."
-        }
-      ],
-      "help": "Read the source file and append a deck revision to the open version. Set or change the deck's comment prefix with --comment-prefix."
-    },
-    {
       "name": "verify_audit",
-      "aliases": ["vera", "verify_audit_trail"],
+      "aliases": ["vera"],
       "summary": "Verify the audit chain and optionally check for a saved head.",
-      "arguments": [],
-      "options": [
+      "arguments": [
         {
           "name": "head",
           "type": "string",
@@ -748,13 +943,42 @@
         }
       ],
       "help": "Verify the audit chain. Supply a previously saved SHA-256 head to check that it is still present."
+    },
+    {
+      "name": "verify_decks",
+      "aliases": ["verd"],
+      "summary": "Verify tracked exports against the latest visible deck versions.",
+      "arguments": [
+        {
+          "name": "output_directory",
+          "type": "string",
+          "aliases": ["directory", "od"],
+          "value": "scu$library_directory",
+          "prompt_for_default": false,
+          "description": "Directory containing exported files and .scu-exports.json. Defaults to the library directory.",
+          "completion": "directory"
+        },
+        {
+          "name": "version",
+          "type": "string",
+          "aliases": ["v"],
+          "value": "scu$current_version",
+          "prompt_for_default": false,
+          "description": "Library version whose latest visible decks to verify. Defaults to scu$current_version.",
+          "completion": "library_version"
+        }
+      ],
+      "help": "Verify files recorded in .scu-exports.json without overwriting them or running builds. Automatically reconcile interrupted manifest updates; report interrupted exports requiring explicit re-export when the file matches neither the previous nor intended checksum. Compare extraction with original source and expansion with recursively expanded COPY and macros. Reuse the recorded expansion timestamp and comment-prefix override, so expansion-time macros do not cause false differences. Report current, outdated, locally modified, missing, unavailable, or untracked files. Return a failing exit status when any tracked file needs attention. Existing untracked files whose names match known decks are reported as untracked; renamed old exports cannot be identified automatically. Records for other libraries are ignored. Use compact File, Mode, Exported, Latest, and Status columns with detailed errors and custom deck mappings below the table. Both version columns are deck versions. Deleted decks remain tracked and are reported as deleted; delete_deck does not delete exported files or manifest records. Finish with a Needs attention list naming every affected deck, file, and full reason; omit current files and continue after individual file read errors. Successful verification ends with No errors were found.",
+      "examples": [
+        {
+          "command": "scu verify_decks",
+          "description": "Verify tracked exports in the library directory against the current version."
+        },
+        {
+          "command": "scu verify_decks output_directory=build version=1.1",
+          "description": "Verify files in build against version 1.1 without changing them."
+        }
+      ]
     }
-  ],
-  "batch_option": {
-    "name": "continue_on_error",
-    "type": "boolean",
-    "aliases": ["coe", "continue-on-error"],
-    "value": false,
-    "description": "Continue reading batch commands after an error; the final exit status remains nonzero."
-  }
+  ]
 }
