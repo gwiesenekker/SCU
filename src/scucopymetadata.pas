@@ -7,6 +7,8 @@ interface
 uses
   Classes, FPJSON, ScuSQLite;
 
+// Compatibility only: validate metadata covered by historical audit digests.
+// New revision payloads and release publication never scan COPY directives.
 function ScanCopyMetadata(const Source: RawByteString; const Prefix: string): TJSONObject;
 procedure CacheCopyMetadata(Database: TSQLiteLibrary; Sequence: Integer; const Prefix: string; Targets: TStrings);
 

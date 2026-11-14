@@ -41,7 +41,7 @@ type
     destructor Destroy; override;
     procedure BeginCommand(Command: TScuCommand);
     procedure EndCommand(Success: Boolean; const Detail: string; const Snapshots: TAuditSnapshots;
-      PendingSave: Boolean = False; Contents: TJSONObject = nil; Cancelled: Boolean = False);
+      Contents: TJSONObject = nil; Cancelled: Boolean = False);
     procedure VerifyContents(LibraryFile: TDeckLibrary);
     procedure RecordBuild(const Expansion, Command, OutputPath: string; Success: Boolean; const Detail: string);
     property Head: string read FHead;
@@ -338,7 +338,7 @@ begin
 end;
 
 procedure TAuditLog.EndCommand(Success: Boolean; const Detail: string; const Snapshots: TAuditSnapshots;
-  PendingSave: Boolean; Contents: TJSONObject; Cancelled: Boolean);
+  Contents: TJSONObject; Cancelled: Boolean);
 var
   Event: TJSONObject;
 
@@ -362,8 +362,6 @@ begin
     Event.Add('success', Success);
     if Cancelled then
       Event.Add('cancelled', True);
-    if PendingSave then
-      Event.Add('pending_save', True);
     if Assigned(Contents) then
       Event.Add('saved_contents', Contents.Clone);
     if Detail <> '' then

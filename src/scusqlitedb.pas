@@ -17,7 +17,8 @@ type
     FReadOnly: Boolean;
     procedure Check(Status: cint; const Operation: string);
   protected
-    procedure OpenConnection(const Path: string; OpenReadOnly, AllowCreate: Boolean);
+    procedure OpenConnection(const Path: string; OpenReadOnly, AllowCreate: Boolean;
+      RecoverableRead: Boolean = False);
   public
     destructor Destroy; override;
     procedure Execute(const SQL: RawByteString);
@@ -55,13 +56,14 @@ implementation
 uses
   SysUtils, BaseUnix, Linux, ScuErrors, ScuFiles;
 
-procedure TSQLiteConnection.OpenConnection(const Path: string; OpenReadOnly, AllowCreate: Boolean);
+procedure TSQLiteConnection.OpenConnection(const Path: string; OpenReadOnly, AllowCreate: Boolean;
+  RecoverableRead: Boolean);
 var
   Flags, Handle, OpenStatus: cint;
 begin
   FPath := Path;
   FReadOnly := OpenReadOnly;
-  if FReadOnly then
+  if FReadOnly and (not RecoverableRead or (fpAccess(Path, W_OK) <> 0)) then
     Flags := SQLITE_OPEN_READONLY
   else
     Flags := SQLITE_OPEN_READWRITE;

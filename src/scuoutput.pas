@@ -6,7 +6,10 @@ interface
 
 type
   TScuOutput = class abstract
+  protected
+    function GetColumns: SizeInt; virtual;
   public
+    property Columns: SizeInt read GetColumns;
     procedure Write(const Data: RawByteString); virtual; abstract;
     procedure WriteLine(const Text: string);
     procedure Report(const Text: string); virtual; abstract;
@@ -25,7 +28,12 @@ procedure WriteDiagnostic(const Message: string);
 implementation
 
 uses
-  SysUtils, BaseUnix, ScuErrors;
+  SysUtils, BaseUnix, ScuErrors, ScuTerminal;
+
+function TScuOutput.GetColumns: SizeInt;
+begin
+  Result := TerminalColumns(StdOutputHandle);
+end;
 
 procedure WriteDiagnostic(const Message: string);
 begin

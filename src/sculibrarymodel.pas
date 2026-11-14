@@ -12,8 +12,8 @@ const
 
 type
   TLibrarySettingsChange = record
-    ChangePrefix, ChangeBuild: Boolean;
-    Prefix, BuildCommand, VersionIncrement, RevisionIncrement: string;
+    ChangePrefix, ChangeBuild, ChangeReleaseDirectory: Boolean;
+    Prefix, BuildCommand, ReleaseDirectory, VersionIncrement, RevisionIncrement: string;
     Editor: TJSONArray; // Borrowed during Configure.
   end;
 
@@ -23,6 +23,7 @@ type
     FVersions: TVersionHistory;
     FEditor, FFilePatterns: array of string;
     FLastModifiedDeck, FBuildCommand, FVersionIncrement, FRevisionIncrement: string;
+    FReleaseDirectory: string;
     FVersionStep, FRevisionStep: Int64;
     function GetEditorCount: Integer;
     function GetEditorArgument(Index: Integer): string;
@@ -43,6 +44,7 @@ type
     property Versions: TVersionHistory read FVersions;
     property LastModifiedDeck: string read FLastModifiedDeck;
     property BuildCommand: string read FBuildCommand;
+    property ReleaseDirectory: string read FReleaseDirectory;
     property RevisionStep: Int64 read FRevisionStep;
     property EditorCount: Integer read GetEditorCount;
     property EditorArguments[Index: Integer]: string read GetEditorArgument;
@@ -62,6 +64,7 @@ type
     function GetModifiedUTC: string;
     function GetSHA1: string;
     function GetSourcePath: string;
+    function GetFileBacked: Boolean;
     function GetCopyMetadataJSON: RawByteString;
     procedure RequireLoaded;
     procedure ReadSourceFields;
@@ -83,6 +86,7 @@ type
     property ModifiedUTC: string read GetModifiedUTC;
     property SHA1: string read GetSHA1;
     property SourcePath: string read GetSourcePath;
+    property FileBacked: Boolean read GetFileBacked;
     property CopyMetadataJSON: RawByteString read GetCopyMetadataJSON;
   end;
 
@@ -96,7 +100,7 @@ procedure ValidateFilePattern(const Pattern: string);
 implementation
 
 uses
-  SysUtils, DateUtils, ScuCodec, ScuCopyMetadata, ScuClock, ScuErrors, ScuJSON, ScuRevisionJSON, ScuVersionNumbers;
+  SysUtils, DateUtils, ScuCodec, ScuClock, ScuErrors, ScuJSON, ScuRevisionJSON, ScuVersionNumbers;
 
 const
   DefaultVersionIncrement = '0.01';
@@ -178,6 +182,7 @@ begin
     Header.Add('version_increment', DefaultVersionIncrement);
     Header.Add('revision_increment', DefaultRevisionIncrement);
     Header.Add('build_command', '');
+    Header.Add('release_directory', 'release');
     Header.Add('file_patterns', TJSONArray.Create);
     Header.Add('comment_prefix', '//');
     Editor := TJSONArray.Create;
@@ -221,6 +226,11 @@ begin
   if not Assigned(Header.Find('build_command')) then
     Header.Add('build_command', '');
   FBuildCommand := Field(Header, 'build_command', jtString).AsString;
+  FReleaseDirectory := 'release';
+  if Assigned(Header.Find('release_directory')) then
+    FReleaseDirectory := Field(Header, 'release_directory', jtString).AsString;
+  if (Trim(FReleaseDirectory) = '') or (Pos(#0, FReleaseDirectory) > 0) then
+    raise EScuError.Create('release_directory must be a nonempty directory path without NUL bytes.');
   if Pos(#0, FBuildCommand) > 0 then
     raise EScuError.Create('The build command cannot contain NUL bytes.');
   if not Assigned(Header.Find('version_increment')) then
@@ -342,6 +352,8 @@ begin
         Result.Add(FSerialized.Names[Index], FSerialized.Items[Index].Clone);
     if not Assigned(Result.Find('file_patterns')) then
       Result.Add('file_patterns', TJSONArray.Create);
+    if not Assigned(Result.Find('release_directory')) then
+      Result.Add('release_directory', FReleaseDirectory);
   except
     Result.Free;
     raise;
@@ -383,6 +395,9 @@ begin
     ValidateEditor(Settings.Editor, 'Invalid value for --editor');
   if Settings.ChangeBuild and (Pos(#0, Settings.BuildCommand) > 0) then
     raise EScuError.Create('The build command cannot contain NUL bytes.');
+  if Settings.ChangeReleaseDirectory and
+    ((Trim(Settings.ReleaseDirectory) = '') or (Pos(#0, Settings.ReleaseDirectory) > 0)) then
+    raise EScuError.Create('release_directory must be a nonempty directory path without NUL bytes.');
   if Settings.ChangePrefix and (Settings.Prefix <> Versions.CommentPrefix(Versions.Current)) then
   begin
     Versions.SetCommentPrefix(Settings.Prefix, RevisionCount);
@@ -417,6 +432,12 @@ begin
   begin
     FSerialized.Strings['build_command'] := Settings.BuildCommand;
     FBuildCommand := Settings.BuildCommand;
+    Result := True;
+  end;
+  if Settings.ChangeReleaseDirectory and (Settings.ReleaseDirectory <> FReleaseDirectory) then
+  begin
+    FSerialized.Strings['release_directory'] := Settings.ReleaseDirectory;
+    FReleaseDirectory := Settings.ReleaseDirectory;
     Result := True;
   end;
 end;
@@ -522,14 +543,25 @@ begin
 end;
 
 function TLibraryRevision.GetSourcePath: string;
+var RawPath: RawByteString;
 begin
   RequireLoaded;
   Result := Name;
   if Assigned(FPayload.Find('source_path')) then
   begin
-    Result := Field(FPayload, 'source_path', jtString, 'Deck "' + Name + '" revision payload').AsString;
+    RawPath := Field(FPayload, 'source_path', jtString, 'Deck "' + Name + '" revision payload').AsString;
+    SetCodePage(RawPath, CP_UTF8, False);
+    Result := RawPath;
     ValidateRelativeSourcePath(Result);
   end;
+end;
+
+function TLibraryRevision.GetFileBacked: Boolean;
+begin
+  RequireLoaded;
+  Result := False;
+  if Assigned(FPayload.Find('file_backed')) then
+    Result := Field(FPayload, 'file_backed', jtBoolean, 'Deck "' + Name + '" revision payload').AsBoolean;
 end;
 
 function TLibraryRevision.GetCommentPrefix: string;
@@ -562,29 +594,8 @@ begin
 end;
 
 procedure TLibraryRevision.ValidateRecoveredSource(Sequence: Integer);
-var
-  Metadata: TJSONObject;
-  Source: RawByteString;
 begin
-  Source := Decode;
-  if CommentPrefix = '' then
-  begin
-    if Assigned(FPayload.Find('copy_metadata')) then
-      raise EScuError.CreateFmt('COPY metadata for deck "%s" requires a stored comment prefix.', [Name]);
-    Exit;
-  end;
-  Metadata := ScanCopyMetadata(Source, CommentPrefix);
-  try
-    if not Assigned(FPayload.Find('copy_metadata')) then
-    begin
-      FPayload.Add('copy_metadata', Metadata);
-      Metadata := nil;
-    end
-    else if Field(FPayload, 'copy_metadata', jtObject).AsJSON <> Metadata.AsJSON then
-      raise EScuError.CreateFmt('COPY metadata does not match recovered revision %d.', [Sequence]);
-  finally
-    Metadata.Free;
-  end;
+  Decode;
 end;
 
 function TLibraryRevision.Decode: RawByteString;
@@ -619,7 +630,6 @@ begin
     Result.Add('sha1', SHA1);
     Result.Add('modified_utc', UtcTimestamp(UtcNow));
     Result.Add('zstd_base64', EncodeDeck(Source));
-    Result.Add('copy_metadata', ScanCopyMetadata(Source, Prefix));
   except
     Result.Free;
     raise;

@@ -112,6 +112,50 @@ begin
   end;
 end;
 
+procedure CheckBackendLibraryNames(const Path: string);
+var
+  Capture: TCapturedOutput;
+  Executor: TScuExecutor;
+  Command: TScuCommand;
+  Base: string;
+  Rejected: Boolean;
+begin
+  Base := ChangeFileExt(Path, '') + '-auto';
+  Capture := TCapturedOutput.Create;
+  try
+    Executor := TScuExecutor.Create(Base, False, Capture);
+    try
+      Command := TScuCommand.Create('initialize_library', nil);
+      try
+        Executor.Execute(Command);
+      finally
+        Command.Free;
+      end;
+    finally
+      Executor.Free;
+    end;
+    if not FileExists(Base + '.sqlite') or FileExists(Base) then
+      raise Exception.Create('Backend did not append .sqlite to an extensionless library.');
+    Rejected := False;
+    try
+      Executor := TScuExecutor.Create(Base + '.json', False, Capture);
+      Executor.Free;
+    except
+      on E: EScuError do
+      begin
+        if Pos('.sqlite extension', E.Message) = 0 then
+          raise;
+        Rejected := True;
+      end;
+    end;
+    if not Rejected or FileExists(Base + '.json') or FileExists(Base + '.json.lock') then
+      raise Exception.Create('Backend accepted an invalid library extension.');
+  finally
+    Capture.Free;
+  end;
+end;
+
+
 var
   Capture: TCapturedOutput;
   Executor: TScuExecutor;
@@ -175,6 +219,7 @@ begin
     CheckLazyRevision(ParamStr(1));
     CheckUnloadedPayloadGuards;
     CheckTableDisplayWidths;
+    CheckBackendLibraryNames(ParamStr(1));
   finally
     Executor.Free;
     Capture.Free;

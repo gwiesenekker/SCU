@@ -17,7 +17,7 @@ function IntegerField(Obj: TJSONObject; const Name: string; const Source: string
 implementation
 
 uses
-  Classes, SysUtils, JSONParser, JSONScanner, ScuErrors;
+  CWString, Classes, SysUtils, JSONParser, JSONScanner, ScuErrors;
 
 function InSource(const Message, Source: string): string;
 begin
@@ -72,5 +72,11 @@ begin
   if not TryStrToInt64(Field(Obj, Name, jtNumber, Source).AsJSON, Result) then
     raise EScuError.Create(InSource(Format('Expected an integer in JSON field "%s".', [Name]), Source));
 end;
+
+initialization
+  // JSON and SCU text use UTF-8 even when the process locale is C.
+  SetMultiByteConversionCodePage(CP_UTF8);
+  SetMultiByteFileSystemCodePage(CP_UTF8);
+  SetMultiByteRTLFileSystemCodePage(CP_UTF8);
 
 end.

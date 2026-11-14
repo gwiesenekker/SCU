@@ -10,7 +10,7 @@ uses
 type
   EScuError = class(Exception);
   EScuSystemError = class(EScuError);
-  ECommandCancelled = class(EScuError);
+  ECommandCancelled = class(Exception);
 
 procedure RaiseSystemError(const Action: string; ErrorCode: Integer);
 

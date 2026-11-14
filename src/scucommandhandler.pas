@@ -9,9 +9,7 @@ uses
 
 type
   TBuildRequest = record
-    Command, OutputPath: string;
-    Checkpoint: TLibrarySnapshot;
-    CommentPrefix: string;
+    Command, OutputPath, WorkingDirectory, LibraryPath: string;
   end;
 
   TCommandContext = record
@@ -24,6 +22,7 @@ type
     Output: TScuOutput;
     Snapshots: TAuditSnapshots;
     Build: TBuildRequest;
+    FilesPublished: Boolean;
   end;
 
   TCommandOperation = function(var Context: TCommandContext): string;

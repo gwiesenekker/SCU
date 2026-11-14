@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- Rename expand_version (expv) to release_version (relv), updating dispatch, completion, command help, documentation, and regression tests. Retired spellings report the replacement command.
+
+- Separate source extraction/building from release publication. extract_deck and extract_version maintain raw-source manifests and run build_command (build=yes by default) from the library directory; extract_version retrieves the complete selected snapshot, including inheritance.
+- Rename build_directory to release_directory, default release. Remove expand_deck and expansion checkpoint commands; expand_version always publishes the complete selected version without running builds.
+- Remove COPY expansion and dependency tracking from active export/import paths. Expand only SCU$DATE, SCU$TIME, SCU$DATE_TIME, SCU$DECK_VERSION, and SCU$VERSION, preserving comment prefixes and all other source text. Date/time macros use stored deck modification times.
+- Remove obsolete regular release files matching file_patterns only when absent from the selected snapshot. Preserve unrelated files, directories, links, SQLite storage, and edited tracked files unless replacement is explicit.
+- Journal release deletions with batch writes and reconcile interrupted cleanup without deleting externally recreated files. Retain legacy audited payload bytes and manifest compatibility.
+- Replace tests for retired COPY/incremental expansion behavior with full release, deterministic macro, extraction build, cleanup, and interruption regressions; update command help and README workflows.
+
+- Extract decks under their original filenames without an added .scu suffix; keep raw sources beside the library and published sources in the release directory. Allow unchanged source files to be tracked without replacement, protect differing files unless replace=yes, and treat .scu as an ordinary source extension during scans.
+
+- Preserve the selected library in nested SCU build calls.
+- Rename extract_modified_decks/extmd to extract_version/extv; use original filenames in the library directory.
+- Batch export recovery intents and manifest completion, index file records, and share rendering across export and verification. Preserve exact path bytes and legacy manifest recovery.
+- Protect differing edited/untracked output with replace=yes, prevent release output over working sources or SQLite databases, and refuse importing tracked generated files.
+- Track explicit source associations, preserve unmanaged decks during snapshots, reject empty snapshot selectors and symlink imports, and skip SQLite companions.
+- Recover hot SQLite journals for logical readers; clarify transaction rollback and audit-attempt semantics.
+- Stop CLI command files at EOF, support comment lines, improve unknown-argument diagnostics, preserve cancellation as a separate exception, and show build failures in command history.
+
+- Normalize library names consistently for positional, named, and backend use: append .sqlite when no extension is given and reject all other extensions without opening or creating files.
+- Recognize extensionless positional library names before any known command, including startup batch arguments, while retaining command-name precedence and lone-unknown-command diagnostics.
+- Apply the same extension rule to archive-import destinations and document creation and interactive naming behavior; add CLI, backend, and importer regressions.
+
 - Restrict import_deck snapshots and file_patterns to files directly beside the library; reject directory components in source_file and file_patterns, deferring subdirectory support to a future library option.
 - Resolve source_file in the library directory, complete only filenames there, and stage archive-import source files beside its temporary library.
 - Keep earlier subdirectory selections readable for correction while refusing to scan them; add directory-scope, filename-validation, completion, and compatibility regressions.

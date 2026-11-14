@@ -9,7 +9,7 @@ uses
 
 type
   TAuditLineVisitor = procedure(const Line: RawByteString) of object;
-  TAuditHistoryVisitor = procedure(const Attempt, Outcome: RawByteString) of object;
+  TAuditHistoryVisitor = procedure(const Attempt, Outcome, BuildOutcome: RawByteString) of object;
   TAuditState = record
     RecordCount, Interrupted: Int64;
     Head, Pending, PendingCommand: string;
@@ -158,7 +158,11 @@ var
 begin
   // Commands write their outcome immediately after the attempt. Check the
   // digest link too, so an interrupted attempt cannot pick up a later outcome.
-  Statement := FDatabase.Prepare('SELECT substr(attempt.line, 66), substr(outcome.line, 66) FROM (' +
+  Statement := FDatabase.Prepare('SELECT substr(attempt.line, 66), substr(outcome.line, 66), ' +
+    '(SELECT substr(build.line, 66) FROM audit_records AS build ' +
+    'WHERE json_extract(substr(build.line, 66), ''$.phase'') = ''build'' ' +
+    'AND json_extract(substr(build.line, 66), ''$.expansion'') = substr(outcome.line, 1, 64) ' +
+    'ORDER BY build.sequence DESC LIMIT 1) FROM (' +
     'SELECT sequence, line FROM audit_records ' +
     'WHERE json_extract(substr(line, 66), ''$.phase'') = ''begin'' ' +
     'ORDER BY sequence DESC LIMIT ?) AS attempt ' +
@@ -169,7 +173,7 @@ begin
   try
     Statement.Bind(1, Limit);
     while Statement.Step do
-      Visit(Statement.Text[0], Statement.Text[1]);
+      Visit(Statement.Text[0], Statement.Text[1], Statement.Text[2]);
   finally
     Statement.Free;
   end;

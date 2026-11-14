@@ -5,7 +5,7 @@ unit ScuLibrary;
 interface
 
 uses
-  Classes, FPJSON, ScuLibraryModel, ScuLibraryStore, ScuVersions, ScuSQLite;
+  Classes, Contnrs, FPJSON, ScuLibraryModel, ScuLibraryStore, ScuVersions, ScuSQLite;
 
 const
   CurrentDeckVersionSelector = 'scu$current_deck_version';
@@ -60,6 +60,7 @@ type
 
   TDeckLibrary = class
   private
+    FWorkingSources: TFPHashList;
     FStore: TLibraryStore;
     FModified: Boolean;
     FChangeCount: QWord;
@@ -76,6 +77,7 @@ type
     function GetFilePatternCount: Integer;
     function GetFilePattern(Index: Integer): string;
     function GetBuildCommand: string;
+    function GetReleaseDirectory: string;
     function GetVersionCount: Integer;
     function GetVersionEntry(Index: Integer): TVersionEntry;
     function GetLastModifiedDeck: string;
@@ -97,6 +99,8 @@ type
     function Store(Database: TSQLiteLibrary; const Deck: string; const Source: RawByteString;
       CreateOnly: Boolean = False; const Prefix: string = ''; const SourcePath: string = ''): Integer;
     function DeckSourcePath(Database: TSQLiteLibrary; const Deck: string): string;
+    function DeckFileBacked(Database: TSQLiteLibrary; const Deck: string): Boolean;
+    function IsWorkingSourceFile(Database: TSQLiteLibrary; const FileName: string): Boolean;
     function Delete(Database: TSQLiteLibrary; const Deck: string): Integer;
     function Extract(Database: TSQLiteLibrary; const Deck: string; LibraryRevision: Integer;
       const SelectedVersion: string = ''; AllowDeleted: Boolean = False): TDeckSource;
@@ -133,6 +137,7 @@ type
     property FilePatternCount: Integer read GetFilePatternCount;
     property FilePatterns[Index: Integer]: string read GetFilePattern;
     property BuildCommand: string read GetBuildCommand;
+    property ReleaseDirectory: string read GetReleaseDirectory;
     property LastModifiedDeck: string read GetLastModifiedDeck;
     property DeckVersion[LibraryRevision: Integer]: string read DeckVersionAt;
     property DeckRevision[LibraryRevision: Integer]: string read DeckRevisionAt;
@@ -176,12 +181,14 @@ end;
 
 destructor TDeckLibrary.Destroy;
 begin
+  FWorkingSources.Free;
   FStore.Free;
   inherited Destroy;
 end;
 
 procedure TDeckLibrary.MarkModified;
 begin
+  FreeAndNil(FWorkingSources);
   FModified := True;
   Inc(FChangeCount);
 end;
@@ -257,6 +264,7 @@ var
   Previous: TLibraryRevision;
   Name, CommentPrefix, Digest, StoredPath: string;
   PreviousRevision, Number: Integer;
+  FileBacked: Boolean;
 begin
   RequireOpenVersion;
   Name := DeckName(Deck);
@@ -267,8 +275,12 @@ begin
   if PreviousRevision > 0 then
     Previous := FStore.PayloadAt(PreviousRevision - 1, Database);
   StoredPath := SourcePath;
-  if (StoredPath = '') and Assigned(Previous) then
+  FileBacked := SourcePath <> '';
+  if (StoredPath = '') and Assigned(Previous) and not CreateOnly then
+  begin
     StoredPath := Previous.SourcePath;
+    FileBacked := Previous.FileBacked and not CreateOnly;
+  end;
   if StoredPath = '' then
     StoredPath := Name;
   CommentPrefix := Prefix;
@@ -279,13 +291,15 @@ begin
   ValidateCommentPrefix(CommentPrefix);
   Digest := DeckSHA1(Source);
   if Assigned(Previous) and not Previous.Deleted and
+    (FileBacked = Previous.FileBacked) and
     (StoredPath = Previous.SourcePath) and
     (CommentPrefix = Previous.CommentPrefix) and (Digest = Previous.SHA1) and
     (Previous.Decode = Source) then
     Exit(0);
   Number := NextDeckNumber(Name, PreviousRevision);
   Payload := NewRevisionPayload(Name, CommentPrefix, Digest, Number, Source);
-  Payload.Add('source_path', StoredPath);
+  Payload.Add('source_path', UTF8Decode(RawByteString(StoredPath)));
+  Payload.Add('file_backed', FileBacked);
   Result := AppendDeckRevision(Name, Payload);
 end;
 
@@ -297,6 +311,34 @@ begin
   if Sequence = 0 then
     Exit(DeckName(Deck));
   Result := FStore.PayloadAt(Sequence - 1, Database).SourcePath;
+end;
+
+function TDeckLibrary.DeckFileBacked(Database: TSQLiteLibrary; const Deck: string): Boolean;
+var
+  Sequence: Integer;
+begin
+  Sequence := FindDeckRevision(DeckName(Deck), Revision);
+  Result := (Sequence > 0) and FStore.PayloadAt(Sequence - 1, Database).FileBacked;
+end;
+
+function TDeckLibrary.IsWorkingSourceFile(Database: TSQLiteLibrary; const FileName: string): Boolean;
+var
+  Entries: TDeckListEntries;
+  Entry: TDeckListEntry;
+  Path: string;
+begin
+  if not Assigned(FWorkingSources) then
+  begin
+    FWorkingSources := TFPHashList.Create;
+    Entries := DeckList(Revision);
+    for Entry in Entries do
+      if DeckFileBacked(Database, Entry.Name) then
+      begin
+        Path := DeckSourcePath(Database, Entry.Name);
+        if FWorkingSources.Find(Path) = nil then FWorkingSources.Add(Path, Pointer(1));
+      end;
+  end;
+  Result := FWorkingSources.Find(FileName) <> nil;
 end;
 
 function TDeckLibrary.NextDeckNumber(const Name: string; PreviousRevision: Integer): Integer;
@@ -327,7 +369,8 @@ begin
   if Prefix = '' then
     Prefix := DefaultCommentPrefix(CurrentVersion);
   Payload := NewDeletionPayload(Name, Prefix, NextDeckNumber(Name, PreviousRevision));
-  Payload.Add('source_path', FStore.PayloadAt(PreviousRevision - 1, Database).SourcePath);
+  Payload.Add('source_path', UTF8Decode(RawByteString(FStore.PayloadAt(PreviousRevision - 1, Database).SourcePath)));
+  Payload.Add('file_backed', FStore.PayloadAt(PreviousRevision - 1, Database).FileBacked);
   Result := AppendDeckRevision(Name, Payload);
 end;
 
@@ -750,6 +793,11 @@ end;
 function TDeckLibrary.GetBuildCommand: string;
 begin
   Result := FStore.Header.BuildCommand;
+end;
+
+function TDeckLibrary.GetReleaseDirectory: string;
+begin
+  Result := FStore.Header.ReleaseDirectory;
 end;
 
 function TDeckLibrary.GetFilePatternCount: Integer;

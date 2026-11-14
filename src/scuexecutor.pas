@@ -44,7 +44,7 @@ uses
 constructor TScuExecutor.Create(const LibraryPath: string; Interactive: Boolean; Output: TScuOutput);
 begin
   inherited Create;
-  FLibraryPath := LibraryPath;
+  FLibraryPath := NormalizeLibraryName(LibraryPath);
   FInteractive := Interactive;
   FOutput := Output;
 end;
@@ -68,9 +68,6 @@ var
         try
           Audit := TAuditLog.Open(Database, Expansion);
           try
-            if (Failure = '') and (Build.Checkpoint.Version <> '') then
-              Database.Checkpoints.SaveExpansionCheckpoint(Build.Checkpoint.Version, Build.OutputPath,
-                Build.CommentPrefix, Build.Checkpoint.LibraryRevision, False);
             Audit.RecordBuild(Expansion, Build.Command, Build.OutputPath, Failure = '', Failure);
             Database.Commit;
           finally
@@ -114,7 +111,7 @@ begin
 end;
 
 procedure RecordSuccessfulCommand(Audit: TAuditLog; const Context: TCommandContext;
-  const Detail: string; PendingSave: Boolean);
+  const Detail: string);
 var
   Contents: TJSONObject;
 begin
@@ -122,7 +119,7 @@ begin
   try
     if Assigned(Context.LibraryFile) then
       Contents := Context.LibraryFile.CreateSavedContents(Context.StagedSave);
-    Audit.EndCommand(True, Detail, Context.Snapshots, PendingSave, Contents);
+    Audit.EndCommand(True, Detail, Context.Snapshots, Contents);
   finally
     Contents.Free;
   end;
@@ -154,7 +151,7 @@ begin
             try
               Audit.BeginCommand(Context.Command);
               Detail := Handler.Run(Context);
-              RecordSuccessfulCommand(Audit, Context, Detail, False);
+              RecordSuccessfulCommand(Audit, Context, Detail);
               Context.Database.Commit;
             finally
               Audit.Free;
@@ -273,7 +270,7 @@ procedure TScuExecutor.RecordFailedCommand(const Context: TCommandContext; Audit
 begin
   try
     Context.Database.Execute('ROLLBACK TO scu_operation');
-    Audit.EndCommand(False, Error.Message, Context.Snapshots, False, nil, Error is ECommandCancelled);
+    Audit.EndCommand(False, Error.Message, Context.Snapshots, nil, Error is ECommandCancelled);
     Context.Database.Commit;
   except
     on AuditError: ECommandCancelled do raise;
@@ -299,6 +296,11 @@ begin
   try
     LoadCommandLibrary(Context, Audit, LibraryExists, Initializing);
     Result := Handler.Run(Context);
+    if Context.FilesPublished and ClearInterrupt then
+    begin
+      Context.Build.Command := '';
+      Context.Output.Report('Export completed before Ctrl+C; build skipped.');
+    end;
     if not Initializing then
     begin
       if not SessionEnding then
@@ -308,6 +310,18 @@ begin
       Context.LibraryFile.Save(Context.Database, Context.StagedSave);
     end;
   except
+    on E: ECommandCancelled do
+    begin
+      if not Context.FilesPublished then
+      begin
+        RecordFailedCommand(Context, Audit, E);
+        raise;
+      end;
+      ClearInterrupt;
+      Context.Build.Command := '';
+      Result := 'Export completed; Ctrl+C stopped the remaining display and build.';
+      Context.LibraryFile.Save(Context.Database, Context.StagedSave);
+    end;
     on E: Exception do
     begin
       if Initializing and not LibraryExists then
@@ -322,7 +336,7 @@ procedure TScuExecutor.CommitCommand(const Context: TCommandContext;
   Audit: TAuditLog; const Detail: string);
 begin
   try
-    RecordSuccessfulCommand(Audit, Context, Detail, False);
+    RecordSuccessfulCommand(Audit, Context, Detail);
     Context.Database.Commit;
   except
     on E: ECommandCancelled do raise;
@@ -394,7 +408,7 @@ begin
     Committed := True;
     if Context.Build.Command <> '' then
       Expansion := Audit.Head;
-    if (Detail <> '') and not SessionEnding then
+    if (Detail <> '') and (PendingSignal <> SIGHUP) then
       FOutput.WriteLine(Detail);
     if Assigned(Handler.ReportCommitted) then
       Handler.ReportCommitted(Context);

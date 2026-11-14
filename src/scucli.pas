@@ -17,6 +17,7 @@ type
     FOutput: TScuOutput;
     FExecutor: TScuExecutor;
     FContinueOnError: Boolean;
+    FChildInterrupted: Boolean;
     FInitialFile: string;
     procedure SelectBatchArguments(Tokens: TStrings; Index: Integer);
     procedure ValidateCatalog(const CatalogPath: string);
@@ -41,7 +42,7 @@ implementation
 
 uses
   SysUtils, BaseUnix, ScuBinder, ScuHelp, ScuInput, ScuErrors,
-  ScuCommandRegistry, ScuLibrary, ScuSignals, ScuTerminal, ScuTokenizer, Termio;
+  ScuCommandRegistry, ScuLibrary, ScuLibraryPaths, ScuSignals, ScuTerminal, ScuTokenizer, Termio;
 
 const
   CLICommands: array[0..1] of string = ('display_command_list', 'display_command');
@@ -113,10 +114,26 @@ end;
 function TScuCLI.Definition(const Name: string): TCommandDefinition;
 var
   Index: Integer;
+  Replacement: string;
 begin
   Index := FCatalog.Commands.FindIndex(Name);
   if Index < 0 then
+  begin
+    Replacement := '';
+    case LowerCase(Name) of
+      'store_deck', 'stod': Replacement := 'import_deck (impd)';
+      'start_version', 'stav': Replacement := 'create_version (crev)';
+      'expand_modified_decks', 'expmd', 'expand_deck', 'expd', 'expand_version', 'expv': Replacement := 'release_version (relv)';
+      'extract_modified_decks', 'extmd': Replacement := 'extract_version (extv)';
+      'display_diff', 'diff_deck', 'difd': Replacement := 'display_deck_diff (disdd)';
+      'init': Replacement := 'initialize_library (inil)';
+      'ddl', 'list_decks': Replacement := 'display_deck_list (disdl)';
+      'dd', 'deck_history': Replacement := 'display_deck (disd)';
+    end;
+    if Replacement <> '' then
+      raise EScuError.CreateFmt('Unknown command "%s". This spelling was removed; use %s.', [Name, Replacement]);
     raise EScuError.CreateFmt('Unknown command "%s". Run scu help.', [Name]);
+  end;
   Result := FCatalog.Commands[Index];
 end;
 
@@ -126,6 +143,9 @@ var
   EqualsAt: SizeInt;
 begin
   FLibraryPath := FCatalog.LibraryDefault;
+  if (GetEnvironmentVariable('SCU_BUILD_ACTIVE') = '1') and
+    (GetEnvironmentVariable('SCU_BUILD_LIBRARY') <> '') then
+    FLibraryPath := GetEnvironmentVariable('SCU_BUILD_LIBRARY');
   Result := 0;
   if Tokens.Count > 0 then
   begin
@@ -156,9 +176,11 @@ begin
     else if (Copy(First, 1, 1) <> '-') and (Copy(First, 1, 1) <> '!') and
       (FCatalog.Commands.FindIndex(First) < 0) then
     begin
-      Name := LowerCase(ExtractFileExt(First));
-      if not FileExists(First) and (Pos(DirectorySeparator, First) = 0) and (Name <> '.sqlite') and
-        (Name <> '.sqlite3') and (Name <> '.db') then
+      SelectBatchArguments(Tokens, 1);
+      Name := ExtractFileExt(First);
+      if not FileExists(First) and not FileExists(First + '.sqlite') and
+        (Pos(DirectorySeparator, First) = 0) and (Name = '') and
+        ((Tokens.Count < 2) or (FCatalog.Commands.FindIndex(Tokens[1]) < 0)) then
         Definition(First);
       FLibraryPath := First;
       Result := 1;
@@ -168,6 +190,7 @@ begin
     FCatalog.LibraryArgument.Validate(FLibraryPath);
   if FLibraryPath = '' then
     raise EScuError.Create('Expected a library name.');
+  FLibraryPath := NormalizeLibraryName(FLibraryPath);
 end;
 
 procedure TScuCLI.SelectBatchArguments(Tokens: TStrings; Index: Integer);
@@ -319,6 +342,8 @@ procedure TScuCLI.ExecuteCommand(Command: TScuCommand);
 var
   Columns: SizeInt;
 begin
+  FChildInterrupted := False;
+  try
   if IsCLICommand(Command.Name) then
   begin
     Columns := TerminalColumns(TextRec(Output).Handle);
@@ -334,6 +359,9 @@ begin
   // A normal return confirms completion. Only an actual cancellation exception
   // can describe the command as cancelled.
   ClearInterrupt;
+  finally
+    FChildInterrupted := ConsumeChildInterrupt;
+  end;
 end;
 
 procedure TScuCLI.RunInteractive(Tokens: TStrings);
@@ -356,6 +384,7 @@ var
   Spec: TCommandDefinition;
 begin
   Result := nil;
+  if (Line <> '') and (Line[1] = '#') then Exit;
   if (Line <> '') and (Line[1] = '!') then
   begin
     if not BatchLine then
@@ -432,7 +461,7 @@ begin
           begin
             HasLine := Files.ReadLine(Line, Location);
             BatchLine := (Prompt = '') or HasLine;
-            if not HasLine then
+            if not HasLine and (FInitialFile = '') then
               HasLine := ReadCommandLine(Prompt, Line, @CompleteInteractiveLine, FHistory);
           end;
           if HasLine then
@@ -458,6 +487,11 @@ begin
         if Command.SessionExit then
           Exit;
         ExecuteCommand(Command);
+        if BatchLine and FChildInterrupted then
+        begin
+          ExitCode := 1;
+          StopBatch;
+        end;
         if Command.SessionExit then
           Exit;
       except

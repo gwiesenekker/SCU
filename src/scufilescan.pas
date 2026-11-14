@@ -5,20 +5,27 @@ unit ScuFileScan;
 interface
 
 uses
-  Classes;
+  Classes, Contnrs;
 
 type
+  TDeckFileBinding = class
+  public
+    Deck: string;
+  end;
+
   TLibraryFileScan = class
   private
     FDirectory, FLibraryPath: string;
     FPatterns, FFiles: TStringList;
+    FOwners: TFPHashObjectList; // Borrowed only while constructing the scan.
     function GetCount: Integer;
     function GetDeck(Index: Integer): string;
     function GetRelativePath(Index: Integer): string;
     procedure ScanDirectory;
     procedure AddFile(const RelativePath: string);
   public
-    constructor Create(const Directory, LibraryPath: string; Patterns: TStrings);
+    constructor Create(const Directory, LibraryPath: string; Patterns: TStrings;
+      Owners: TFPHashObjectList = nil);
     destructor Destroy; override;
     function Find(const Deck: string): Integer;
     function Includes(const RelativePath: string): Boolean;
@@ -26,6 +33,8 @@ type
     property Decks[Index: Integer]: string read GetDeck;
     property RelativePaths[Index: Integer]: string read GetRelativePath;
   end;
+
+function MatchesFilePattern(const Pattern, Name: string): Boolean;
 
 implementation
 
@@ -38,7 +47,13 @@ const
   MatchNoEscape = 2;
   MatchPeriod = 4;
 
-constructor TLibraryFileScan.Create(const Directory, LibraryPath: string; Patterns: TStrings);
+function MatchesFilePattern(const Pattern, Name: string): Boolean;
+begin
+  Result := fnmatch(PChar(Pattern), PChar(Name), MatchNoEscape or MatchPeriod) = 0;
+end;
+
+constructor TLibraryFileScan.Create(const Directory, LibraryPath: string; Patterns: TStrings;
+  Owners: TFPHashObjectList);
 var
   Pattern: string;
 begin
@@ -47,12 +62,14 @@ begin
   FLibraryPath := LibraryPath;
   FPatterns := TStringList.Create;
   FPatterns.Assign(Patterns);
+  FOwners := Owners;
   for Pattern in FPatterns do
     ValidateFilePattern(Pattern);
   FFiles := TStringList.Create;
   FFiles.CaseSensitive := True;
   FFiles.Sorted := True;
   ScanDirectory;
+  FOwners := nil;
 end;
 
 destructor TLibraryFileScan.Destroy;
@@ -95,6 +112,7 @@ begin
       begin
         if not FPS_ISREG(Info.st_mode) then
           raise EScuError.Create('Expected a regular file: "' + Path + '".');
+        if IsSQLiteFile(Path) or IsSQLiteCompanion(Path) then Continue;
         AddFile(Name);
       end;
     until False;
@@ -107,8 +125,19 @@ procedure TLibraryFileScan.AddFile(const RelativePath: string);
 var
   Deck: string;
   Index: Integer;
+  Owner: TDeckFileBinding;
 begin
-  Deck := DeckName(ExtractFileName(RelativePath));
+  Owner := nil;
+  if Assigned(FOwners) then
+    Owner := TDeckFileBinding(FOwners.Find(RelativePath));
+  if Assigned(Owner) then
+  begin
+    if Owner.Deck = '' then
+      raise EScuError.Create('Several decks track source "' + RelativePath + '". Import them individually.');
+    Deck := Owner.Deck;
+  end
+  else
+    Deck := DeckName(ExtractFileName(RelativePath));
   Index := Find(Deck);
   if Index >= 0 then
   begin
@@ -150,7 +179,7 @@ begin
     (ExtractFileName(RelativePath) = '.scu-exports.json') then
     Exit(False);
   for Pattern in FPatterns do
-    if fnmatch(PChar(Pattern), PChar(RelativePath), MatchNoEscape or MatchPeriod) = 0 then
+    if MatchesFilePattern(Pattern, RelativePath) then
       Exit(True);
   Result := False;
 end;

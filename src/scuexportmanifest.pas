@@ -5,195 +5,542 @@ unit ScuExportManifest;
 interface
 
 uses
-  FPJSON;
+  Classes, Contnrs, ScuExportTypes;
 
 const
   ExportManifestName = '.scu-exports.json';
 
 type
+  TExportMode = ScuExportTypes.TExportMode;
+  TExportRecord = ScuExportTypes.TExportRecord;
+
   TExportManifest = class
   private
-    FPath: string;
-    FDocument: TJSONObject;
-    FFiles: TJSONArray;
-    procedure Validate;
-    procedure ValidateEntry(Entry: TJSONObject; const Context: string);
-    procedure RecoverPending;
-    procedure CompletePending;
-    procedure Save;
-    procedure InstallEntry(Entry: TJSONObject);
-    function GetPending: TJSONObject;
+    FPath, FStageDirectory: string;
+    FFiles: TFPHashObjectList;
+    FRemovedCount: Integer;
+    FPending, FPlanned: TObjectList;
+    FPlanNames: TFPHashList;
     function GetCount: Integer;
-    function GetEntry(Index: Integer): TJSONObject;
-    property Pending: TJSONObject read GetPending;
+    function GetEntry(Index: Integer): TExportRecord;
+    procedure Install(const Entry: TExportRecord);
+    procedure RemoveRecord(const FileName: RawByteString);
+    procedure CompactRecords;
+    procedure Save(IncludePlan: Boolean = False);
+    procedure Load;
   public
     constructor Create(const Directory: string);
     destructor Destroy; override;
+    // Recovery is explicit and must run while the caller holds the directory lock.
+    procedure Recover;
+    function IsGeneratedFile(const FileName: RawByteString): Boolean;
+    procedure PlanExport(const LibraryPath, OutputPath, Deck, Version, DeckVersion: string;
+      Mode: TExportMode; const ExpansionUTC, Prefix: string; const Bytes: RawByteString;
+      ReplaceExisting: Boolean = False);
+    procedure PlanDelete(const LibraryPath, OutputPath, Version: string; ReplaceExisting: Boolean = False);
+    procedure Publish;
     procedure WriteExport(const LibraryPath, OutputPath, Deck, Version, DeckVersion,
-      Mode, ExpansionUTC, Prefix: string; const Bytes: RawByteString);
+      Mode, ExpansionUTC, Prefix: string; const Bytes: RawByteString; ReplaceExisting: Boolean = False);
     property Count: Integer read GetCount;
-    property Entries[Index: Integer]: TJSONObject read GetEntry; default;
+    property Entries[Index: Integer]: TExportRecord read GetEntry; default;
   end;
+
+function ExportModeName(Mode: TExportMode): string;
 
 implementation
 
 uses
-  Classes, SysUtils, DateUtils, ScuClock, ScuCodec, ScuErrors, ScuFiles, ScuJSON,
+  SysUtils, FPJSON, DateUtils, ScuClock, ScuCodec, ScuErrors, ScuFiles, ScuJSON,
   ScuSignals, ScuLibraryModel, ScuVersions;
+
+type
+  TExportItem = class
+    Data: TExportRecord;
+    Removed: Boolean;
+  end;
+  TExportPlan = class(TExportItem)
+    PreviousHash, StageFile: string;
+    ReplaceExisting, DeleteOutput: Boolean;
+  end;
+
+function ExportModeName(Mode: TExportMode): string;
+begin
+  if Mode = emExpand then Result := 'expand' else Result := 'extract';
+end;
+
+function ByteKey(const Value: RawByteString): string;
+const
+  Digits = '0123456789abcdef';
+var
+  Index: SizeInt;
+begin
+  SetLength(Result, Length(Value) * 2);
+  for Index := 1 to Length(Value) do
+  begin
+    Result[Index * 2 - 1] := Digits[(Byte(Value[Index]) shr 4) + 1];
+    Result[Index * 2] := Digits[(Byte(Value[Index]) and 15) + 1];
+  end;
+end;
+
+function DecodeKey(const Value, Context: string): RawByteString;
+var
+  Index, Number: Integer;
+begin
+  if Odd(Length(Value)) then
+    raise EScuError.Create(Context + ': invalid filename byte encoding.');
+  SetLength(Result, Length(Value) div 2);
+  for Index := 1 to Length(Result) do
+  begin
+    if not TryStrToInt('$' + Copy(Value, Index * 2 - 1, 2), Number) then
+      raise EScuError.Create(Context + ': invalid filename byte encoding.');
+    Result[Index] := AnsiChar(Number);
+  end;
+  SetCodePage(Result, CP_UTF8, False);
+end;
+
+function RawField(Entry: TJSONObject; const Name, Context: string): RawByteString;
+begin
+  Result := UTF8Encode(Field(Entry, Name, jtString, Context).AsUnicodeString);
+  SetCodePage(Result, CP_UTF8, False);
+end;
+
+function ReadRecord(Entry: TJSONObject; const Context: string): TExportRecord;
+var
+  Name, Mode, Stamp: string;
+  Time: TDateTime;
+begin
+  Result := Default(TExportRecord);
+  if Assigned(Entry.Find('file_bytes')) then
+    Result.FileName := DecodeKey(Field(Entry, 'file_bytes', jtString, Context).AsString, Context)
+  else
+    Result.FileName := RawField(Entry, 'file', Context);
+  Name := Result.FileName;
+  if (Name = '') or (Name = '.') or (Name = '..') or (Pos(#0, Name) > 0) or
+    (ExtractFileName(Name) <> Name) or (Name = ExportManifestName) then
+    raise EScuError.Create(Context + ': invalid or duplicate file name.');
+  if Assigned(Entry.Find('library_bytes')) then
+    Result.LibraryPath := DecodeKey(Field(Entry, 'library_bytes', jtString, Context).AsString, Context)
+  else
+    Result.LibraryPath := RawField(Entry, 'library', Context);
+  Result.Deck := DeckName(RawField(Entry, 'deck_name', Context));
+  Result.LibraryVersion := RawField(Entry, 'library_version', Context);
+  Result.DeckVersion := RawField(Entry, 'deck_version', Context);
+  Result.SHA256 := RawField(Entry, 'sha256', Context);
+  Result.ExpansionUTC := RawField(Entry, 'expansion_utc', Context);
+  Result.CommentPrefix := RawField(Entry, 'comment_prefix', Context);
+  if (Result.LibraryPath = '') or (Pos(#0, Result.LibraryPath) > 0) then
+    raise EScuError.Create(Context + ': missing library path.');
+  if (Result.LibraryVersion = '') or (Result.DeckVersion = '') then
+    raise EScuError.Create(Context + ': missing version.');
+  if not IsHexDigest(Result.SHA256, 64) then
+    raise EScuError.Create(Context + ': invalid output checksum.');
+  Mode := RawField(Entry, 'mode', Context);
+  if Mode = 'expand' then Result.Mode := emExpand
+  else if Mode = 'extract' then Result.Mode := emExtract
+  else raise EScuError.Create(Context + ': invalid export mode.');
+  Stamp := Result.ExpansionUTC;
+  if (Result.Mode = emExpand) and
+    (not TryISO8601ToDate(Stamp, Time) or (UtcTimestamp(Time) <> Stamp)) then
+    raise EScuError.Create(Context + ': invalid expansion timestamp.');
+  if Result.CommentPrefix <> '' then ValidateCommentPrefix(Result.CommentPrefix);
+  if Assigned(Entry.Find('interrupted_export')) then
+    Result.Interrupted := Field(Entry, 'interrupted_export', jtBoolean, Context).AsBoolean;
+end;
+
+function RecordJSON(const Entry: TExportRecord): TJSONObject;
+begin
+  Result := TJSONObject.Create;
+  try
+    // The hex identities survive every locale and arbitrary Unix filename bytes.
+    Result.Add('file', UTF8Decode(Entry.FileName));
+    Result.Add('file_bytes', ByteKey(Entry.FileName));
+    Result.Add('library', UTF8Decode(Entry.LibraryPath));
+    Result.Add('library_bytes', ByteKey(Entry.LibraryPath));
+    Result.Add('deck_name', Entry.Deck);
+    Result.Add('library_version', Entry.LibraryVersion);
+    Result.Add('deck_version', Entry.DeckVersion);
+    Result.Add('mode', ExportModeName(Entry.Mode));
+    Result.Add('expansion_utc', Entry.ExpansionUTC);
+    Result.Add('comment_prefix', UTF8Decode(Entry.CommentPrefix));
+    Result.Add('sha256', Entry.SHA256);
+    if Entry.Interrupted then Result.Add('interrupted_export', True);
+  except
+    Result.Free;
+    raise;
+  end;
+end;
 
 constructor TExportManifest.Create(const Directory: string);
 begin
   inherited Create;
   FPath := IncludeTrailingPathDelimiter(CanonicalDirectory(Directory)) + ExportManifestName;
-  if RegularFileExists(FPath) then
-    FDocument := ParseObject(ReadBytes(FPath, MaxDeckSize), 'Export manifest "' + FPath + '"')
-  else
-  begin
-    FDocument := TJSONObject.Create;
-    FDocument.Add('format', 1);
-    FDocument.Add('files', TJSONArray.Create);
-  end;
-  Validate;
-  RecoverPending;
+  FFiles := TFPHashObjectList.Create(True);
+  FPending := TObjectList.Create(True);
+  FPlanned := TObjectList.Create(True);
+  FPlanNames := TFPHashList.Create;
+  Load;
 end;
 
 destructor TExportManifest.Destroy;
+var
+  Index: Integer;
 begin
-  FDocument.Free;
+  if Assigned(FPlanned) then
+    for Index := 0 to FPlanned.Count - 1 do
+      if TExportPlan(FPlanned[Index]).StageFile <> '' then
+        DeleteFile(TExportPlan(FPlanned[Index]).StageFile);
+  if FStageDirectory <> '' then RemoveDir(FStageDirectory);
+  FPlanNames.Free;
+  FPlanned.Free;
+  FPending.Free;
+  FFiles.Free;
   inherited Destroy;
 end;
 
-procedure TExportManifest.ValidateEntry(Entry: TJSONObject; const Context: string);
+procedure TExportManifest.Load;
 var
-  Name, Mode, Stamp: string;
-  Time: TDateTime;
-begin
-  Name := Field(Entry, 'file', jtString, Context).AsString;
-  if (Name = '') or (Name = '.') or (Name = '..') or (ExtractFileName(Name) <> Name) or
-    (Name = ExportManifestName) then
-    raise EScuError.Create(Context + ': invalid or duplicate file name.');
-  DeckName(Field(Entry, 'deck_name', jtString, Context).AsString);
-  if Field(Entry, 'library', jtString, Context).AsString = '' then
-    raise EScuError.Create(Context + ': missing library path.');
-  if (Field(Entry, 'library_version', jtString, Context).AsString = '') or
-    (Field(Entry, 'deck_version', jtString, Context).AsString = '') then
-    raise EScuError.Create(Context + ': missing version.');
-  if not IsHexDigest(Field(Entry, 'sha256', jtString, Context).AsString, 64) then
-    raise EScuError.Create(Context + ': invalid output checksum.');
-  Mode := Field(Entry, 'mode', jtString, Context).AsString;
-  if (Mode <> 'extract') and (Mode <> 'expand') then
-    raise EScuError.Create(Context + ': invalid export mode.');
-  Stamp := Field(Entry, 'expansion_utc', jtString, Context).AsString;
-  if (Mode = 'expand') and
-    (not TryISO8601ToDate(Stamp, Time) or (UtcTimestamp(Time) <> Stamp)) then
-    raise EScuError.Create(Context + ': invalid expansion timestamp.');
-  Stamp := Field(Entry, 'comment_prefix', jtString, Context).AsString;
-  if Stamp <> '' then
-    ValidateCommentPrefix(Stamp);
-  if Assigned(Entry.Find('interrupted_export')) then
-    Field(Entry, 'interrupted_export', jtBoolean, Context);
-end;
-
-procedure TExportManifest.Validate;
-var
+  Document, Journal, ObjectEntry: TJSONObject;
+  Files, PendingItems: TJSONArray;
   Index: Integer;
-  Entry, Journal: TJSONObject;
-  Name, Context, Previous: string;
-  Names: TStringList;
+  Entry: TExportRecord;
+  Plan: TExportPlan;
+  Context, Previous: string;
+
+  procedure LoadPending(Item: TJSONObject);
+  begin
+    Entry := ReadRecord(TJSONObject(Field(Item, 'entry', jtObject, Context)), Context);
+    Previous := Field(Item, 'previous_sha256', jtString, Context).AsString;
+    if (Previous <> '') and not IsHexDigest(Previous, 64) then
+      raise EScuError.Create(Context + ': invalid previous output checksum.');
+    if FPlanNames.Find(ByteKey(Entry.FileName)) <> nil then
+      raise EScuError.Create(Context + ': duplicate pending file name.');
+    Plan := TExportPlan.Create;
+    Plan.Data := Entry;
+    Plan.PreviousHash := Previous;
+    if Assigned(Item.Find('delete')) then
+      Plan.DeleteOutput := Field(Item, 'delete', jtBoolean, Context).AsBoolean;
+    FPending.Add(Plan);
+    FPlanNames.Add(ByteKey(Entry.FileName), Plan);
+  end;
+
 begin
+  if not RegularFileExists(FPath) then Exit;
   Context := 'Export manifest "' + FPath + '"';
-  if IntegerField(FDocument, 'format', Context) <> 1 then
-    raise EScuError.Create(Context + ': unsupported format.');
-  FFiles := TJSONArray(Field(FDocument, 'files', jtArray, Context));
-  Names := TStringList.Create;
+  Document := nil;
   try
-    Names.Sorted := True;
-    Names.CaseSensitive := True;
-    for Index := 0 to FFiles.Count - 1 do
-    begin
-      CheckSessionInterrupt;
-      if not (FFiles[Index] is TJSONObject) then
-        raise EScuError.Create(Context + ': expected a file record.');
-      Entry := TJSONObject(FFiles[Index]);
-      ValidateEntry(Entry, Context);
-      Name := Entry.Strings['file'];
-      if Names.IndexOf(Name) >= 0 then
-        raise EScuError.Create(Context + ': invalid or duplicate file name.');
-      Names.Add(Name);
-    end;
-    if Assigned(FDocument.Find('pending')) then
-    begin
-      Journal := TJSONObject(Field(FDocument, 'pending', jtObject, Context));
-      ValidateEntry(TJSONObject(Field(Journal, 'entry', jtObject, Context)), Context);
-      Previous := Field(Journal, 'previous_sha256', jtString, Context).AsString;
-      if (Previous <> '') and not IsHexDigest(Previous, 64) then
-        raise EScuError.Create(Context + ': invalid previous output checksum.');
+    try
+      Document := ParseObject(ReadBytes(FPath, MaxDeckSize), Context);
+      if not (IntegerField(Document, 'format', Context) in [1, 2]) then
+        raise EScuError.Create(Context + ': unsupported format.');
+      Files := TJSONArray(Field(Document, 'files', jtArray, Context));
+      for Index := 0 to Files.Count - 1 do
+      begin
+        CheckSessionInterrupt;
+        if not (Files[Index] is TJSONObject) then
+          raise EScuError.Create(Context + ': expected a file record.');
+        Entry := ReadRecord(TJSONObject(Files[Index]), Context);
+        if Assigned(FFiles.Find(ByteKey(Entry.FileName))) then
+          raise EScuError.Create(Context + ': invalid or duplicate file name.');
+        Install(Entry);
+      end;
+      if Assigned(Document.Find('pending')) then
+      begin
+        Journal := TJSONObject(Field(Document, 'pending', jtObject, Context));
+        if Assigned(Journal.Find('entries')) then
+        begin
+          PendingItems := TJSONArray(Field(Journal, 'entries', jtArray, Context));
+          for Index := 0 to PendingItems.Count - 1 do
+          begin
+            if not (PendingItems[Index] is TJSONObject) then
+              raise EScuError.Create(Context + ': expected a pending export record.');
+            ObjectEntry := TJSONObject(PendingItems[Index]);
+            LoadPending(ObjectEntry);
+          end;
+        end
+        else LoadPending(Journal); // Earlier per-file journal format.
+      end;
+    except
+      on E: ECommandCancelled do raise;
+      on E: EScuError do
+        raise EScuError.Create(E.Message + ' Restore a manifest backup, or move the manifest aside to reset tracking; existing outputs will then be untracked.');
     end;
   finally
-    Names.Free;
+    Document.Free;
   end;
 end;
 
-function TExportManifest.GetPending: TJSONObject;
+procedure TExportManifest.Install(const Entry: TExportRecord);
 var
-  Journal: TJSONData;
+  Item: TExportItem;
 begin
-  Result := nil;
-  Journal := FDocument.Find('pending');
-  if Assigned(Journal) then
-    Result := TJSONObject(TJSONObject(Journal).Find('entry'));
+  Item := TExportItem(FFiles.Find(ByteKey(Entry.FileName)));
+  if not Assigned(Item) then
+  begin
+    Item := TExportItem.Create;
+    FFiles.Add(ByteKey(Entry.FileName), Item);
+  end;
+  if Item.Removed then Dec(FRemovedCount);
+  Item.Removed := False;
+  Item.Data := Entry;
 end;
 
-procedure TExportManifest.InstallEntry(Entry: TJSONObject);
+procedure TExportManifest.RemoveRecord(const FileName: RawByteString);
+var Item: TExportItem;
+begin
+  Item := TExportItem(FFiles.Find(ByteKey(FileName)));
+  if Assigned(Item) and not Item.Removed then
+  begin
+    Item.Removed := True;
+    Inc(FRemovedCount);
+  end;
+end;
+
+procedure TExportManifest.CompactRecords;
+var
+  Retained: TFPHashObjectList;
+  Index: Integer;
+  Item: TExportItem;
+begin
+  if FRemovedCount = 0 then Exit;
+  Retained := TFPHashObjectList.Create(False);
+  try
+    for Index := 0 to FFiles.Count - 1 do
+    begin
+      Item := TExportItem(FFiles[Index]);
+      if not Item.Removed then Retained.Add(FFiles.NameOfIndex(Index), Item);
+    end;
+    FFiles.OwnsObjects := False;
+    for Index := 0 to FFiles.Count - 1 do
+      if TExportItem(FFiles[Index]).Removed then TExportItem(FFiles[Index]).Free;
+    FFiles.Free;
+    FFiles := Retained;
+    FFiles.OwnsObjects := True;
+    Retained := nil;
+    FRemovedCount := 0;
+  finally
+    Retained.Free;
+  end;
+end;
+
+procedure TExportManifest.Save(IncludePlan: Boolean);
+var
+  Document, Journal, Item: TJSONObject;
+  Files, Plans: TJSONArray;
+  Index: Integer;
+  Plan: TExportPlan;
+begin
+  Document := TJSONObject.Create;
+  try
+    Document.Add('format', 2);
+    Files := TJSONArray.Create;
+    Document.Add('files', Files);
+    for Index := 0 to Count - 1 do Files.Add(RecordJSON(Entries[Index]));
+    if IncludePlan then
+    begin
+      Journal := TJSONObject.Create;
+      Document.Add('pending', Journal);
+      Plans := TJSONArray.Create;
+      Journal.Add('entries', Plans);
+      for Index := 0 to FPlanned.Count - 1 do
+      begin
+        Plan := TExportPlan(FPlanned[Index]);
+        Item := TJSONObject.Create;
+        Plans.Add(Item);
+        Item.Add('entry', RecordJSON(Plan.Data));
+        Item.Add('previous_sha256', Plan.PreviousHash);
+        if Plan.DeleteOutput then Item.Add('delete', True);
+      end;
+    end;
+    AtomicWrite(FPath, RawByteString(Document.AsJSON) + LineEnding);
+  finally
+    Document.Free;
+  end;
+end;
+
+procedure TExportManifest.Recover;
 var
   Index: Integer;
+  Plan: TExportPlan;
+  Actual, Path: string;
 begin
-  for Index := 0 to Count - 1 do
-    if Entries[Index].Strings['file'] = Entry.Strings['file'] then
-    begin
-      FFiles.Delete(Index);
-      Break;
-    end;
-  FFiles.Add(Entry.Clone);
-end;
-
-procedure TExportManifest.CompletePending;
-begin
-  InstallEntry(Pending);
-  FDocument.Delete('pending');
-  Save;
-end;
-
-procedure TExportManifest.RecoverPending;
-var
-  Entry, Journal: TJSONObject;
-  Path, Actual, Previous: string;
-begin
-  Entry := Pending;
-  if Entry = nil then
-    Exit;
-  CheckSessionInterrupt;
-  Journal := TJSONObject(FDocument.Find('pending'));
-  Path := IncludeTrailingPathDelimiter(ExtractFileDir(FPath)) + Entry.Strings['file'];
-  Actual := '';
-  if RegularFileExists(Path) then
-    Actual := AuditSHA256(ReadBytes(Path, MaxDeckSize));
-  Previous := Journal.Strings['previous_sha256'];
-  CheckSessionInterrupt;
-  if Actual = Entry.Strings['sha256'] then
-    CompletePending
-  else if Actual = Previous then
+  CleanupStaleAtomicFiles(ExtractFileDir(FPath));
+  if FPending.Count = 0 then Exit;
+  for Index := 0 to FPending.Count - 1 do
   begin
-    // Empty checksums represent a missing file. No output was published.
-    FDocument.Delete('pending');
-    Save;
-  end
+    CheckSessionInterrupt;
+    Plan := TExportPlan(FPending[Index]);
+    Path := IncludeTrailingPathDelimiter(ExtractFileDir(FPath)) + Plan.Data.FileName;
+    Actual := '';
+    if RegularFileExists(Path) then Actual := AuditSHA256(ReadBytes(Path, MaxDeckSize));
+    if Plan.DeleteOutput and (Actual = '') then
+    begin
+      RemoveRecord(Plan.Data.FileName);
+    end
+    else if not Plan.DeleteOutput and (Actual = Plan.Data.SHA256) then Install(Plan.Data)
+    else if Actual <> Plan.PreviousHash then
+    begin
+      Plan.Data.Interrupted := True;
+      Install(Plan.Data);
+    end;
+  end;
+  CompactRecords;
+  Save;
+  FPlanNames.Clear;
+  FPending.Clear;
+end;
+
+function TExportManifest.IsGeneratedFile(const FileName: RawByteString): Boolean;
+var Item: TExportItem;
+begin
+  Item := TExportItem(FFiles.Find(ByteKey(FileName)));
+  if Assigned(Item) and (Item.Data.Mode = emExpand) then Exit(True);
+  Item := TExportItem(FPlanNames.Find(ByteKey(FileName)));
+  Result := Assigned(Item) and (Item.Data.Mode = emExpand);
+end;
+
+procedure TExportManifest.PlanExport(const LibraryPath, OutputPath, Deck, Version, DeckVersion: string;
+  Mode: TExportMode; const ExpansionUTC, Prefix: string; const Bytes: RawByteString;
+  ReplaceExisting: Boolean);
+var
+  Plan: TExportPlan;
+  Existing: TExportItem;
+  Name, Previous, CanonicalLibrary: string;
+  Stream: TFileStream;
+begin
+  if FPending.Count <> 0 then
+    raise EScuError.Create('Recover pending exports before planning another export.');
+  Name := ExtractFileName(OutputPath);
+  Previous := '';
+  if RegularFileExists(OutputPath) then Previous := AuditSHA256(ReadBytes(OutputPath, MaxDeckSize));
+  CanonicalLibrary := CanonicalFile(LibraryPath);
+  Existing := TExportItem(FFiles.Find(ByteKey(Name)));
+  if (Previous <> '') and (Previous <> AuditSHA256(Bytes)) and not ReplaceExisting and
+    (not Assigned(Existing) or (Existing.Data.SHA256 <> Previous) or Existing.Data.Interrupted or
+      (Existing.Data.LibraryPath <> CanonicalLibrary)) then
+    raise EScuError.Create('Refusing to overwrite untracked or edited output "' + OutputPath + '". Use replace=yes to replace it explicitly.');
+  if FPlanNames.Find(ByteKey(Name)) <> nil then
+    raise EScuError.Create('Duplicate output path in export batch: "' + OutputPath + '".');
+  if FStageDirectory = '' then FStageDirectory := MakeTempDirectory('scu-export-stage');
+  Plan := TExportPlan.Create;
+  FPlanned.Add(Plan);
+  FPlanNames.Add(ByteKey(Name), Plan);
+  Plan.Data.FileName := Name;
+  SetCodePage(Plan.Data.FileName, CP_UTF8, False);
+  Plan.Data.LibraryPath := CanonicalLibrary;
+  SetCodePage(Plan.Data.LibraryPath, CP_UTF8, False);
+  Plan.Data.Deck := Deck;
+  Plan.Data.LibraryVersion := Version;
+  Plan.Data.DeckVersion := DeckVersion;
+  Plan.Data.Mode := Mode;
+  Plan.Data.ExpansionUTC := ExpansionUTC;
+  Plan.Data.CommentPrefix := Prefix;
+  Plan.Data.SHA256 := AuditSHA256(Bytes);
+  Plan.PreviousHash := Previous;
+  Plan.ReplaceExisting := ReplaceExisting;
+  Plan.StageFile := IncludeTrailingPathDelimiter(FStageDirectory) + IntToStr(FPlanned.Count);
+  Stream := TFileStream.Create(Plan.StageFile, fmCreate);
+  try
+    if Bytes <> '' then Stream.WriteBuffer(Bytes[1], Length(Bytes));
+  finally
+    Stream.Free;
+  end;
+end;
+
+procedure TExportManifest.PlanDelete(const LibraryPath, OutputPath, Version: string; ReplaceExisting: Boolean);
+var
+  Plan: TExportPlan;
+  Existing: TExportItem;
+  Name, Previous: string;
+begin
+  if FPending.Count <> 0 then raise EScuError.Create('Recover pending exports before planning cleanup.');
+  Name := ExtractFileName(OutputPath);
+  if (Name = '') or (Name = ExportManifestName) or (Pos(#0, Name) > 0) then
+    raise EScuError.Create('Invalid release cleanup filename.');
+  if FPlanNames.Find(ByteKey(Name)) <> nil then
+    raise EScuError.Create('Duplicate output path in release cleanup.');
+  Previous := '';
+  if RegularFileExists(OutputPath) then Previous := AuditSHA256(ReadBytes(OutputPath, MaxDeckSize));
+  Existing := TExportItem(FFiles.Find(ByteKey(Name)));
+  if Assigned(Existing) and not ReplaceExisting and (Previous <> '') and
+    ((Existing.Data.SHA256 <> Previous) or (Existing.Data.LibraryPath <> CanonicalFile(LibraryPath))) then
+    raise EScuError.Create('Refusing to remove edited release output "' + OutputPath + '". Use replace=yes to remove it explicitly.');
+  Plan := TExportPlan.Create;
+  FPlanned.Add(Plan);
+  FPlanNames.Add(ByteKey(Name), Plan);
+  if Assigned(Existing) then Plan.Data := Existing.Data
   else
   begin
-    // Preserve provenance without claiming that this output was completed.
-    Entry.Booleans['interrupted_export'] := True;
-    CompletePending;
+    Plan.Data.FileName := Name;
+    Plan.Data.LibraryPath := CanonicalFile(LibraryPath);
+    Plan.Data.Deck := 'obsolete-file';
+    Plan.Data.LibraryVersion := Version;
+    Plan.Data.DeckVersion := Version + '-0.000';
+    Plan.Data.Mode := emExpand;
+    Plan.Data.ExpansionUTC := UtcTimestamp(UtcNow);
+    Plan.Data.SHA256 := AuditSHA256('');
   end;
+  Plan.PreviousHash := Previous;
+  Plan.DeleteOutput := True;
+  Plan.ReplaceExisting := ReplaceExisting;
+end;
+
+procedure TExportManifest.Publish;
+var
+  Index: Integer;
+  Plan, RecoveryPlan: TExportPlan;
+  Path, Actual: string;
+begin
+  if FPlanned.Count = 0 then Exit;
+  if FPending.Count <> 0 then raise EScuError.Create('Another export batch still needs recovery.');
+  Save(True);
+  for Index := 0 to FPlanned.Count - 1 do
+  begin
+    Plan := TExportPlan(FPlanned[Index]);
+    RecoveryPlan := TExportPlan.Create;
+    RecoveryPlan.Data := Plan.Data;
+    RecoveryPlan.PreviousHash := Plan.PreviousHash;
+    RecoveryPlan.DeleteOutput := Plan.DeleteOutput;
+    FPending.Add(RecoveryPlan);
+  end;
+  for Index := 0 to FPlanned.Count - 1 do
+  begin
+    CheckSessionInterrupt;
+    Plan := TExportPlan(FPlanned[Index]);
+    Path := IncludeTrailingPathDelimiter(ExtractFileDir(FPath)) + Plan.Data.FileName;
+    Actual := '';
+    if RegularFileExists(Path) then Actual := AuditSHA256(ReadBytes(Path, MaxDeckSize));
+    if not Plan.ReplaceExisting and (Actual <> Plan.PreviousHash) then
+      raise EScuError.Create('Output changed after the export was planned: "' + Path + '". No replacement was made for this file.');
+    if Plan.DeleteOutput then
+    begin
+      if (Actual <> '') and not DeleteFile(Path) then
+        RaiseSystemError('Could not remove obsolete release file "' + Path + '"', GetLastOSError);
+      SyncParent(Path);
+      RemoveRecord(Plan.Data.FileName);
+    end
+    else
+    begin
+      AtomicWrite(Path, ReadBytes(Plan.StageFile, MaxDeckSize), [awSourceOutput]);
+      Install(Plan.Data);
+    end;
+  end;
+  CompactRecords;
+  Save;
+  for Index := 0 to FPlanned.Count - 1 do
+    if TExportPlan(FPlanned[Index]).StageFile <> '' then DeleteFile(TExportPlan(FPlanned[Index]).StageFile);
+  FPending.Clear;
+  FPlanNames.Clear;
+  FPlanned.Clear;
+end;
+
+procedure TExportManifest.WriteExport(const LibraryPath, OutputPath, Deck, Version, DeckVersion,
+  Mode, ExpansionUTC, Prefix: string; const Bytes: RawByteString; ReplaceExisting: Boolean);
+var
+  Kind: TExportMode;
+begin
+  if Mode = 'expand' then Kind := emExpand else Kind := emExtract;
+  PlanExport(LibraryPath, OutputPath, Deck, Version, DeckVersion, Kind, ExpansionUTC, Prefix, Bytes, ReplaceExisting);
+  Publish;
 end;
 
 function TExportManifest.GetCount: Integer;
@@ -201,46 +548,9 @@ begin
   Result := FFiles.Count;
 end;
 
-function TExportManifest.GetEntry(Index: Integer): TJSONObject;
+function TExportManifest.GetEntry(Index: Integer): TExportRecord;
 begin
-  Result := TJSONObject(FFiles[Index]);
-end;
-
-procedure TExportManifest.WriteExport(const LibraryPath, OutputPath, Deck, Version, DeckVersion,
-  Mode, ExpansionUTC, Prefix: string; const Bytes: RawByteString);
-var
-  Entry, Journal: TJSONObject;
-  Name, Previous: string;
-begin
-  Name := ExtractFileName(OutputPath);
-  RecoverPending;
-  Previous := '';
-  if RegularFileExists(OutputPath) then
-    Previous := AuditSHA256(ReadBytes(OutputPath, MaxDeckSize));
-  Journal := TJSONObject.Create;
-  Entry := TJSONObject.Create;
-  Journal.Add('entry', Entry);
-  FDocument.Add('pending', Journal);
-  Journal.Add('previous_sha256', Previous);
-  Entry.Add('file', Name);
-  Entry.Add('library', CanonicalFile(LibraryPath));
-  Entry.Add('deck_name', Deck);
-  Entry.Add('library_version', Version);
-  Entry.Add('deck_version', DeckVersion);
-  Entry.Add('mode', Mode);
-  Entry.Add('expansion_utc', ExpansionUTC);
-  Entry.Add('comment_prefix', Prefix);
-  Entry.Add('sha256', AuditSHA256(Bytes));
-  Save;
-  CheckSessionInterrupt;
-  AtomicWrite(OutputPath, Bytes, [awSourceOutput]);
-  CheckSessionInterrupt;
-  CompletePending;
-end;
-
-procedure TExportManifest.Save;
-begin
-  AtomicWrite(FPath, FDocument.FormatJSON + LineEnding);
+  Result := TExportItem(FFiles[Index]).Data;
 end;
 
 end.

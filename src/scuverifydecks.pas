@@ -1,36 +1,33 @@
 unit ScuVerifyDecks;
-
 {$mode objfpc}{$H+}
-
 interface
-
-uses
-  ScuCommandHandler;
-
+uses ScuCommandHandler;
 function VerificationDirectory(const Context: TCommandContext): string;
 function VerifyDecks(var Context: TCommandContext): string;
-
 implementation
-
 uses
-  Classes, SysUtils, FPJSON, ScuCodec, ScuErrors, ScuExpand, ScuExportManifest,
-  ScuFiles, ScuLibrary, ScuSignals, ScuTable, ScuTerminal;
-
+  Classes, SysUtils, FPJSON, ScuCodec, ScuErrors, ScuDeckExport, ScuExportTypes, ScuExportManifest,
+  ScuFiles, ScuExportPaths, ScuLibrary, ScuSignals, ScuTable, ScuTerminal;
 type
+  TDeckFileIssue = (dfMissing, dfEdited, dfOutdated, dfDeleted, dfInterrupted, dfUntracked, dfUnavailable);
+  TDeckFileIssues = set of TDeckFileIssue;
+  TDeckFileCheck = record
+    FileName, Deck, Mode, Exported, Latest, Error: string;
+    Issues: TDeckFileIssues;
+  end;
   TDeckVerifier = class
   private
-    FContext: ^TCommandContext;
+    FContext: TCommandContext; // Resources are borrowed for this command only.
     FTable: TScuTable;
     FSeen, FDetails, FAttention: TStringList;
     FCount, FDifferences: Integer;
-    function CurrentBytes(Entry: TJSONObject; var Latest: string): RawByteString;
-    procedure CheckEntry(Entry: TJSONObject);
+    function CurrentBytes(const Entry: TExportRecord; const Selection: TDeckSelection): TRenderedDeck;
+    procedure CheckEntry(const Entry: TExportRecord);
     procedure FindUntracked;
-    procedure AddRow(const Name, Deck, Mode, Exported, Latest, Status: string);
-    function AttentionReason(const Mode, Status, Exported, Latest: string): string;
+    procedure AddRow(const Check: TDeckFileCheck);
     procedure WriteAttention;
   public
-    constructor Create(var Context: TCommandContext);
+    constructor Create(const Context: TCommandContext);
     destructor Destroy; override;
     function Run: string;
   end;
@@ -38,14 +35,60 @@ type
 function VerificationDirectory(const Context: TCommandContext): string;
 begin
   Result := Context.Command['output_directory'];
+  if SameText(Result, ExportDirectorySelector) then
+    Exit(DefaultExportDirectory(Context.LibraryPath));
   if SameText(Result, 'scu$library_directory') then
     Result := ExtractFileDir(CanonicalFile(Context.LibraryPath));
 end;
 
-constructor TDeckVerifier.Create(var Context: TCommandContext);
+function IssueLabel(const Issues: TDeckFileIssues): string;
+begin
+  if dfInterrupted in Issues then Exit('interrupted');
+  if dfUnavailable in Issues then Exit('unavailable');
+  if dfDeleted in Issues then Exit('deleted');
+  if dfUntracked in Issues then Exit('untracked');
+  if dfMissing in Issues then Exit('missing');
+  if [dfEdited, dfOutdated] <= Issues then Exit('outdated+edited');
+  if dfOutdated in Issues then Exit('outdated');
+  if dfEdited in Issues then Exit('edited');
+  Result := 'current';
+end;
+
+function AttentionReason(const Check: TDeckFileCheck; const Version: string): string;
+  procedure Explain(const Text: string);
+  begin
+    if Result <> '' then Result := Result + ' ';
+    Result := Result + Text;
+  end;
+begin
+  Result := '';
+  if dfUnavailable in Check.Issues then
+    Explain('unavailable: ' + Check.Error)
+  else
+  begin
+    if dfDeleted in Check.Issues then
+      Explain(Format('deleted. Deck is deleted in library version %s at %s.', [Version, Check.Latest]))
+    else if dfOutdated in Check.Issues then
+    begin
+      Explain('outdated.');
+      if Check.Exported <> Check.Latest then
+        Explain(Format('Exported deck version %s; latest deck version %s.', [Check.Exported, Check.Latest]))
+      else if Check.Mode = 'expand' then
+        Explain('Generated output differs from the selected snapshot (release macro expansion).')
+      else Explain('Stored source bytes differ from the recorded export.');
+    end;
+    if dfMissing in Check.Issues then Explain('missing. Output file does not exist.');
+    if dfEdited in Check.Issues then Explain('locally modified. File checksum differs from its recorded export.');
+    if dfUntracked in Check.Issues then Explain('untracked. No export record exists for this file.');
+  end;
+  if dfInterrupted in Check.Issues then
+    Explain('interrupted export. Recovery could not confirm completion; re-export this file with replace=yes to resolve it.');
+end;
+
+constructor TDeckVerifier.Create(const Context: TCommandContext);
 begin
   inherited Create;
-  FContext := @Context;
+  FContext := Context;
   FTable := TScuTable.Create(['File', 'Mode', 'Exported', 'Latest', 'Status']);
   FDetails := TStringList.Create;
   FAttention := TStringList.Create;
@@ -57,227 +100,124 @@ end;
 
 destructor TDeckVerifier.Destroy;
 begin
-  FAttention.Free;
-  FDetails.Free;
-  FSeen.Free;
-  FTable.Free;
+  FAttention.Free; FDetails.Free; FSeen.Free; FTable.Free;
   inherited Destroy;
 end;
 
-function TDeckVerifier.CurrentBytes(Entry: TJSONObject; var Latest: string): RawByteString;
-var
-  Source: TDeckSource;
-  Expander: TDeckExpander;
-  Deck: string;
+function TDeckVerifier.CurrentBytes(const Entry: TExportRecord; const Selection: TDeckSelection): TRenderedDeck;
 begin
-  Deck := Entry.Strings['deck_name'];
-  if Entry.Strings['mode'] = 'extract' then
-  begin
-    Source := FContext^.LibraryFile.Extract(FContext^.Database, Deck,
-      FContext^.Snapshots.Selected.LibraryRevision, FContext^.Snapshots.Selected.Version);
-    Latest := Source.DeckVersion;
-    Exit(Source.Bytes);
-  end;
-  Expander := TDeckExpander.Create(FContext^.LibraryFile, FContext^.Database,
-    FContext^.Snapshots.Selected.LibraryRevision, FContext^.Snapshots.Selected.Version,
-    Entry.Strings['comment_prefix'], FContext^.Snapshots.Selected.Version, Entry.Strings['expansion_utc']);
-  try
-    Result := Expander.Expand(Deck);
-    Latest := Expander.RootDeckVersion;
-  finally
-    Expander.Free;
-  end;
+  Result := RenderDeck(FContext.LibraryFile, FContext.Database, Entry.Deck, Selection,
+    Entry.Mode, Entry.ExpansionUTC);
 end;
 
-function TDeckVerifier.AttentionReason(const Mode, Status, Exported, Latest: string): string;
-var
-  Base: string;
-  Interrupted: Boolean;
-
-  procedure Explain(const Text: string);
-  begin
-    if (Result <> '') and not (Result[Length(Result)] in ['.', '!', '?']) then
-      Result := Result + '.';
-    Result := Result + ' ' + Text;
-  end;
-
+procedure TDeckVerifier.AddRow(const Check: TDeckFileCheck);
 begin
-  Result := Status;
-  Base := Status;
-  Interrupted := Pos('interrupted export', Base) = 1;
-  if Interrupted then
-    Delete(Base, 1, Length('interrupted export; '));
-  if Pos('unavailable:', Base) <> 1 then
+  FTable.AddRow([Check.FileName, Check.Mode, Check.Exported, Check.Latest, IssueLabel(Check.Issues)]);
+  if (Check.FileName <> Check.Deck) and (Check.FileName <> Check.Deck + '.scu') then
+    FDetails.Add(Format('File "%s" is deck "%s".', [StringToJSONString(Check.FileName), Check.Deck]));
+  if Check.Issues <> [] then
   begin
-    if Pos('deleted', Base) = 1 then
-      Explain(Format('Deck is deleted in library version %s at %s.',
-        [FContext^.Snapshots.Selected.Version, Latest]))
-    else if Pos('outdated', Base) = 1 then
-    begin
-      if Exported <> Latest then
-        Explain(Format('Exported deck version %s; latest deck version %s.', [Exported, Latest]))
-      else if Mode = 'expand' then
-        Explain('Generated output differs from the selected snapshot (COPY or macro expansion).')
-      else
-        Explain('Stored source bytes differ from the recorded export.');
-    end;
-    if (Base = 'missing') or (Pos('; missing', Base) > 0) then
-      Explain('Output file does not exist.');
-    if (Base = 'locally modified') or (Pos('; locally modified', Base) > 0) then
-      Explain('File checksum differs from its recorded export.');
-    if Base = 'untracked' then
-      Explain('No export record exists for this file.');
+    Inc(FDifferences);
+    FAttention.Add(Format('Deck "%s", file "%s": %s', [Check.Deck, StringToJSONString(Check.FileName),
+      AttentionReason(Check, FContext.Snapshots.Selected.Version)]));
   end;
-  if Interrupted then
-    Explain('Recovery could not confirm completion; re-export this file to resolve it.');
 end;
 
 procedure TDeckVerifier.WriteAttention;
-var
-  Item: string;
-  Columns: SizeInt;
+var Item: string;
 begin
-  if FAttention.Count = 0 then
-    Exit;
-  Columns := TerminalColumns(StdOutputHandle);
-  FContext^.Output.WriteLine('');
-  FContext^.Output.WriteLine(FormatTerminalLines('Needs attention:', Columns));
+  if FAttention.Count = 0 then Exit;
+  FContext.Output.WriteLine('');
+  FContext.Output.WriteLine(FormatTerminalLines('Needs attention:', TerminalColumns(StdOutputHandle)));
   for Item in FAttention do
   begin
     CheckSessionInterrupt;
-    FContext^.Output.WriteLine(FormatTerminalLines(Item, Columns, 2));
+    FContext.Output.WriteLine(FormatTerminalLines(Item, TerminalColumns(StdOutputHandle), 2));
   end;
 end;
 
-procedure TDeckVerifier.AddRow(const Name, Deck, Mode, Exported, Latest, Status: string);
+procedure TDeckVerifier.CheckEntry(const Entry: TExportRecord);
 var
-  LabelText: string;
-begin
-  LabelText := Status;
-  if Pos('interrupted export', Status) = 1 then
-    LabelText := 'interrupted'
-  else if Pos('unavailable:', Status) = 1 then
-    LabelText := 'unavailable'
-  else if Pos('deleted', Status) = 1 then
-    LabelText := 'deleted'
-  else if Status = 'locally modified' then
-    LabelText := 'edited'
-  else if Status = 'outdated; locally modified' then
-    LabelText := 'outdated+edited';
-  FTable.AddRow([Name, Mode, Exported, Latest, LabelText]);
-  if (Name <> Deck) and (Name <> Deck + '.scu') then
-    FDetails.Add(Format('File "%s" is deck "%s".', [StringToJSONString(Name), Deck]));
-  if Status <> 'current' then
-    FAttention.Add(Format('Deck "%s", file "%s": %s', [Deck, StringToJSONString(Name),
-      AttentionReason(Mode, Status, Exported, Latest)]));
-end;
-
-procedure TDeckVerifier.CheckEntry(Entry: TJSONObject);
-var
-  Name, Path, Latest, Status, OriginalHash, ActualHash, ExpectedHash: string;
-  Bytes: RawByteString;
-  Outdated, Modified: Boolean;
+  Check: TDeckFileCheck;
+  Path, ActualHash: string;
+  Rendered: TRenderedDeck;
   Selection: TDeckSelection;
-  DeletedSource: TDeckSource;
+  Source: TDeckSource;
 begin
   CheckSessionInterrupt;
-  Name := Entry.Strings['file'];
-  FSeen.Add(Name);
-  if Entry.Strings['library'] <> CanonicalFile(FContext^.LibraryPath) then
-    Exit;
+  FSeen.Add(Entry.FileName);
+  if Entry.LibraryPath <> CanonicalFile(FContext.LibraryPath) then Exit;
   Inc(FCount);
-  Path := IncludeTrailingPathDelimiter(FContext^.OutputDirectory) + Name;
-  Latest := '-';
-  Status := '';
-  OriginalHash := Entry.Strings['sha256'];
+  Check := Default(TDeckFileCheck);
+  Check.FileName := Entry.FileName;
+  Check.Deck := Entry.Deck;
+  Check.Mode := ExportModeName(Entry.Mode);
+  Check.Exported := Entry.DeckVersion;
+  Check.Latest := '-';
+  Path := IncludeTrailingPathDelimiter(FContext.OutputDirectory) + Entry.FileName;
   ActualHash := '';
   try
-    if RegularFileExists(Path) then
-      ActualHash := AuditSHA256(ReadBytes(Path, MaxDeckSize));
-    Selection := FContext^.LibraryFile.SelectDeck(Entry.Strings['deck_name'],
-      FContext^.Snapshots.Selected.Version, '');
-    if Selection.RootRevision > 0 then
-      Latest := FContext^.LibraryFile.DeckVersion[Selection.RootRevision];
-    if (Selection.RootRevision > 0) and FContext^.LibraryFile.RevisionDeleted[Selection.RootRevision] then
+    if RegularFileExists(Path) then ActualHash := AuditSHA256(ReadBytes(Path, MaxDeckSize));
+    if ActualHash = '' then Include(Check.Issues, dfMissing)
+    else if ActualHash <> Entry.SHA256 then Include(Check.Issues, dfEdited);
+    Selection := FContext.LibraryFile.SelectDeck(Entry.Deck, FContext.Snapshots.Selected.Version, '');
+    if Selection.RootRevision > 0 then Check.Latest := FContext.LibraryFile.DeckVersion[Selection.RootRevision];
+    if (Selection.RootRevision > 0) and FContext.LibraryFile.RevisionDeleted[Selection.RootRevision] then
     begin
-      DeletedSource := FContext^.LibraryFile.Extract(FContext^.Database, Entry.Strings['deck_name'],
-        Selection.RootRevision, FContext^.Snapshots.Selected.Version, True);
-      Latest := DeletedSource.DeckVersion;
-      Status := 'deleted';
-      if ActualHash = '' then
-        Status := Status + '; missing'
-      else if ActualHash <> OriginalHash then
-        Status := Status + '; locally modified';
+      Source := FContext.LibraryFile.Extract(FContext.Database, Entry.Deck,
+        Selection.RootRevision, FContext.Snapshots.Selected.Version, True);
+      Check.Latest := Source.DeckVersion;
+      Include(Check.Issues, dfDeleted);
     end
     else
     begin
-      Bytes := CurrentBytes(Entry, Latest);
-      ExpectedHash := AuditSHA256(Bytes);
-      Outdated := (Latest <> Entry.Strings['deck_version']) or (ExpectedHash <> OriginalHash);
-      Modified := (ActualHash <> '') and (ActualHash <> OriginalHash);
-      if ActualHash = '' then
-        Status := 'missing'
-      else if (ActualHash = ExpectedHash) and not Outdated then
-        Status := 'current'
-      else
-      begin
-        if Outdated then
-          Status := 'outdated';
-        if Modified then
-        begin
-          if Status <> '' then
-            Status := Status + '; ';
-          Status := Status + 'locally modified';
-        end;
-      end;
+      Rendered := CurrentBytes(Entry, Selection);
+      Check.Latest := Rendered.DeckVersion;
+      if (Check.Latest <> Entry.DeckVersion) or (AuditSHA256(Rendered.Bytes) <> Entry.SHA256) then
+        Include(Check.Issues, dfOutdated);
     end;
   except
     on E: ECommandCancelled do raise;
-    on E: EScuError do Status := 'unavailable: ' + E.Message;
+    on E: EScuError do begin Include(Check.Issues, dfUnavailable); Check.Error := E.Message; end;
   end;
-  if Latest = '' then
-    Latest := '-';
-  if Entry.Get('interrupted_export', False) then
-  begin
-    if Status = 'current' then
-      Status := 'interrupted export'
-    else
-      Status := 'interrupted export; ' + Status;
-  end;
-  if Status <> 'current' then
-    Inc(FDifferences);
-  AddRow(Name, Entry.Strings['deck_name'], Entry.Strings['mode'], Entry.Strings['deck_version'], Latest, Status);
+  if Entry.Interrupted then Include(Check.Issues, dfInterrupted);
+  AddRow(Check);
 end;
 
 procedure TDeckVerifier.FindUntracked;
 var
   Names: TStringList;
-  Name, FileName, Path: string;
+  Name, Path: string;
   Suffix: Integer;
+  Check: TDeckFileCheck;
 begin
   Names := TStringList.Create;
   try
     Names.Sorted := True;
     Names.CaseSensitive := True;
     Names.Duplicates := dupIgnore;
-    FContext^.LibraryFile.ChangedDecks(0, FContext^.Snapshots.Selected.LibraryRevision, Names);
+    FContext.LibraryFile.ChangedDecks(0, FContext.Snapshots.Selected.LibraryRevision, Names);
     for Name in Names do
       for Suffix := 0 to 1 do
       begin
-        FileName := Name;
-        if Suffix = 1 then
-          FileName := Name + '.scu';
-        if FSeen.IndexOf(FileName) >= 0 then
-          Continue;
+        Check := Default(TDeckFileCheck);
+        Check.FileName := Name;
+        if Suffix = 1 then Check.FileName := Name + '.scu';
+        if FSeen.IndexOf(Check.FileName) >= 0 then Continue;
         CheckSessionInterrupt;
-        Path := IncludeTrailingPathDelimiter(FContext^.OutputDirectory) + FileName;
-        if RegularFileExists(Path) then
-        begin
-          FSeen.Add(FileName);
-          Inc(FCount);
-          Inc(FDifferences);
-          AddRow(FileName, Name, '-', '-', '-', 'untracked');
+        Check.Deck := Name;
+        Check.Mode := '-'; Check.Exported := '-'; Check.Latest := '-';
+        Path := IncludeTrailingPathDelimiter(FContext.OutputDirectory) + Check.FileName;
+        try
+          if not RegularFileExists(Path) then Continue;
+          Include(Check.Issues, dfUntracked);
+        except
+          on E: ECommandCancelled do raise;
+          on E: EScuError do begin Include(Check.Issues, dfUnavailable); Check.Error := E.Message; end;
         end;
+        FSeen.Add(Check.FileName);
+        Inc(FCount);
+        AddRow(Check);
       end;
   finally
     Names.Free;
@@ -291,52 +231,37 @@ var
   Index: Integer;
   Detail: string;
 begin
-  Manifest := TExportManifest.Create(FContext^.OutputDirectory);
+  Manifest := TExportManifest.Create(FContext.OutputDirectory);
   Files := nil;
   try
+    Manifest.Recover;
     Files := TStringList.Create;
-    Files.CaseSensitive := True;
-    Files.Sorted := True;
-    for Index := 0 to Manifest.Count - 1 do
-      Files.AddObject(Manifest[Index].Strings['file'], Manifest[Index]);
-    for Index := 0 to Files.Count - 1 do
-      CheckEntry(TJSONObject(Files.Objects[Index]));
+    Files.CaseSensitive := True; Files.Sorted := True;
+    for Index := 0 to Manifest.Count - 1 do Files.AddObject(Manifest[Index].FileName, TObject(PtrInt(Index)));
+    for Index := 0 to Files.Count - 1 do CheckEntry(Manifest[PtrInt(Files.Objects[Index])]);
     FindUntracked;
-    FTable.WriteTo(FContext^.Output, TerminalColumns(StdOutputHandle));
-    if FDetails.Count > 0 then
-    begin
-      FContext^.Output.WriteLine('');
-      for Detail in FDetails do
-      begin
-        CheckSessionInterrupt;
-        FContext^.Output.WriteLine(FormatTerminalLines(Detail, TerminalColumns(StdOutputHandle), 2));
-      end;
-    end;
+    FTable.WriteTo(FContext.Output, FContext.Output.Columns);
+    if FDetails.Count > 0 then FContext.Output.WriteLine('');
+    for Detail in FDetails do
+      FContext.Output.WriteLine(FormatTerminalLines(Detail, TerminalColumns(StdOutputHandle), 2));
     WriteAttention;
     if FDifferences > 0 then
     begin
-      FContext^.Output.Flush;
+      FContext.Output.Flush;
       raise EScuError.CreateFmt('%d of %d deck file(s) need attention.', [FDifferences, FCount]);
     end;
-    Result := Format('Verified %d deck file(s) against version %s. No errors were found.', [FCount, FContext^.Snapshots.Selected.Version]);
+    Result := Format('Verified %d deck file(s) against version %s. No errors were found.', [FCount, FContext.Snapshots.Selected.Version]);
   finally
-    Files.Free;
-    Manifest.Free;
+    Files.Free; Manifest.Free;
   end;
 end;
 
 function VerifyDecks(var Context: TCommandContext): string;
-var
-  Verifier: TDeckVerifier;
+var Verifier: TDeckVerifier;
 begin
   Context.Snapshots.Selected := Context.LibraryFile.ParseLibrarySnapshot(Context.Command['version']);
   Context.Snapshots.OutputDirectory := Context.OutputDirectory;
   Verifier := TDeckVerifier.Create(Context);
-  try
-    Result := Verifier.Run;
-  finally
-    Verifier.Free;
-  end;
+  try Result := Verifier.Run; finally Verifier.Free; end;
 end;
-
 end.

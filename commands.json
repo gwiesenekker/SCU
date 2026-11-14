@@ -5,7 +5,7 @@
     "type": "string",
     "aliases": ["library_name", "ln"],
     "default": "library.sqlite",
-    "description": "Path to the source library to open."
+    "description": "Path to the SQLite source library. Append .sqlite when no extension is given; reject other extensions."
   },
   "batch_argument": {
     "name": "continue_on_error",
@@ -28,14 +28,14 @@
     {
       "name": "configure_library",
       "aliases": ["conl"],
-      "summary": "Set library defaults, numbering increments, editor, or build command.",
+      "summary": "Set library configuration, editor, build command, or release directory.",
       "arguments": [
         {
           "name": "build_command",
           "type": "string",
           "aliases": ["bc"],
           "value": "scu$optional",
-          "description": "Shell command to run after expansion. The output file or directory is available as $1."
+          "description": "Shell command run after extraction, from the library directory. The extracted file or directory is available as $1."
         },
         {
           "name": "comment-prefix",
@@ -64,6 +64,14 @@
           "aliases": ["vi"],
           "value": "scu$optional",
           "description": "Step for automatically starting a library version, in hundredths. The default is 0.01."
+        },
+        {
+          "name": "release_directory",
+          "type": "string",
+          "aliases": ["rd"],
+          "value": "scu$optional",
+          "description": "Directory for release publication, relative to the library directory. Default release; must be separate from working sources.",
+          "completion": "directory"
         }
       ],
       "help": "Specify at least one argument. Set the default prefix before the current version receives its first revision. Supply editor arguments as a JSON array and quote the build command as one string."
@@ -316,13 +324,6 @@
       ]
     },
     {
-      "name": "display_expansion_checkpoints",
-      "aliases": ["disec"],
-      "summary": "List SQLite expansion checkpoints and their last successful builds.",
-      "arguments": [],
-      "help": "Show each SQLite expansion checkpoint's version, absolute output directory, revision, rebuild status, and the last successful build's revision and UTC time. Use aligned columns with headers and at least two spaces between columns."
-    },
-    {
       "name": "display_library",
       "aliases": ["disl"],
       "summary": "Show the library summary and configuration in attribute/value columns.",
@@ -514,153 +515,6 @@
       ]
     },
     {
-      "name": "expand_deck",
-      "aliases": ["expd"],
-      "summary": "Expand COPY directives and date/time macros into a file.",
-      "arguments": [
-        {
-          "name": "deck_name",
-          "type": "string",
-          "aliases": ["deck", "dn"],
-          "value": "scu$last_modified_deck",
-          "prompt_for_default": false,
-          "description": "Name of the deck to expand.",
-          "completion": "deck"
-        },
-        {
-          "name": "output_file",
-          "type": "string",
-          "aliases": ["o", "output"],
-          "value": "scu$deck_name",
-          "prompt_for_default": false,
-          "description": "Path to write the expanded source.",
-          "completion": "file"
-        },
-        {
-          "name": "build",
-          "type": "enum",
-          "aliases": ["b"],
-          "value": "yes",
-          "prompt_for_default": false,
-          "description": "Run the configured build command after writing the expanded file.",
-          "values": [
-            {
-              "name": "yes",
-              "aliases": ["y"]
-            },
-            {
-              "name": "no",
-              "aliases": ["n"]
-            }
-          ]
-        },
-        {
-          "name": "comment-prefix",
-          "type": "string",
-          "aliases": ["comment_prefix", "cp"],
-          "value": "scu$optional",
-          "description": "Temporarily override the comment prefix for all decks visited in this expansion."
-        },
-        {
-          "name": "revision",
-          "type": "string",
-          "aliases": ["r"],
-          "value": "scu$optional",
-          "description": "Deck revision within the selected library version, from 0.000 to 0.999. Omit to select the latest visible deck revision, including inherited decks.",
-          "completion": "revision"
-        },
-        {
-          "name": "version",
-          "type": "string",
-          "aliases": ["v"],
-          "value": "scu$current_version",
-          "description": "Library version containing the deck; defaults to scu$current_version. Combine with revision=0.001, or supply a complete deck version such as 1.1-0.001.",
-          "completion": "version",
-          "prompt_for_default": false
-        }
-      ],
-      "help": "Select a library version (default scu$current_version) and optionally a deck revision within that version. With no revision, select the latest visible deck, including inherited decks. Version and revision may be combined, for example version=1.1 revision=0.001. A complete deck version such as version=1.1-0.001 is equivalent; do not combine it with a separate revision. Expand COPY directives and macros. COPY dependencies use the selected library version, independently of the root deck revision. Internal library revision numbers are not command selectors.",
-      "examples": [
-        {
-          "command": "scu expand_deck main.pas release-1.1.pas version=1.1",
-          "description": "Generate compiler input for named version 1.1, resolving COPY from that version."
-        },
-        {
-          "command": "scu expand_deck main.pas before-fix.pas version=1.1 revision=0.001",
-          "description": "Select deck revision 0.001 stored in library version 1.1."
-        },
-        {
-          "command": "scu expand_deck",
-          "description": "Expand the last modified deck to a file with the same name in the current directory."
-        }
-      ]
-    },
-    {
-      "name": "expand_version",
-      "aliases": ["expv"],
-      "summary": "Expand a version incrementally, or all latest visible decks.",
-      "arguments": [
-        {
-          "name": "version",
-          "type": "string",
-          "aliases": ["v"],
-          "value": "scu$current_version",
-          "prompt_for_default": false,
-          "description": "Library version whose changed decks to expand. Default scu$current_version uses incremental selection; scu$latest_version expands every live deck, including inherited decks.",
-          "completion": "library_version"
-        },
-        {
-          "name": "output_directory",
-          "type": "string",
-          "aliases": ["directory", "od"],
-          "value": "scu$library_directory",
-          "prompt_for_default": false,
-          "description": "Existing directory for the expanded source files.",
-          "completion": "directory"
-        },
-        {
-          "name": "build",
-          "type": "enum",
-          "aliases": ["b"],
-          "value": "yes",
-          "prompt_for_default": false,
-          "description": "Run the configured build command once after writing the batch.",
-          "values": [
-            {
-              "name": "yes",
-              "aliases": ["y"]
-            },
-            {
-              "name": "no",
-              "aliases": ["n"]
-            }
-          ]
-        },
-        {
-          "name": "comment-prefix",
-          "type": "string",
-          "aliases": ["comment_prefix", "cp"],
-          "value": "scu$optional",
-          "description": "Temporarily override the comment prefix for all decks visited in this expansion."
-        }
-      ],
-      "help": "Default to scu$current_version and expand decks changed in the current library version since the checkpoint, refreshing direct and indirect COPY dependents as needed. Named versions and scu$previous_version select that version similarly. Use scu$latest_version for a full checkout of every live deck at its latest visible deck version, including inherited decks; this deliberately ignores incremental checkpoints and rewrites the full batch on each run. COPY uses the selected library snapshot. Default output_directory is scu$library_directory. Run the configured build after expansion when build=yes; advance checkpoints only under the existing successful expansion/build rules. Interactive edits are saved automatically before this command. List each written deck and its resolved deck version in aligned columns before the batch summary.",
-      "examples": [
-        {
-          "command": "scu expand_version",
-          "description": "Expand new changes in the current version and refresh COPY dependents."
-        },
-        {
-          "command": "scu expand_version version='scu$latest_version'",
-          "description": "Populate a fresh checkout with every live deck, including inherited decks."
-        },
-        {
-          "command": "scu expand_version version=1.1 output_directory=build",
-          "description": "Expand changes in version 1.1 into build."
-        }
-      ]
-    },
-    {
       "name": "extract_deck",
       "aliases": ["extd"],
       "summary": "Write the original source bytes to a file.",
@@ -678,9 +532,9 @@
           "name": "output_file",
           "type": "string",
           "aliases": ["o", "output"],
-          "value": "scu$deck_name.scu",
+          "value": "scu$deck_name",
           "prompt_for_default": false,
-          "description": "Destination for original source bytes. Defaults to the deck name plus .scu; an explicit output_file is used unchanged.",
+          "description": "Destination for original source bytes. Defaults to the deck name; an explicit output_file is used unchanged.",
           "completion": "file"
         },
         {
@@ -699,9 +553,45 @@
           "description": "Library version containing the deck; defaults to scu$current_version. Combine with revision=0.001, or supply a complete deck version such as 1.1-0.001.",
           "completion": "version",
           "prompt_for_default": false
+        },
+        {
+          "name": "replace",
+          "type": "enum",
+          "aliases": ["rp"],
+          "value": "no",
+          "prompt_for_default": false,
+          "description": "Explicitly replace edited or untracked output files. Edited source files require explicit replacement; SQLite libraries remain protected.",
+          "values": [
+            {
+              "name": "yes",
+              "aliases": ["y"]
+            },
+            {
+              "name": "no",
+              "aliases": ["n"]
+            }
+          ]
+        },
+        {
+          "name": "build",
+          "type": "enum",
+          "aliases": ["b"],
+          "value": "yes",
+          "description": "Run the configured build command after extraction, from the library directory.",
+          "values": [
+            {
+              "name": "yes",
+              "aliases": ["y"]
+            },
+            {
+              "name": "no",
+              "aliases": ["n"]
+            }
+          ],
+          "prompt_for_default": false
         }
       ],
-      "help": "Select a library version (default scu$current_version) and optionally a deck revision within that version. With no revision, select the latest visible deck, including inherited decks. Version and revision may be combined, for example version=1.1 revision=0.001. A complete deck version such as version=1.1-0.001 is equivalent; do not combine it with a separate revision. Write the original source bytes, including COPY directives and macro text. Internal library revision numbers are not command selectors. Default to <deck_name>.scu so extraction does not overwrite the default expanded file; honor an explicit output_file unchanged.",
+      "help": "Select a library version (default scu$current_version) and optionally a deck revision within that version. With no revision, select the latest visible deck, including inherited decks. Version and revision may be combined, for example version=1.1 revision=0.001. A complete deck version such as version=1.1-0.001 is equivalent; do not combine it with a separate revision. Write the original source bytes, including COPY directives and macro text. Internal library revision numbers are not command selectors. Default to <deck_name> beside the library; honor an explicit output_file unchanged. Default outputs go beside the library, using <deck_name>. Existing untracked or locally edited outputs require replace=yes. Edited source files require replace=yes; SQLite libraries cannot be overwritten. Run the configured build command from the library directory after successful extraction; build=no skips it.",
       "examples": [
         {
           "command": "scu extract_deck main.pas release-1.1.pas version=1.1",
@@ -713,21 +603,21 @@
         },
         {
           "command": "scu extract_deck",
-          "description": "Write the last modified deck to <deck_name>.scu in the current directory."
+          "description": "Write the last modified deck to <deck_name> beside the library."
         }
       ]
     },
     {
-      "name": "extract_modified_decks",
-      "aliases": ["extmd"],
-      "summary": "Extract every deck changed in a version.",
+      "name": "extract_version",
+      "aliases": ["extv"],
+      "summary": "Extract the complete selected version and run the build.",
       "arguments": [
         {
           "name": "version",
           "type": "string",
           "aliases": ["v"],
           "value": "scu$current_version",
-          "description": "Library version whose changed decks to extract. Defaults to scu$current_version without prompting.",
+          "description": "Library version to extract completely, including inherited decks. Defaults to scu$current_version without prompting.",
           "completion": "library_version",
           "prompt_for_default": false
         },
@@ -736,20 +626,56 @@
           "type": "string",
           "aliases": ["directory", "od"],
           "value": "scu$library_directory",
-          "description": "Existing directory for the raw .scu files. Defaults to the directory containing the library.",
+          "description": "Directory for original source files. Defaults to the library directory.",
           "completion": "directory",
+          "prompt_for_default": false
+        },
+        {
+          "name": "replace",
+          "type": "enum",
+          "aliases": ["rp"],
+          "value": "no",
+          "prompt_for_default": false,
+          "description": "Explicitly replace edited or untracked output files. Edited source files require explicit replacement; SQLite libraries remain protected.",
+          "values": [
+            {
+              "name": "yes",
+              "aliases": ["y"]
+            },
+            {
+              "name": "no",
+              "aliases": ["n"]
+            }
+          ]
+        },
+        {
+          "name": "build",
+          "type": "enum",
+          "aliases": ["b"],
+          "value": "yes",
+          "description": "Run the configured build command after extraction, from the library directory.",
+          "values": [
+            {
+              "name": "yes",
+              "aliases": ["y"]
+            },
+            {
+              "name": "no",
+              "aliases": ["n"]
+            }
+          ],
           "prompt_for_default": false
         }
       ],
-      "help": "Write the original source of each deck changed in the selected version to an existing directory. Write raw files as <deck_name>.scu; expansion writes <deck_name>. Default the version to scu$current_version without prompting; an explicit version selects another library version. Default output_directory to scu$library_directory without prompting, so the command can run without arguments. List each written deck and its resolved deck version in aligned columns before the file-count summary.",
+      "help": "Extract every live deck in the selected library version, including inherited decks, under its original filename. Default to scu$current_version and the library directory. Preserve macro text without expansion. Update the export manifest, then run the configured build once from the library directory unless build=no. Unchanged files need no replacement permission; edited or untracked differing files require replace=yes. SQLite libraries cannot be overwritten.",
       "examples": [
         {
-          "command": "scu extract_modified_decks output_directory=build",
-          "description": "Extract decks changed in the current library version as .scu files."
+          "command": "scu extract_version output_directory=build",
+          "description": "Extract all decks in the current library version with their deck filenames."
         },
         {
-          "command": "scu extract_modified_decks",
-          "description": "Extract changed decks from the current version as .scu files beside the library."
+          "command": "scu extract_version",
+          "description": "Extract all live decks from the current version with their deck filenames beside the library."
         }
       ]
     },
@@ -795,7 +721,7 @@
           "description": "Import main.pas from its source path in the library directory."
         },
         {
-          "command": "scu import_deck main.pas main.pas.scu",
+          "command": "scu import_deck main.pas",
           "description": "Create or revise main.pas from an edited extraction; keep its existing source-path association."
         }
       ]
@@ -876,28 +802,58 @@
       "help": "Restore to a new library at the selected path. If a pending-only file references saved revisions, supply the matching saved snapshot as base_library."
     },
     {
-      "name": "reset_expansion_checkpoint",
-      "aliases": ["resec"],
-      "summary": "Require a full rebuild for one SQLite version and output directory.",
+      "name": "release_version",
+      "aliases": ["relv"],
+      "summary": "Publish a complete version with release macros expanded.",
       "arguments": [
         {
           "name": "version",
           "type": "string",
           "aliases": ["v"],
-          "value": "scu$required",
-          "description": "Library version of the checkpoint to reset.",
+          "value": "scu$current_version",
+          "prompt_for_default": false,
+          "description": "Library version to publish completely, including inherited decks. Default scu$current_version.",
           "completion": "library_version"
         },
         {
           "name": "output_directory",
           "type": "string",
           "aliases": ["directory", "od"],
-          "value": "scu$required",
-          "description": "Existing output directory of the checkpoint to reset.",
+          "value": "scu$release_directory",
+          "prompt_for_default": false,
+          "description": "Release output directory. Default to release_directory (release beside the library); cannot be the working-source directory.",
           "completion": "directory"
+        },
+        {
+          "name": "replace",
+          "type": "enum",
+          "aliases": ["rp"],
+          "value": "no",
+          "prompt_for_default": false,
+          "description": "Explicitly replace edited or untracked output files. Working sources and SQLite libraries remain protected.",
+          "values": [
+            {
+              "name": "yes",
+              "aliases": ["y"]
+            },
+            {
+              "name": "no",
+              "aliases": ["n"]
+            }
+          ]
         }
       ],
-      "help": "Mark an existing SQLite checkpoint for a full rebuild. The next expand_version run for this version and directory expands every deck in the selected snapshot. A successful build clears the reset. With no configured build command, a successful expansion clears it."
+      "help": "Write every live deck in the selected version, including inherited decks, to release_directory (default release beside the library). Every run publishes the full snapshot. Expand only uppercase SCU$DATE, SCU$TIME, SCU$DATE_TIME, SCU$DECK_VERSION, and SCU$VERSION. Date/time values are the deck modification timestamp in UTC; VERSION is the selected library version. COPY directives and other text remain literal. Remove obsolete regular files matching file_patterns only when absent from the selected snapshot; keep unrelated files, subdirectories, symbolic links, and SQLite storage. Update the export manifest with recoverable writes and deletions. Edited tracked outputs require replace=yes. No build command runs during publication.",
+      "examples": [
+        {
+          "command": "scu release_version",
+          "description": "Publish the complete current version to release/ with macros expanded."
+        },
+        {
+          "command": "scu release_version version=1.1",
+          "description": "Publish a complete selected release, including inherited decks; remove obsolete matching files."
+        }
+      ]
     },
     {
       "name": "save_library",
@@ -953,9 +909,9 @@
           "name": "output_directory",
           "type": "string",
           "aliases": ["directory", "od"],
-          "value": "scu$library_directory",
+          "value": "scu$release_directory",
           "prompt_for_default": false,
-          "description": "Directory containing exported files and .scu-exports.json. Defaults to the library directory.",
+          "description": "Directory to verify. Default release_directory; use scu$library_directory for extracted source files.",
           "completion": "directory"
         },
         {
@@ -968,7 +924,7 @@
           "completion": "library_version"
         }
       ],
-      "help": "Verify files recorded in .scu-exports.json without overwriting them or running builds. Automatically reconcile interrupted manifest updates; report interrupted exports requiring explicit re-export when the file matches neither the previous nor intended checksum. Compare extraction with original source and expansion with recursively expanded COPY and macros. Reuse the recorded expansion timestamp and comment-prefix override, so expansion-time macros do not cause false differences. Report current, outdated, locally modified, missing, unavailable, or untracked files. Return a failing exit status when any tracked file needs attention. Existing untracked files whose names match known decks are reported as untracked; renamed old exports cannot be identified automatically. Records for other libraries are ignored. Use compact File, Mode, Exported, Latest, and Status columns with detailed errors and custom deck mappings below the table. Both version columns are deck versions. Deleted decks remain tracked and are reported as deleted; delete_deck does not delete exported files or manifest records. Finish with a Needs attention list naming every affected deck, file, and full reason; omit current files and continue after individual file read errors. Successful verification ends with No errors were found.",
+      "help": "Verify files recorded in .scu-exports.json without overwriting them or running builds. Automatically reconcile interrupted manifest updates; report interrupted exports requiring explicit re-export when the file matches neither the previous nor intended checksum. Compare extraction with original source and expansion with expanded release macros. Release macro values come from stored deck modification times and the selected version, so verification is deterministic. Report current, outdated, locally modified, missing, unavailable, or untracked files. Return a failing exit status when any tracked file needs attention. Existing untracked files whose names match known decks are reported as untracked; renamed old exports cannot be identified automatically. Records for other libraries are ignored. Use compact File, Mode, Exported, Latest, and Status columns with detailed errors and custom deck mappings below the table. Both version columns are deck versions. delete_deck does not immediately change exports. A release publication removes obsolete matching files and their manifest records; retained deleted exports are reported as deleted. Finish with a Needs attention list naming every affected deck, file, and full reason; omit current files and continue after individual file read errors. Successful verification ends with No errors were found.",
       "examples": [
         {
           "command": "scu verify_decks",

@@ -9,20 +9,15 @@ uses
 
 function SingleDeckDirectory(const Context: TCommandContext): string;
 function BulkExpansionDirectory(const Context: TCommandContext): string;
-function CheckpointDirectory(const Context: TCommandContext): string;
-function PrepareBulkExpansion(const Context: TCommandContext): Boolean;
 function ExtractDeck(var Context: TCommandContext): string;
-function ExpandDeck(var Context: TCommandContext): string;
-function ExtractModifiedDecks(var Context: TCommandContext): string;
-function ExpandVersion(var Context: TCommandContext): string;
-function DisplayExpansionCheckpoints(var Context: TCommandContext): string;
-function ResetExpansionCheckpoint(var Context: TCommandContext): string;
+function ExtractVersion(var Context: TCommandContext): string;
+function ReleaseVersion(var Context: TCommandContext): string;
 
 implementation
 
 uses
-  ScuExportManifest, ScuLibraryDisplay, ScuTable, Classes, SysUtils, FPJSON, ScuCommands, ScuExpand, ScuErrors, ScuFiles, ScuLibrary,
-  ScuLibraryPaths, ScuSignals, ScuTerminal, ScuSQLiteCheckpoint, ScuJSON, ScuVersions;
+  ScuClock, ScuReleaseCleanup, ScuExportManifest, ScuExportPaths, ScuExportTypes, ScuDeckExport, ScuLibraryDisplay, ScuTable, Classes, SysUtils, ScuCommands, ScuErrors, ScuFiles, ScuLibrary,
+  ScuLibraryPaths, ScuSignals, ScuVersions;
 
 const
   LibraryDirectorySelector = 'scu$library_directory';
@@ -39,11 +34,20 @@ end;
 function OutputPath(const Context: TCommandContext; const Path: string): string;
 begin
   Result := CanonicalFile(Path);
+  if RegularFileExists(Result) and IsSQLiteFile(Result) then
+    raise EScuError.Create('The output path would overwrite another SQLite library: "' + Result + '".');
   if IsLibraryStoragePath(Result, Context.LibraryPath) then
     raise EScuError.Create('The output path would overwrite a library or audit file.');
   if ExtractFileName(Result) = ExportManifestName then
     raise EScuError.Create('The output path is reserved for the SCU export manifest.');
   RegularFileExists(Result);
+  if (Context.Command.Name <> 'extract_deck') and
+    (Context.Command.Name <> 'extract_version') and Assigned(Context.LibraryFile) and
+    (ExtractFileDir(Result) = ExtractFileDir(CanonicalFile(Context.LibraryPath))) then
+  begin
+      if Context.LibraryFile.IsWorkingSourceFile(Context.Database, ExtractFileName(Result)) then
+        raise EScuError.Create('The output path is a working source file: "' + Result + '". Select a separate output directory.');
+  end;
 end;
 
 function SingleDeckDirectory(const Context: TCommandContext): string;
@@ -51,6 +55,8 @@ var
   Path: string;
 begin
   Path := OutputFileArgument(Context.Command);
+  if not Context.Command.Provided['output_file'] and not Context.Command.Provided['output'] then
+    Exit(ExtractFileDir(CanonicalFile(Context.LibraryPath)));
   if (Path = '') or SameText(Path, DeckNameSelector) or SameText(Path, LastModifiedDeckSelector) then
     Result := GetCurrentDir
   else
@@ -60,46 +66,10 @@ end;
 function BulkExpansionDirectory(const Context: TCommandContext): string;
 begin
   Result := Context.Command['output_directory'];
+  if SameText(Result, ExportDirectorySelector) then
+    Exit(EnsureExportDirectory(Context.LibraryPath));
   if SameText(Result, LibraryDirectorySelector) then
     Result := ExtractFileDir(CanonicalFile(Context.LibraryPath));
-end;
-
-function CheckpointDirectory(const Context: TCommandContext): string;
-begin
-  Result := Context.Command['output_directory'];
-end;
-
-function StoredVersionName(const Context: TCommandContext; const Selector: string): string;
-var
-  Metadata: TJSONObject;
-  History: TVersionHistory;
-  Last: Integer;
-begin
-  Result := Selector;
-  if SameText(Selector, CurrentVersionSelector) or SameText(Selector, LatestVersionSelector) then
-    Exit(Context.Database.Revisions.ReadCurrentVersion);
-  if not SameText(Selector, PreviousVersionSelector) then
-    Exit;
-  Metadata := Context.Database.Revisions.ReadMetadata;
-  History := nil;
-  try
-    History := TVersionHistory.Create(TJSONArray(Field(TJSONObject(Field(Metadata, 'header', jtObject)),
-      'versions', jtArray)), Context.Database.Revisions.RevisionCount);
-    if not History.TryPrevious(Result, Last) then
-      raise EScuError.CreateFmt('No locked version precedes current version %s.', [History.Current]);
-  finally
-    History.Free;
-    Metadata.Free;
-  end;
-end;
-
-function PrepareBulkExpansion(const Context: TCommandContext): Boolean;
-var
-  Version: string;
-begin
-  Version := StoredVersionName(Context, Context.Command['version']);
-  Result := Context.Database.Checkpoints.InvalidateExpansionOutput(Version, Context.OutputDirectory,
-    PrefixArgument(Context.Command), SameText(Context.Command['version'], LatestVersionSelector));
 end;
 
 procedure ScheduleBuild(var Context: TCommandContext; const Target: string);
@@ -111,19 +81,19 @@ begin
   if Enabled and (Context.LibraryFile.BuildCommand <> '') then
   begin
     Context.Build.Command := Context.LibraryFile.BuildCommand;
+    Context.Build.LibraryPath := CanonicalFile(Context.LibraryPath);
     Context.Build.OutputPath := Target;
+    Context.Build.WorkingDirectory := ExtractFileDir(CanonicalFile(Context.LibraryPath));
   end;
 end;
 
-function TransferDeck(var Context: TCommandContext; Expand: Boolean): string;
+function ExtractDeck(var Context: TCommandContext): string;
 var
-  Deck, Path, MissingDeckVersion, ResolvedDeckVersion: string;
+  Deck, Path, ResolvedDeckVersion: string;
   Bytes: RawByteString;
-  Source: TDeckSource;
   Selection: TDeckSelection;
   Manifest: TExportManifest;
-  Mode, ExpansionUTC: string;
-  Expander: TDeckExpander;
+  Rendered: TRenderedDeck;
 begin
   Deck := DeckName(ResolveDeck(Context));
   if Context.Command.HasArgument('revision') and (Context.Command.Argument('revision') = '') then
@@ -134,9 +104,6 @@ begin
     Context.Command.Argument('revision'));
   Context.Snapshots.Selected := Selection.Snapshot;
   Context.Snapshots.ResolvedDeck := Deck;
-  MissingDeckVersion := Selection.Snapshot.Version;
-  Mode := 'extract';
-  ExpansionUTC := '';
   Path := OutputFileArgument(Context.Command);
   if SameText(Path, DeckNameSelector + '.scu') then
     Path := DeckName(Deck) + '.scu'
@@ -144,231 +111,99 @@ begin
     Path := DeckName(Deck)
   else if SameText(Path, LastModifiedDeckSelector) then
     Path := ResolveLastModifiedDeck(Context.LibraryFile);
+  if not Context.Command.Provided['output_file'] and not Context.Command.Provided['output'] then
+    Path := IncludeTrailingPathDelimiter(Context.OutputDirectory) + ExtractFileName(Path);
   Path := OutputPath(Context, Path);
   Context.Snapshots.OutputPath := Path;
-  if Expand then
-  begin
-    Expander := TDeckExpander.Create(Context.LibraryFile, Context.Database, Context.Snapshots.Selected.LibraryRevision,
-      Context.Snapshots.Selected.Version, PrefixArgument(Context.Command), MissingDeckVersion);
-    try
-      Bytes := Expander.Expand(Deck, Selection.RootRevision);
-      ResolvedDeckVersion := Expander.RootDeckVersion;
-      ExpansionUTC := Expander.ExpansionUTC;
-      Mode := 'expand';
-    finally
-      Expander.Free;
-    end;
-  end
-  else
-  begin
-    if Selection.RootRevision = 0 then
-      Selection.RootRevision := Selection.Snapshot.LibraryRevision;
-    Source := Context.LibraryFile.Extract(Context.Database, Deck, Selection.RootRevision, MissingDeckVersion);
-    Bytes := Source.Bytes;
-    ResolvedDeckVersion := Source.DeckVersion;
-  end;
+  Rendered := RenderDeck(Context.LibraryFile, Context.Database, Deck, Selection, emExtract);
+  Bytes := Rendered.Bytes;
+  ResolvedDeckVersion := Rendered.DeckVersion;
   CheckSessionInterrupt;
   Manifest := TExportManifest.Create(ExtractFileDir(Path));
   try
+    Manifest.Recover;
     Manifest.WriteExport(Context.LibraryPath, Path, Deck, Selection.Snapshot.Version,
-      ResolvedDeckVersion, Mode, ExpansionUTC, PrefixArgument(Context.Command), Bytes);
+      ResolvedDeckVersion, 'extract', '', '', Bytes, BooleanArgument(Context.Command, 'replace', 'no'));
+    Context.FilesPublished := True;
   finally
     Manifest.Free;
   end;
-  if Expand then
-    ScheduleBuild(Context, Path);
+  ScheduleBuild(Context, Path);
   Context.Snapshots.DeckVersion := ResolvedDeckVersion;
   ReportSnapshot(Context, ResolvedDeckVersion, Deck);
   Result := '';
 end;
 
-function ExtractDeck(var Context: TCommandContext): string;
-begin
-  Result := TransferDeck(Context, False);
-end;
-
-function ExpandDeck(var Context: TCommandContext): string;
-begin
-  Result := TransferDeck(Context, True);
-end;
-
-function TransferModifiedDecks(var Context: TCommandContext; Expand: Boolean): string;
+function TransferVersion(var Context: TCommandContext; Expand: Boolean): string;
 var
-  LibraryFile: TDeckLibrary;
-  Version, Directory, Prefix, Name: string;
-  Revision, Base, CheckpointRevision, Index: Integer;
-  Refresh, BuildPending, ChangesPending, FullSnapshot: Boolean;
+  Version, Directory, ExpansionUTC: string;
+  Revision, Base, Index, DeletedCount: Integer;
   Snapshot: TLibrarySnapshot;
-  Names, Destinations: TStringList;
-  Expander: TDeckExpander;
+  Selection: TDeckSelection;
+  Names: TStringList;
   Manifest: TExportManifest;
-  Mode, ExpansionUTC, ExportedVersion: string;
-  Source: TDeckSource;
+  Rendered: TRenderedDeck;
+  Kind: TExportMode;
   Written: TDeckListEntries;
-  Bytes: RawByteString;
 begin
-  LibraryFile := Context.LibraryFile;
-  FullSnapshot := Expand and SameText(Context.Command['version'], LatestVersionSelector);
-  if FullSnapshot then
-    Snapshot := LibraryFile.CurrentSnapshot
-  else
-    Snapshot := LibraryFile.ParseLibrarySnapshot(Context.Command['version']);
+  if SameText(Context.Command['version'], LatestVersionSelector) then
+    Snapshot := Context.LibraryFile.CurrentSnapshot
+  else Snapshot := Context.LibraryFile.ParseLibrarySnapshot(Context.Command['version']);
   Version := Snapshot.Version;
-  Directory := Context.OutputDirectory;
-  LibraryFile.VersionBounds(Version, Base, Revision);
-  if not DirectoryExists(Directory) then
-    raise EScuError.CreateFmt('The output directory must already exist: "%s".', [Directory]);
-  Directory := CanonicalDirectory(Directory);
+  Context.LibraryFile.VersionBounds(Version, Base, Revision);
+  Directory := CanonicalDirectory(Context.OutputDirectory);
+  if Expand and (Directory = ExtractFileDir(CanonicalFile(Context.LibraryPath))) then
+    raise EScuError.Create('Release output must be separate from the library working-source directory.');
   Context.Snapshots.OutputDirectory := Directory;
-  Context.Snapshots.Selected.Version := Version;
-  Context.Snapshots.Selected.LibraryRevision := Revision;
-  BuildPending := False;
-  if Expand and not FullSnapshot and Context.Database.Checkpoints.ReadExpansionCheckpoint(Version, Directory, CheckpointRevision,
-    Refresh, BuildPending) then
-  begin
-    if (CheckpointRevision < Base) or (CheckpointRevision > Revision) then
-      raise EScuError.Create('The expansion checkpoint is outside the selected version.');
-    if Refresh then
-      Base := 0
-    else
-      Base := CheckpointRevision;
-  end;
-  if FullSnapshot then
-    Base := 0;
-  Names := nil;
-  Destinations := nil;
-  Expander := nil;
+  Context.Snapshots.Selected := Snapshot;
+  Names := TStringList.Create;
   Manifest := nil;
   try
-    Manifest := TExportManifest.Create(Directory);
-    Names := TStringList.Create;
-    Names.CaseSensitive := True;
     Names.Sorted := True;
+    Names.CaseSensitive := True;
     Names.Duplicates := dupIgnore;
-    LibraryFile.ChangedDecks(Base, Revision, Names);
-    if Expand then
-    begin
-      Prefix := PrefixArgument(Context.Command);
-      Expander := TDeckExpander.Create(LibraryFile, Context.Database, Revision, Version, Prefix);
-      Expander.IncludeCopyDependents(Names);
-    end;
-    ChangesPending := Names.Count > 0;
+    Context.LibraryFile.ChangedDecks(0, Revision, Names);
     for Index := Names.Count - 1 downto 0 do
-      if not LibraryFile.TryDeckSnapshot(Names[Index], Revision, Snapshot) then
+      if not Context.LibraryFile.TryDeckSnapshot(Names[Index], Revision, Snapshot) then
         Names.Delete(Index);
-    Destinations := TStringList.Create;
-    for Name in Names do
-      if Expand then
-        Destinations.Add(OutputPath(Context, IncludeTrailingPathDelimiter(Directory) + Name))
-      else
-        Destinations.Add(OutputPath(Context, IncludeTrailingPathDelimiter(Directory) + Name + '.scu'));
+    Manifest := TExportManifest.Create(Directory);
+    Manifest.Recover;
+    ExpansionUTC := UtcTimestamp(UtcNow);
     SetLength(Written, Names.Count);
     for Index := 0 to Names.Count - 1 do
     begin
-      Mode := 'extract';
-      ExpansionUTC := '';
-      if Assigned(Expander) then
-      begin
-        Bytes := Expander.Expand(Names[Index]);
-        ExportedVersion := Expander.RootDeckVersion;
-        ExpansionUTC := Expander.ExpansionUTC;
-        Mode := 'expand';
-      end
-      else
-      begin
-        Source := LibraryFile.Extract(Context.Database, Names[Index], Revision);
-        Bytes := Source.Bytes;
-        ExportedVersion := Source.DeckVersion;
-      end;
-      CheckSessionInterrupt;
-      Manifest.WriteExport(Context.LibraryPath, Destinations[Index], Names[Index], Version,
-        ExportedVersion, Mode, ExpansionUTC, PrefixArgument(Context.Command), Bytes);
+      Selection := Default(TDeckSelection);
+      Selection.Snapshot := Context.Snapshots.Selected;
+      if Expand then Kind := emExpand else Kind := emExtract;
+      Rendered := RenderDeck(Context.LibraryFile, Context.Database, Names[Index], Selection, Kind, ExpansionUTC);
+      Manifest.PlanExport(Context.LibraryPath, OutputPath(Context, IncludeTrailingPathDelimiter(Directory) + Names[Index]),
+        Names[Index], Version, Rendered.DeckVersion, Kind, Rendered.ExpansionUTC, '', Rendered.Bytes,
+        BooleanArgument(Context.Command, 'replace', 'no'));
       Written[Index].Name := Names[Index];
-      Written[Index].DeckVersion := ExportedVersion;
+      Written[Index].DeckVersion := Rendered.DeckVersion;
     end;
-    if Length(Written) > 0 then
-      WriteDeckList(Written, Context.Output);
-    if Expand and (ChangesPending or BuildPending) then
-    begin
-      ScheduleBuild(Context, Directory);
-      if Context.Build.Command <> '' then
-      begin
-        Context.Build.Checkpoint := Context.Snapshots.Selected;
-        Context.Build.CommentPrefix := Prefix;
-      end
-      else if ChangesPending and (LibraryFile.BuildCommand = '') then
-        Context.Database.Checkpoints.SaveExpansionCheckpoint(Version, Directory, Prefix, Revision, True);
-    end;
+    DeletedCount := 0;
+    if Expand then DeletedCount := PlanReleaseCleanup(Context, Directory, Version, Names, Manifest);
+    Manifest.Publish;
+    Context.FilesPublished := (Names.Count > 0) or (DeletedCount > 0);
+    if Names.Count > 0 then WriteDeckList(Written, Context.Output);
+    if not Expand then ScheduleBuild(Context, Directory);
     Result := Format('Wrote %d deck(s) for version %s', [Names.Count, Version]);
+    if DeletedCount > 0 then Result := Result + Format('; removed %d obsolete file(s).', [DeletedCount]);
   finally
     Manifest.Free;
-    Expander.Free;
-    Destinations.Free;
     Names.Free;
   end;
 end;
 
-function ExtractModifiedDecks(var Context: TCommandContext): string;
+function ExtractVersion(var Context: TCommandContext): string;
 begin
-  Result := TransferModifiedDecks(Context, False);
+  Result := TransferVersion(Context, False);
 end;
 
-function ExpandVersion(var Context: TCommandContext): string;
+function ReleaseVersion(var Context: TCommandContext): string;
 begin
-  Result := TransferModifiedDecks(Context, True);
-end;
-
-function FormatExpansionCheckpoint(const Row: TExpansionCheckpoint): string;
-var
-  BuiltRevision, BuiltUTC, Status: string;
-begin
-  BuiltRevision := 'None';
-  if Row.HasBuiltRevision then
-    BuiltRevision := IntToStr(Row.BuiltRevision);
-  BuiltUTC := 'None';
-  if Row.HasBuildTime then
-    BuiltUTC := Row.BuiltUTC;
-  if Row.FullRebuildPending then
-    Status := 'Full rebuild pending'
-  else
-    Status := 'Incremental';
-  Result := Row.Version + #9 + StringToJSONString(Row.OutputDirectory) + #9 + BuiltRevision +
-    #9 + Status + #9 + BuiltUTC + #9 + IntToStr(Row.Revision);
-end;
-
-function DisplayExpansionCheckpoints(var Context: TCommandContext): string;
-var
-  Rows: TExpansionCheckpoints;
-  Row: TExpansionCheckpoint;
-  Table: TScuTable;
-begin
-  Rows := Context.Database.Checkpoints.ReadExpansionCheckpoints;
-  if Length(Rows) = 0 then
-    Exit('No expansion checkpoints.');
-  Table := TScuTable.Create(['Version', 'Output directory', 'Last built library revision',
-    'Status', 'Last successful build (UTC)', 'Checkpoint library revision']);
-  try
-    for Row in Rows do
-      Table.AddDelimitedRow(FormatExpansionCheckpoint(Row));
-    Table.WriteTo(Context.Output, TerminalColumns(StdOutputHandle));
-  finally
-    Table.Free;
-  end;
-  Result := '';
-end;
-
-function ResetExpansionCheckpoint(var Context: TCommandContext): string;
-var
-  Version: string;
-  Snapshot: TLibrarySnapshot;
-begin
-  Snapshot := Context.LibraryFile.ParseLibrarySnapshot(Context.Command['version']);
-  Context.Snapshots.Selected := Snapshot;
-  Version := Snapshot.Version;
-  if Context.Database.Checkpoints.ResetExpansionCheckpoint(Version, Context.OutputDirectory) then
-    Result := Format('Reset expansion checkpoint for version %s in "%s".', [Version, Context.OutputDirectory])
-  else
-    Result := Format('No expansion checkpoint for version %s in "%s".', [Version, Context.OutputDirectory]);
+  Result := TransferVersion(Context, True);
 end;
 
 end.

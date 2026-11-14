@@ -22,6 +22,7 @@ procedure CheckSessionInterrupt;
 function SessionEnding: Boolean;
 // Editors in SCU's process group receive terminal Ctrl+C directly.
 procedure SetChildHandlesInterrupt(Value: Boolean);
+function ConsumeChildInterrupt: Boolean;
 
 implementation
 
@@ -31,6 +32,13 @@ uses
 var
   SessionSignal: cint;
   ChildOwnsInterrupt: Boolean;
+  ChildInterrupted: Boolean;
+
+function ConsumeChildInterrupt: Boolean;
+begin
+  Result := ChildInterrupted;
+  ChildInterrupted := False;
+end;
 
 procedure SetChildHandlesInterrupt(Value: Boolean);
 begin
@@ -85,7 +93,9 @@ end;
 
 procedure HandleSessionSignal(Signal: cint; Info: PSigInfo; Context: PSigContext); cdecl;
 begin
-  if (Signal <> SIGINT) or not ChildOwnsInterrupt then
+  if (Signal = SIGINT) and ChildOwnsInterrupt then
+    ChildInterrupted := True
+  else
     NoteSessionSignal(Signal);
 end;
 

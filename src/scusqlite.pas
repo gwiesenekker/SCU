@@ -30,7 +30,7 @@ type
 implementation
 
 uses
-  ScuSQLiteSchema;
+  SysUtils, ScuFiles, ScuSQLiteSchema;
 
 class function TSQLiteLibrary.OpenRead(const LibraryPath: string): TSQLiteLibrary;
 begin
@@ -53,7 +53,11 @@ var
 begin
   Result := TSQLiteLibrary.Create;
   try
-    Result.OpenConnection(LibraryPath, Mode = omRead, Mode = omInitialize);
+    // A physically writable, logically read-only connection lets SQLite
+    // recover a hot journal without taking a second writer transaction. It
+    // also remains compatible with a live writer's ordinary rollback journal.
+    Result.OpenConnection(LibraryPath, Mode = omRead, Mode = omInitialize, Mode = omRead);
+    if Mode = omRead then Result.Execute('PRAGMA query_only = ON');
     Result.BeginTransaction;
     SchemaVersion := EnsureLibrarySchema(Result, Mode = omInitialize);
     Result.FRevisions := TSQLiteRevisionStore.Create(Result, SchemaVersion);

@@ -24,7 +24,7 @@ function ShowHistory(var Context: TCommandContext): string;
 implementation
 
 uses
-  Classes, SysUtils, FPJSON, ScuAudit, ScuCommands, ScuErrors, ScuJSON, ScuLibrary, ScuOutput, ScuSignals, ScuVersions, ScuLibraryDisplay, ScuTable, ScuTerminal;
+  ScuExportPaths, Classes, SysUtils, FPJSON, ScuAudit, ScuCommands, ScuErrors, ScuJSON, ScuLibrary, ScuOutput, ScuSignals, ScuVersions, ScuLibraryDisplay, ScuTable, ScuTerminal;
 
 function InitializeLibrary(var Context: TCommandContext): string;
 begin
@@ -66,7 +66,7 @@ begin
     if Context.LibraryFile.TryPreviousSnapshot(Previous) then
       PreviousVersion := Previous.Version;
     Configuration.Strings['previous_locked_version'] := PreviousVersion;
-    WriteLibraryConfiguration(Configuration, Context.Output, TerminalColumns(StdOutputHandle));
+    WriteLibraryConfiguration(Configuration, Context.Output, Context.Output.Columns);
   finally
     Configuration.Free;
   end;
@@ -85,6 +85,10 @@ var
 begin
   Settings.ChangePrefix := Context.Command.HasArgument('comment-prefix');
   Settings.ChangeBuild := Context.Command.HasArgument('build_command');
+  Settings.ChangeReleaseDirectory := Context.Command.HasArgument('release_directory');
+  Settings.ReleaseDirectory := Context.Command.Argument('release_directory');
+  if Settings.ChangeReleaseDirectory then
+    ResolveReleaseDirectory(Context.LibraryPath, Settings.ReleaseDirectory);
   Settings.VersionIncrement := Context.Command.Argument('version_increment');
   Settings.RevisionIncrement := Context.Command.Argument('revision_increment');
   if (Context.Command.HasArgument('version_increment') and (Settings.VersionIncrement = '')) or
@@ -98,7 +102,7 @@ begin
       if not (Editor is TJSONArray) then
         raise EScuError.Create('Invalid value for --editor: The editor must be a JSON array of strings.');
     end;
-    if not Settings.ChangePrefix and not Settings.ChangeBuild and (Editor = nil) and
+    if not Settings.ChangePrefix and not Settings.ChangeBuild and not Settings.ChangeReleaseDirectory and (Editor = nil) and
       (Settings.VersionIncrement = '') and (Settings.RevisionIncrement = '') then
       raise EScuError.Create('Specify at least one library setting.');
     Settings.Prefix := PrefixArgument(Context.Command);
@@ -197,7 +201,7 @@ begin
     Context.LibraryFile.ListVersions(Rows);
     for Row in Rows do
       Table.AddDelimitedRow(Row);
-    Table.WriteTo(Context.Output, TerminalColumns(StdOutputHandle));
+    Table.WriteTo(Context.Output, Context.Output.Columns);
   finally
     Table.Free;
     Rows.Free;
@@ -210,10 +214,10 @@ type
   public
     Table: TScuTable;
     destructor Destroy; override;
-    procedure WriteLine(const Attempt, Outcome: RawByteString);
+    procedure WriteLine(const Attempt, Outcome, BuildOutcome: RawByteString);
   end;
 
-function HistoryStatus(const Outcome: RawByteString): string;
+function HistoryStatus(const Outcome, BuildOutcome: RawByteString): string;
 var
   Event: TJSONObject;
 begin
@@ -228,6 +232,14 @@ begin
     if Event.Get('pending_save', False) then
       Exit('pending save');
     Result := 'succeeded';
+    if BuildOutcome <> '' then
+    begin
+      Event.Free;
+      Event := nil;
+      Event := ParseObject(BuildOutcome, 'Audit build outcome');
+      if not Field(Event, 'success', jtBoolean, 'Audit build outcome').AsBoolean then
+        Result := 'build failed';
+    end;
   finally
     Event.Free;
   end;
@@ -239,10 +251,10 @@ begin
   inherited Destroy;
 end;
 
-procedure THistoryWriter.WriteLine(const Attempt, Outcome: RawByteString);
+procedure THistoryWriter.WriteLine(const Attempt, Outcome, BuildOutcome: RawByteString);
 begin
   CheckSessionInterrupt;
-  Table.AddRow([FormatAuditCommand(Attempt), HistoryStatus(Outcome)]);
+  Table.AddRow([FormatAuditCommand(Attempt), HistoryStatus(Outcome, BuildOutcome)]);
 end;
 
 function ShowHistory(var Context: TCommandContext): string;
@@ -255,8 +267,9 @@ begin
   Writer := THistoryWriter.Create;
   try
     Writer.Table := TScuTable.Create(['Command', 'Status']);
+    Writer.Table.WrapWords := True;
     Context.Database.Audit.ReadCommandHistory(Limit, @Writer.WriteLine);
-    Writer.Table.WriteTo(Context.Output, TerminalColumns(StdOutputHandle));
+    Writer.Table.WriteTo(Context.Output, Context.Output.Columns);
   finally
     Writer.Free;
   end;

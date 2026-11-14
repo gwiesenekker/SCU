@@ -253,7 +253,7 @@ def import_snapshots(snapshots, names, archive, output, executable, prefix, time
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("archive", type=Path, help="SCU directory containing versions and HISTORY")
-    parser.add_argument("library", type=Path, help="New SQLite library to create (must not exist)")
+    parser.add_argument("library", type=Path, help="New .sqlite library to create (extension added if omitted; must not exist)")
     parser.add_argument("--scu", type=Path, default=Path(__file__).resolve().parents[1] / "build/scu")
     parser.add_argument("--dry-run", action="store_true", help="Validate and list the import without writing")
     parser.add_argument("--strict-history", action="store_true", help="Reject missing HISTORY entries")
@@ -264,6 +264,11 @@ def main():
     try:
         archive = args.archive.resolve(strict=True)
         output = args.library.absolute()
+        extension = output.name[output.name.rfind("."):] if "." in output.name else ""
+        if not extension:
+            output = output.with_name(output.name + ".sqlite")
+        elif extension.lower() != ".sqlite":
+            raise ImportFailure("Library filename must have the .sqlite extension")
         require_new_destination(output)
         if not output.parent.is_dir():
             raise ImportFailure(f"Destination directory does not exist: {output.parent}")

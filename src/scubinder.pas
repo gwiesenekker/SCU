@@ -27,6 +27,7 @@ type
     function GetCount: Integer;
     function GetSupplied(Slot: Integer): Boolean;
     function GetValue(Slot: Integer): string;
+    function ArgumentSuggestion(const Name: string): string;
     procedure CheckDuplicate(Slot: Integer);
   public
     constructor Create(Spec: TCommandDefinition; Mode: TBindingMode);
@@ -51,7 +52,46 @@ type
 implementation
 
 uses
-  ScuErrors;
+  SysUtils, ScuErrors;
+
+function NameDistance(const Left, Right: string): Integer;
+var Previous, Current: array of Integer;
+  I, J, Cost: Integer;
+begin
+  if Abs(Length(Left) - Length(Right)) > 2 then Exit(3);
+  SetLength(Previous, Length(Right) + 1);
+  SetLength(Current, Length(Right) + 1);
+  for J := 0 to Length(Right) do Previous[J] := J;
+  for I := 1 to Length(Left) do
+  begin
+    Current[0] := I;
+    for J := 1 to Length(Right) do
+    begin
+      Cost := Ord(LowerCase(Left[I]) <> LowerCase(Right[J]));
+      Current[J] := Previous[J] + 1;
+      if Current[J - 1] + 1 < Current[J] then Current[J] := Current[J - 1] + 1;
+      if Previous[J - 1] + Cost < Current[J] then Current[J] := Previous[J - 1] + Cost;
+    end;
+    Previous := Copy(Current);
+  end;
+  Result := Previous[Length(Right)];
+end;
+
+function TCommandBinder.ArgumentSuggestion(const Name: string): string;
+var Index, Distance, Best: Integer;
+begin
+  Result := '';
+  Best := 3;
+  for Index := 0 to FArguments.Count - 1 do
+  begin
+    Distance := NameDistance(Name, FArguments[Index].Name);
+    if Distance < Best then
+    begin
+      Result := FArguments[Index].Name;
+      Best := Distance;
+    end;
+  end;
+end;
 
 constructor TCommandBinder.Create(Spec: TCommandDefinition; Mode: TBindingMode);
 begin
@@ -154,7 +194,9 @@ end;
 
 procedure TCommandBinder.Feed(const Token: string);
 var
-  Slot, EqualsAt: Integer;
+  Slot, EqualsAt, Index: Integer;
+  Key, Suggestion, Message: string;
+  LooksNamed: Boolean;
 begin
   if FPendingSlot >= 0 then
   begin
@@ -190,6 +232,21 @@ begin
   end
   else
   begin
+    EqualsAt := Pos('=', Token);
+    LooksNamed := not FPositionalOnly and (EqualsAt > 1);
+    if LooksNamed then
+      for Index := 1 to EqualsAt - 1 do
+        if not (Token[Index] in ['a'..'z', 'A'..'Z', '0'..'9', '_', '-']) then LooksNamed := False;
+    if LooksNamed and (FMode = bmExecution) then
+    begin
+      Key := Copy(Token, 1, EqualsAt - 1);
+      Message := 'Unknown argument ' + Key + ' for ' + FName + '.';
+      Suggestion := ArgumentSuggestion(Key);
+      if Suggestion <> '' then Message := Message + ' Did you mean ' + Suggestion + '?';
+      if FName = 'quit_session' then
+        Message := Message + ' Changes are saved automatically; quitting cannot discard them.';
+      raise EScuError.Create(Message);
+    end;
     Slot := NextPositional;
     if Slot >= 0 then
       Bind(Slot, Token, True)

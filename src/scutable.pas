@@ -16,6 +16,7 @@ type
     FRows: array of TStringArray;
     FWidths: TColumnWidths;
     FFlexibleColumn: SizeInt;
+    FWrapWords: Boolean;
     function FitWidths(Columns: SizeInt): TColumnWidths;
     procedure WriteRow(Sink: TScuOutput; const Cells: TStringArray; const Widths: TColumnWidths);
     procedure WriteStacked(Sink: TScuOutput; Columns: SizeInt);
@@ -23,7 +24,8 @@ type
     constructor Create(const Headers: array of string; FlexibleColumn: SizeInt = -1);
     procedure AddRow(const Cells: array of string);
     procedure AddDelimitedRow(const Row: string);
-    procedure WriteTo(Sink: TScuOutput; Columns: SizeInt = 0);
+    procedure WriteTo(Sink: TScuOutput; Columns: SizeInt = -1);
+    property WrapWords: Boolean read FWrapWords write FWrapWords;
   end;
 
 implementation
@@ -114,9 +116,9 @@ begin
 end;
 
 // Hard-wrap without dropping spaces or splitting a UTF-8 character.
-function SplitCell(const Text: string; Width: SizeInt): TStringArray;
+function SplitCell(const Text: string; Width: SizeInt; Words: Boolean = False): TStringArray;
 var
-  Start, Ending, Next, Used, Cells: SizeInt;
+  Start, Ending, Next, Used, Cells, LastSpace: SizeInt;
 begin
   Result := nil;
   Start := 0;
@@ -124,18 +126,22 @@ begin
     CheckSessionInterrupt;
     Ending := Start;
     Used := 0;
+    LastSpace := -1;
     while Ending < Length(Text) do
     begin
       Next := NextCharacter(Text, Ending);
       Cells := CellWidth(Text, Ending, Next);
       if (Width > 0) and (Used + Cells > Width) and (Ending > Start) then
         Break;
+      if (Text[Ending + 1] = ' ') and (Ending > Start) then LastSpace := Ending;
       Inc(Used, Cells);
       Ending := Next;
     end;
+    if Words and (Ending < Length(Text)) and (LastSpace > Start) then Ending := LastSpace;
     SetLength(Result, Length(Result) + 1);
     Result[High(Result)] := Copy(Text, Start + 1, Ending - Start);
     Start := Ending;
+    if Words and (Start < Length(Text)) and (Text[Start + 1] = ' ') then Inc(Start);
   until Start >= Length(Text);
 end;
 
@@ -149,7 +155,7 @@ begin
   Height := 1;
   for Column := 0 to High(Cells) do
   begin
-    Parts[Column] := SplitCell(Cells[Column], Widths[Column]);
+    Parts[Column] := SplitCell(Cells[Column], Widths[Column], FWrapWords);
     if Length(Parts[Column]) > Height then
       Height := Length(Parts[Column]);
   end;
@@ -209,6 +215,7 @@ var
   Widths: TColumnWidths;
   MinimumWidth, Column: SizeInt;
 begin
+  if Columns < 0 then Columns := Sink.Columns;
   if (Columns > 0) and (FFlexibleColumn >= 0) then
   begin
     MinimumWidth := 1 + 2 * (Length(FWidths) - 1);

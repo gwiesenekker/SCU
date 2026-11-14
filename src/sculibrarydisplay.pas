@@ -120,7 +120,7 @@ begin
       CheckSessionInterrupt;
       Table.AddRow([Row.Version, Row.Status, Row.LockedUTC, Row.Description]);
     end;
-    Table.WriteTo(Sink, TerminalColumns(StdOutputHandle));
+    Table.WriteTo(Sink, Sink.Columns);
   finally
     Table.Free;
   end;
@@ -138,7 +138,7 @@ begin
       CheckSessionInterrupt;
       Table.AddRow([DisplayText(Row.Name), Row.DeckVersion]);
     end;
-    Table.WriteTo(Sink, TerminalColumns(StdOutputHandle));
+    Table.WriteTo(Sink, Sink.Columns);
   finally
     Table.Free;
   end;
@@ -160,7 +160,7 @@ begin
         Status := 'deleted';
       Table.AddRow([DisplayText(Row.Name), Row.DeckVersion, Row.ModifiedUTC, Status]);
     end;
-    Table.WriteTo(Sink, TerminalColumns(StdOutputHandle));
+    Table.WriteTo(Sink, Sink.Columns);
   finally
     Table.Free;
   end;
@@ -182,7 +182,7 @@ begin
         Status := 'deleted';
       Table.AddRow([Row.DeckVersion, Row.ModifiedUTC, Status]);
     end;
-    Table.WriteTo(Sink, TerminalColumns(StdOutputHandle));
+    Table.WriteTo(Sink, Sink.Columns);
   finally
     Table.Free;
   end;

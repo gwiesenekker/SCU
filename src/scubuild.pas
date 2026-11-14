@@ -63,7 +63,9 @@ begin
       raise EScuError.Create('Nested SCU builds are disabled. Use build=no in the build command.');
     Child := TBuildProcess.Create(OutputLock, Interactive);
     try
+      Child.Environment.Values['SCU_BUILD_LIBRARY'] := Build.LibraryPath;
       Child.Executable := '/bin/sh';
+      Child.CurrentDirectory := Build.WorkingDirectory;
       Child.Parameters.Add('-c');
       Child.Parameters.Add('exec </dev/null' + LineEnding + Build.Command);
       Child.Parameters.Add('scu-build');

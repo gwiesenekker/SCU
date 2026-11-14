@@ -27,7 +27,6 @@ begin
     'display_deck': Result.Run := @DisplayDeck;
     'display_deck_list': Result.Run := @DisplayDeckList;
     'display_version_history': Result.Run := @DisplayVersionHistory;
-    'display_expansion_checkpoints': Result.Run := @DisplayExpansionCheckpoints;
     'display_library':
       begin
         Result.Run := @DisplayLibrary;
@@ -35,17 +34,10 @@ begin
       end;
     'edit_deck': Result.Run := @EditDeckCommand;
     'edit_file_patterns': Result.Run := @EditFilePatterns;
-    'expand_deck':
+    'release_version':
       begin
-        Result.Run := @ExpandDeck;
-        Result.ResolveOutputDirectory := @SingleDeckDirectory;
-        Result.ReuseBuildLock := True;
-      end;
-    'expand_version':
-      begin
-        Result.Run := @ExpandVersion;
+        Result.Run := @ReleaseVersion;
         Result.ResolveOutputDirectory := @BulkExpansionDirectory;
-        Result.Prepare := @PrepareBulkExpansion;
       end;
     'extract_deck':
       begin
@@ -53,9 +45,9 @@ begin
         Result.ResolveOutputDirectory := @SingleDeckDirectory;
         Result.ReuseBuildLock := True;
       end;
-    'extract_modified_decks':
+    'extract_version':
       begin
-        Result.Run := @ExtractModifiedDecks;
+        Result.Run := @ExtractVersion;
         Result.ResolveOutputDirectory := @BulkExpansionDirectory;
         Result.ReuseBuildLock := True;
       end;
@@ -71,11 +63,6 @@ begin
       begin
         Result.Mode := cmRecover;
         Result.Run := @SaveRecoveredLibrary;
-      end;
-    'reset_expansion_checkpoint':
-      begin
-        Result.Run := @ResetExpansionCheckpoint;
-        Result.ResolveOutputDirectory := @CheckpointDirectory;
       end;
     'save_library', 'quit_session':
       begin

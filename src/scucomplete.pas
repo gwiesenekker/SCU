@@ -281,13 +281,13 @@ begin
     Exit;
   end;
   if (Kind = ckVersion) and
-    ((Context.CommandName = 'expand_version') or (Context.CommandName = 'extract_deck') or
+    ((Context.CommandName = 'release_version') or (Context.CommandName = 'extract_deck') or
      (Context.CommandName = 'expand_deck')) then
     if (Context.Revision = '') or (Values.IndexOf(LibraryFile.CurrentVersion) >= 0) then
       AddLibraryValue(CurrentVersionSelector);
   if Kind = ckLibraryVersion then
   begin
-    if Context.CommandName = 'expand_version' then
+    if Context.CommandName = 'release_version' then
       AddLibraryValue(LatestVersionSelector);
     AddLibraryValue(CurrentVersionSelector);
     if LibraryFile.TryPreviousSnapshot(Previous) then
