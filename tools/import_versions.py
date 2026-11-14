@@ -181,9 +181,12 @@ def stage_files(snapshot, names, inputs, previous_files):
         after = file.path.stat()
         if len(data) != file.size or after.st_mtime_ns != file.modified_ns:
             raise ImportFailure(f"Source changed while reading: {file.path}")
-        source = inputs / str(index)
-        source.write_bytes(data)
         deck = names[file.relative]
+        # Preserve an actual root filename as the deck's source association.
+        # Flattened subdirectories and reserved manifest names use their mapped ID.
+        filename = file.relative if "/" not in file.relative and "\\" not in file.relative and file.relative != MANIFEST else deck
+        source = inputs / filename
+        source.write_bytes(data)
         current_files[deck] = source
         rows.append({"path": file.relative, "deck_name": deck,
                      "size": len(data), "sha1": hashlib.sha1(data).hexdigest()})
@@ -203,7 +206,7 @@ def require_new_destination(output):
 def import_snapshots(snapshots, names, archive, output, executable, prefix, timeout):
     with tempfile.TemporaryDirectory(prefix=".scu-import-", dir=output.parent) as temporary:
         staging = Path(temporary)
-        library = staging / "library.sqlite"
+        library = staging / ".scu-archive.sqlite"
         inputs = staging
         runner = Runner(executable, library, timeout)
         runner.run("initialize_library", "version=" + snapshots[0].version)
@@ -218,7 +221,7 @@ def import_snapshots(snapshots, names, archive, output, executable, prefix, time
             commands[:0] = [f"delete_deck deck_name={scu_quote(deck)}" for deck in removed]
             if index:
                 commands.insert(0, "create_version version=" + snapshot.version)
-            manifest = inputs / "manifest.json"
+            manifest = inputs / MANIFEST
             manifest.write_text(json.dumps({
                 "format": 1, "source_archive": str(archive), "version": snapshot.version,
                 "history": snapshot.history, "missing_history_description": snapshot.missing_description,

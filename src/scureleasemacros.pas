@@ -1,37 +1,32 @@
-unit ScuExpand;
+unit ScuReleaseMacros;
 
 {$mode objfpc}{$H+}
 
 interface
 
 uses
-  Classes, ScuLibrary, ScuSQLite;
+  Classes, ScuLibrary;
 
 type
-  TDeckExpander = class
-  private
-    FLibrary: TDeckLibrary;
-    FDatabase: TSQLiteLibrary;
-    FRevision, FRootRevision: Integer;
-    FVersion, FExpansionUTC, FRootDeckVersion: string;
+  TReleaseMacros = class
+  strict private
+    FVersion: string;
     FOutput: TMemoryStream;
+    FLegacyCopy: Boolean;
     procedure Append(const Data: RawByteString);
     procedure AppendSlice(const Data: RawByteString; Index, Count: SizeInt);
-    procedure ExpandInto(const Deck: string);
     procedure ExpandMacros(const Line: RawByteString; LineStart, LineEnd: SizeInt; const Stored: TDeckSource);
   public
-    constructor Create(ALibrary: TDeckLibrary; Database: TSQLiteLibrary; ARevision: Integer; const Version: string;
-      const ExpansionUTC: string = '');
+    constructor Create(const Version: string);
     destructor Destroy; override;
-    function Expand(const Deck: string; RootRevision: Integer = 0): RawByteString;
-    property RootDeckVersion: string read FRootDeckVersion;
-    property ExpansionUTC: string read FExpansionUTC;
+    function Expand(const Source: TDeckSource): RawByteString;
+    property LegacyCopy: Boolean read FLegacyCopy;
   end;
 
 implementation
 
 uses
-  SysUtils, ScuClock, ScuErrors, ScuSignals, ScuDirectives;
+  ScuErrors, ScuSignals, ScuDirectives;
 
 type
   TMacro = (NoMacro, ModifiedDate, ModifiedTime, ModifiedDateTime, DeckVersion, LibraryVersion);
@@ -52,9 +47,6 @@ begin
     'S':
       if (Line[Index + 1] <> 'C') or (Line[Index + 2] <> 'U') or (Line[Index + 3] <> '$') then
         Exit(NoMacro);
-    '$':
-      if (Line[Index + 1] <> 'S') or (Line[Index + 2] <> 'C') or (Line[Index + 3] <> 'U') then
-        Exit(NoMacro);
     else Exit(NoMacro);
   end;
   for Candidate := Low(MacroNames) to High(MacroNames) do
@@ -66,32 +58,25 @@ begin
   Result := NoMacro;
 end;
 
-constructor TDeckExpander.Create(ALibrary: TDeckLibrary; Database: TSQLiteLibrary; ARevision: Integer; const Version: string;
-  const ExpansionUTC: string);
+constructor TReleaseMacros.Create(const Version: string);
 begin
   inherited Create;
-  FLibrary := ALibrary;
-  FDatabase := Database;
-  FRevision := ARevision;
   FVersion := Version;
-  FExpansionUTC := ExpansionUTC;
-  if FExpansionUTC = '' then
-    FExpansionUTC := UtcTimestamp(UtcNow);
   FOutput := TMemoryStream.Create;
 end;
 
-destructor TDeckExpander.Destroy;
+destructor TReleaseMacros.Destroy;
 begin
   FOutput.Free;
   inherited Destroy;
 end;
 
-procedure TDeckExpander.Append(const Data: RawByteString);
+procedure TReleaseMacros.Append(const Data: RawByteString);
 begin
   AppendSlice(Data, 1, Length(Data));
 end;
 
-procedure TDeckExpander.AppendSlice(const Data: RawByteString; Index, Count: SizeInt);
+procedure TReleaseMacros.AppendSlice(const Data: RawByteString; Index, Count: SizeInt);
 begin
   if FOutput.Size + Count > MaxExpansionSize then
     raise EScuError.Create('Expanded deck exceeds the 64 MiB output limit.');
@@ -99,7 +84,7 @@ begin
     FOutput.WriteBuffer(Data[Index], Count);
 end;
 
-procedure TDeckExpander.ExpandMacros(const Line: RawByteString; LineStart, LineEnd: SizeInt; const Stored: TDeckSource);
+procedure TReleaseMacros.ExpandMacros(const Line: RawByteString; LineStart, LineEnd: SizeInt; const Stored: TDeckSource);
 var
   Index, FromIndex, TokenLength: SizeInt;
   Macro: TMacro;
@@ -108,7 +93,7 @@ begin
   FromIndex := Index;
   while Index <= LineEnd do
   begin
-    while (Index <= LineEnd) and not (Line[Index] in ['S', '$']) do
+    while (Index <= LineEnd) and (Line[Index] <> 'S') do
       Inc(Index);
     if Index > LineEnd then
       Break;
@@ -132,43 +117,28 @@ begin
   AppendSlice(Line, FromIndex, LineEnd - FromIndex + 1);
 end;
 
-procedure TDeckExpander.ExpandInto(const Deck: string);
+function TReleaseMacros.Expand(const Source: TDeckSource): RawByteString;
 var
-  Name: string;
-  Source: RawByteString;
-  Stored: TDeckSource;
-  Index, LineStart, EndingStart, LineNo: SizeInt;
+  Index, LineStart, EndingStart, LineNo, Directive, First: SizeInt;
 begin
-  CheckSessionInterrupt;
-  Name := DeckName(Deck);
-  if FRootRevision > 0 then
-    Stored := FLibrary.Extract(FDatabase, Name, FRootRevision, FVersion)
-  else
-    Stored := FLibrary.Extract(FDatabase, Name, FRevision, FVersion);
-  FRootDeckVersion := Stored.DeckVersion;
-  Source := Stored.Bytes;
+  FOutput.Clear;
+  FLegacyCopy := False;
   Index := 1;
   LineNo := 0;
-  while Index <= Length(Source) do
+  while Index <= Length(Source.Bytes) do
   begin
     if (LineNo and 255) = 0 then CheckSessionInterrupt;
     Inc(LineNo);
     LineStart := Index;
-    ReadSourceLine(Source, Index, EndingStart);
-    ExpandMacros(Source, LineStart, EndingStart - 1, Stored);
-    AppendSlice(Source, EndingStart, Index - EndingStart);
+    ReadSourceLine(Source.Bytes, Index, EndingStart);
+    Directive := DirectiveStart(Source.Bytes, Source.CommentPrefix, LineStart, EndingStart - 1, First);
+    if (Directive <> 0) and (HasToken(Source.Bytes, Directive, EndingStart - 1, 'SCU_COPY') or
+      HasToken(Source.Bytes, Directive, EndingStart - 1, 'SCU$COPY')) then FLegacyCopy := True;
+    ExpandMacros(Source.Bytes, LineStart, EndingStart - 1, Source);
+    AppendSlice(Source.Bytes, EndingStart, Index - EndingStart);
   end;
-end;
-
-function TDeckExpander.Expand(const Deck: string; RootRevision: Integer): RawByteString;
-begin
-  FOutput.Clear;
-  FRootDeckVersion := '';
-  FRootRevision := RootRevision;
-  ExpandInto(Deck);
   SetLength(Result, FOutput.Size);
-  if Result <> '' then
-    Move(FOutput.Memory^, Result[1], Length(Result));
+  if Result <> '' then Move(FOutput.Memory^, Result[1], Length(Result));
 end;
 
 end.

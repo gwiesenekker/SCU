@@ -1,14 +1,23 @@
 unit ScuReleaseCleanup;
+
 {$mode objfpc}{$H+}
+
 interface
-uses Classes, ScuCommandHandler, ScuExportManifest;
+
+uses
+  Classes, ScuCommandHandler, ScuExportManifest;
+
 function PlanReleaseCleanup(const Context: TCommandContext; const Directory, Version: string;
-  Selected: TStrings; Manifest: TExportManifest): Integer;
+  Selected: TStrings; Manifest: TExportManifest; Removed, Preserved: TStrings): Integer;
 implementation
-uses SysUtils, BaseUnix, ScuFiles, ScuFileScan, ScuLibraryPaths, ScuErrors, ScuSignals;
+
+uses
+  SysUtils, BaseUnix, ScuFiles, ScuFileScan, ScuLibraryPaths, ScuErrors, ScuSignals;
+
 
 function MatchesPatterns(const Context: TCommandContext; const Name: string): Boolean;
-var Index: Integer;
+var
+  Index: Integer;
 begin
   for Index := 0 to Context.LibraryFile.FilePatternCount - 1 do
     if MatchesFilePattern(Context.LibraryFile.FilePatterns[Index], Name) then Exit(True);
@@ -16,7 +25,7 @@ begin
 end;
 
 function PlanReleaseCleanup(const Context: TCommandContext; const Directory, Version: string;
-  Selected: TStrings; Manifest: TExportManifest): Integer;
+  Selected: TStrings; Manifest: TExportManifest; Removed, Preserved: TStrings): Integer;
 var
   Search: TSearchRec;
   Names: TStringList;
@@ -62,8 +71,15 @@ begin
     for Name in Names do
     begin
       CheckSessionInterrupt;
+      if not Manifest.TracksFile(Context.LibraryPath, Name) and
+        not BooleanArgument(Context.Command, 'replace', 'no') then
+      begin
+        Preserved.Add(Name);
+        Continue;
+      end;
       Manifest.PlanDelete(Context.LibraryPath, IncludeTrailingPathDelimiter(Directory) + Name,
         Version, BooleanArgument(Context.Command, 'replace', 'no'));
+      Removed.Add(Name);
       Inc(Result);
     end;
   finally

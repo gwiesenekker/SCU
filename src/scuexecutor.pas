@@ -145,7 +145,11 @@ begin
       try
         Context.Database := TSQLiteLibrary.OpenForInitialization(TempFile);
         try
-          Context.LibraryFile := TDeckLibrary.CreateRecovered(Document);
+          try
+            Context.LibraryFile := TDeckLibrary.CreateRecovered(Document);
+          except
+            on E: EScuError do raise EScuError.Create('Recovery file "' + Context.Command['recovery_file'] + '": ' + E.Message);
+          end;
           try
             Audit := TAuditLog.Open(Context.Database);
             try
@@ -201,7 +205,7 @@ begin
     if not DirectoryExists(Context.OutputDirectory) then
       raise EScuError.CreateFmt('The output directory must already exist: "%s".', [Context.OutputDirectory]);
     Context.OutputDirectory := CanonicalDirectory(Context.OutputDirectory);
-    if Handler.ReuseBuildLock then
+    if Handler.OutputLockPolicy = olReuseBuild then
       Lock := TOutputDirectoryLock.CreateWithBuildLockReuse(Context.OutputDirectory)
     else
       Lock := TOutputDirectoryLock.Create(Context.OutputDirectory);
@@ -393,16 +397,6 @@ begin
       VerifyLibrary(Context, Audit, LibraryExists);
       Exit;
     end;
-    if Assigned(Handler.Prepare) and LibraryExists and
-      Handler.Prepare(Context) then
-    begin
-      // Files cannot roll back with SQLite. Commit checkpoint invalidation
-      // before the handler writes any output.
-      Context.Database.Commit;
-      Context.Database.BeginTransaction;
-      FreeAndNil(Audit);
-      Audit := TAuditLog.Open(Context.Database, Checkpoint);
-    end;
     Detail := RunAuditedOperation(Context, Handler, Audit, LibraryExists);
     CommitCommand(Context, Audit, Detail);
     Committed := True;
@@ -418,7 +412,7 @@ begin
     Context.Database.Free;
     Lock.Free;
   end;
-  if Context.Build.Command <> '' then
+  if (Context.Build.Command <> '') and not SessionEnding then
   begin
     FOutput.Flush;
     RunBuild(Context.Build, Expansion, OutputLock);

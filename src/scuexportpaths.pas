@@ -1,12 +1,18 @@
 unit ScuExportPaths;
+
 {$mode objfpc}{$H+}
+
 interface
+
 const ExportDirectorySelector = 'scu$release_directory';
 function ResolveReleaseDirectory(const LibraryPath, Directory: string): string;
 function DefaultExportDirectory(const LibraryPath: string): string;
 function EnsureExportDirectory(const LibraryPath: string): string;
 implementation
-uses SysUtils, BaseUnix, FPJSON, ScuJSON, ScuSQLite, ScuErrors, ScuFiles;
+
+uses
+  SysUtils, BaseUnix, FPJSON, ScuJSON, ScuSQLite, ScuErrors, ScuFiles;
+
 function DefaultExportDirectory(const LibraryPath: string): string;
 var
   Path, Directory: string;
@@ -35,7 +41,8 @@ begin
 end;
 
 function ResolveReleaseDirectory(const LibraryPath, Directory: string): string;
-var Value, Path: string;
+var
+  Value, Path: string;
 begin
   Path := CanonicalFile(LibraryPath);
   Value := Directory;
@@ -48,7 +55,8 @@ begin
     raise EScuError.Create('release_directory must be separate from the library working-source directory.');
 end;
 function EnsureExportDirectory(const LibraryPath: string): string;
-var Info: Stat;
+var
+  Info: Stat;
 begin
   if not RegularFileExists(LibraryPath) then
     raise EScuError.Create('Library "' + ExpandFileName(LibraryPath) + '" does not exist. Use initialize_library to create it.');

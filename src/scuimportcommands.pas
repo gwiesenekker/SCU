@@ -8,11 +8,13 @@ uses
   ScuCommandHandler;
 
 function ImportDeckCommand(var Context: TCommandContext): string;
+function WorkingDirectory(const Context: TCommandContext): string;
+procedure RefreshImportedFiles(const Context: TCommandContext);
 
 implementation
 
 uses
-  Classes, Contnrs, SysUtils, ScuCodec, ScuErrors, ScuFiles, ScuFileScan, ScuLibrary,
+  ScuWorkingExports, ScuExportTypes, Classes, Contnrs, SysUtils, ScuCodec, ScuErrors, ScuFiles, ScuFileScan, ScuLibrary,
   ScuExportManifest, ScuSignals, ScuTable, ScuTerminal;
 
 type
@@ -52,6 +54,8 @@ var
   Sequence: Integer;
   Existed: Boolean;
   Status: string;
+  Entry: TExportRecord;
+  Selection: TDeckSelection;
 begin
   CheckSessionInterrupt;
   if not Assigned(FExports) then
@@ -60,8 +64,17 @@ begin
     raise EScuError.Create('Refusing to import generated expansion "' + Path + '". Import the original source with COPY directives and macros instead.');
   Existed := Context.LibraryFile.TryDeckSnapshot(Deck, Context.LibraryFile.Revision, Snapshot);
   Bytes := ReadBytes(Path, MaxDeckSize, [rbNoFollow]);
-  Sequence := Context.LibraryFile.Store(Context.Database, Deck, Bytes, False,
+  Sequence := Context.LibraryFile.Store(Context.Database, Deck, Bytes, [],
     PrefixArgument(Context.Command), RelativePath);
+  Selection := Context.LibraryFile.SelectDeck(Deck, '', '');
+  Entry := Default(TExportRecord);
+  Entry.FileName := RelativePath;
+  Entry.Deck := Deck;
+  Entry.LibraryVersion := Selection.Snapshot.Version;
+  if Sequence = 0 then Entry.DeckVersion := Context.LibraryFile.Extract(Context.Database, Deck, Selection.Snapshot.LibraryRevision).DeckVersion
+  else Entry.DeckVersion := Context.LibraryFile.DeckVersion[Sequence];
+  Entry.SHA256 := AuditSHA256(Bytes);
+  QueueWorkingExport(Context.Database, Entry);
   if Sequence = 0 then
   begin
     Inc(FUnchanged);
@@ -83,8 +96,16 @@ end;
 procedure TDeckImporter.Deleted(var Context: TCommandContext; const Deck: string);
 var
   Sequence: Integer;
+  Entry: TExportRecord;
 begin
   CheckSessionInterrupt;
+  Entry := Default(TExportRecord);
+  Entry.FileName := Context.LibraryFile.DeckSourcePath(Context.Database, Deck);
+  Entry.Deck := Deck;
+  Entry.LibraryVersion := Context.LibraryFile.CurrentVersion;
+  Entry.DeckVersion := Context.LibraryFile.Extract(Context.Database, Deck, Context.LibraryFile.Revision).DeckVersion;
+  Entry.SHA256 := AuditSHA256('');
+  QueueWorkingExport(Context.Database, Entry, True);
   Sequence := Context.LibraryFile.Delete(Context.Database, Deck);
   FRows.Add(Deck + #9 + Context.LibraryFile.DeckVersion[Sequence] + #9 + 'deleted');
   Inc(FDeleted);
@@ -101,7 +122,7 @@ begin
     try
       for Row in FRows do
         Table.AddDelimitedRow(Row);
-      Table.WriteTo(Context.Output, TerminalColumns(StdOutputHandle));
+      Table.WriteTo(Context.Output, Context.Output.Columns);
     finally
       Table.Free;
     end;
@@ -168,6 +189,28 @@ begin
     Scan.Free;
     Owners.Free;
     Patterns.Free;
+  end;
+end;
+
+function WorkingDirectory(const Context: TCommandContext): string;
+begin
+  Result := ExtractFileDir(CanonicalFile(Context.LibraryPath));
+end;
+
+procedure RefreshImportedFiles(const Context: TCommandContext);
+begin
+  try
+    Context.Database.BeginTransaction;
+    RefreshWorkingExports(Context.Database, Context.LibraryPath);
+    Context.Database.Commit;
+  except
+    on E: ECommandCancelled do
+    begin
+      ClearInterrupt;
+      Context.Output.Report('Import was saved; its working-file manifest update remains pending.');
+    end;
+    on E: Exception do
+      raise EScuError.Create('Import was saved; its working-file manifest update remains pending: ' + E.Message);
   end;
 end;
 

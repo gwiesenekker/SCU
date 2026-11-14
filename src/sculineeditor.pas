@@ -26,6 +26,8 @@ const
   EscapeSequenceDelay = 1000;
 
 type
+  ECompletionResized = class(Exception);
+
   TCompletionState = (csIdle, csPending, csListed);
 
   TLineEditor = class
@@ -49,6 +51,7 @@ type
     function SearchHistory: Boolean;
     procedure ReadEscape(ApplyKey: Boolean = True; HistoryMatch: Integer = -1);
     procedure ShowCompletionCandidates(Candidates: TStrings);
+    procedure ShowCompletionPage(Candidates: TStrings);
     procedure Complete;
   public
     constructor Create(const Prompt: string; History: TStrings; Completion: TCommandCompletion;
@@ -121,6 +124,18 @@ begin
 end;
 
 procedure TLineEditor.ShowCompletionCandidates(Candidates: TStrings);
+begin
+  repeat
+    try
+      ShowCompletionPage(Candidates);
+      Exit;
+    except
+      on E: ECompletionResized do Write(StdErr, #13, CSI, '2K', LineEnding);
+    end;
+  until SessionEnding;
+end;
+
+procedure TLineEditor.ShowCompletionPage(Candidates: TStrings);
 const
   Gap = 2;
 var
@@ -289,7 +304,8 @@ begin
           end;
         end;
       TerminalResized:
-        if not FShowingCompletion then
+        if FShowingCompletion then raise ECompletionResized.Create('Completion resized')
+        else
         begin
           ChangePrompt(FPrompt);
           Redraw;

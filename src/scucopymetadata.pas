@@ -5,12 +5,11 @@ unit ScuCopyMetadata;
 interface
 
 uses
-  Classes, FPJSON, ScuSQLite;
+  Classes, FPJSON;
 
 // Compatibility only: validate metadata covered by historical audit digests.
 // New revision payloads and release publication never scan COPY directives.
 function ScanCopyMetadata(const Source: RawByteString; const Prefix: string): TJSONObject;
-procedure CacheCopyMetadata(Database: TSQLiteLibrary; Sequence: Integer; const Prefix: string; Targets: TStrings);
 
 implementation
 
@@ -48,18 +47,6 @@ begin
     Result := MakeCopyMetadata(Prefix, Targets);
   finally
     Targets.Free;
-  end;
-end;
-
-procedure CacheCopyMetadata(Database: TSQLiteLibrary; Sequence: Integer; const Prefix: string; Targets: TStrings);
-var
-  Metadata: TJSONObject;
-begin
-  Metadata := MakeCopyMetadata(Prefix, Targets);
-  try
-    Database.Revisions.CacheCopyMetadata(Sequence, Metadata.AsJSON);
-  finally
-    Metadata.Free;
   end;
 end;
 

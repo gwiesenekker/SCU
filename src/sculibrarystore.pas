@@ -150,15 +150,20 @@ begin
 end;
 
 procedure TLibraryStore.LoadHeader;
-var
-  LastDeck: string;
+var LastDeck, Context: string;
 begin
-  if IntegerField(FMetadata, 'format') <> 1 then
-    raise EScuError.Create('Unsupported library format.');
-  LastDeck := '';
-  if Count > 0 then
-    LastDeck := Entries[Count - 1].Name;
-  FHeader := TLibraryHeader.Create(TJSONObject(Field(FMetadata, 'header', jtObject)), Count, LastDeck);
+  Context := 'Recovered library header';
+  if FPath <> '' then Context := 'Library "' + FPath + '" header';
+  try
+    if IntegerField(FMetadata, 'format') <> 1 then
+      raise EScuError.Create('Unsupported library format.');
+    LastDeck := '';
+    if Count > 0 then
+      LastDeck := Entries[Count - 1].Name;
+    FHeader := TLibraryHeader.Create(TJSONObject(Field(FMetadata, 'header', jtObject)), Count, LastDeck);
+  except
+    on E: EScuError do raise EScuError.Create(Context + ': ' + E.Message);
+  end;
 end;
 
 procedure TLibraryStore.ValidateDeckNumbers;

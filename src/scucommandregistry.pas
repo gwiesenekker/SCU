@@ -12,79 +12,78 @@ function CommandHandler(const Name: string): TCommandHandler;
 implementation
 
 uses
-  ScuDeckCommands, ScuErrors, ScuExpandCommands, ScuFilePatternCommands, ScuImportCommands, ScuLibraryCommands, ScuVerifyDecks, ScuVersionDiff;
+  ScuDeckCommands, ScuErrors, ScuExportCommands, ScuFilePatternCommands, ScuImportCommands, ScuLibraryCommands, ScuVerifyDecks, ScuVersionDiff;
+
+type
+  TCommandRegistration = record
+    Name: string[32];
+    Handler: TCommandHandler;
+  end;
+
+const
+  Registrations: array[0..26] of TCommandRegistration = (
+    (Name: 'configure_library'; Handler: (Mode: cmLibrary; Run: @ConfigureLibrary;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'create_deck'; Handler: (Mode: cmLibrary; Run: @CreateDeck;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'create_version'; Handler: (Mode: cmLibrary; Run: @CreateVersion;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'delete_deck'; Handler: (Mode: cmLibrary; Run: @DeleteDeck;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'display_deck'; Handler: (Mode: cmLibrary; Run: @DisplayDeck;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'display_deck_diff'; Handler: (Mode: cmLibrary; Run: @DiffDeck;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'display_deck_list'; Handler: (Mode: cmLibrary; Run: @DisplayDeckList;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'display_library'; Handler: (Mode: cmLibrary; Run: @DisplayLibrary;
+      ResolveOutputDirectory: nil; ReportCommitted: @ReportLibraryHeader; OutputLockPolicy: olExclusive)),
+    (Name: 'display_version'; Handler: (Mode: cmLibrary; Run: @DisplayVersion;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'display_version_diff'; Handler: (Mode: cmLibrary; Run: @DisplayVersionDiff;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'display_version_history'; Handler: (Mode: cmLibrary; Run: @DisplayVersionHistory;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'edit_deck'; Handler: (Mode: cmLibrary; Run: @EditDeckCommand;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'edit_file_patterns'; Handler: (Mode: cmLibrary; Run: @EditFilePatterns;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'extract_deck'; Handler: (Mode: cmLibrary; Run: @ExtractDeck;
+      ResolveOutputDirectory: @SingleDeckDirectory; ReportCommitted: nil; OutputLockPolicy: olReuseBuild)),
+    (Name: 'extract_version'; Handler: (Mode: cmLibrary; Run: @ExtractVersion;
+      ResolveOutputDirectory: @VersionOutputDirectory; ReportCommitted: nil; OutputLockPolicy: olReuseBuild)),
+    (Name: 'import_deck'; Handler: (Mode: cmLibrary; Run: @ImportDeckCommand;
+      ResolveOutputDirectory: @WorkingDirectory; ReportCommitted: @RefreshImportedFiles; OutputLockPolicy: olReuseBuild)),
+    (Name: 'initialize_library'; Handler: (Mode: cmInitialize; Run: @InitializeLibrary;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'list_versions'; Handler: (Mode: cmLibrary; Run: @ListVersions;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'lock_version'; Handler: (Mode: cmLibrary; Run: @LockVersion;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'quit_session'; Handler: (Mode: cmLibrary; Run: @SaveLibrary;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'recover_library'; Handler: (Mode: cmRecover; Run: @SaveRecoveredLibrary;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'release_version'; Handler: (Mode: cmLibrary; Run: @ReleaseVersion;
+      ResolveOutputDirectory: @VersionOutputDirectory; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'save_library'; Handler: (Mode: cmLibrary; Run: @SaveLibrary;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'show_history'; Handler: (Mode: cmHistory; Run: @ShowHistory;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'show_library'; Handler: (Mode: cmLibrary; Run: @ShowLibrary;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'verify_audit'; Handler: (Mode: cmVerifyAudit; Run: nil;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'verify_decks'; Handler: (Mode: cmLibrary; Run: @VerifyDecks;
+      ResolveOutputDirectory: @VerificationDirectory; ReportCommitted: nil; OutputLockPolicy: olReuseBuild))
+  );
 
 function CommandHandler(const Name: string): TCommandHandler;
+var Index: Integer;
 begin
-  Result := Default(TCommandHandler);
-  case Name of
-    'configure_library': Result.Run := @ConfigureLibrary;
-    'create_deck': Result.Run := @CreateDeck;
-    'delete_deck': Result.Run := @DeleteDeck;
-    'display_deck_diff': Result.Run := @DiffDeck;
-    'display_version': Result.Run := @DisplayVersion;
-    'display_version_diff': Result.Run := @DisplayVersionDiff;
-    'display_deck': Result.Run := @DisplayDeck;
-    'display_deck_list': Result.Run := @DisplayDeckList;
-    'display_version_history': Result.Run := @DisplayVersionHistory;
-    'display_library':
-      begin
-        Result.Run := @DisplayLibrary;
-        Result.ReportCommitted := @ReportLibraryHeader;
-      end;
-    'edit_deck': Result.Run := @EditDeckCommand;
-    'edit_file_patterns': Result.Run := @EditFilePatterns;
-    'release_version':
-      begin
-        Result.Run := @ReleaseVersion;
-        Result.ResolveOutputDirectory := @BulkExpansionDirectory;
-      end;
-    'extract_deck':
-      begin
-        Result.Run := @ExtractDeck;
-        Result.ResolveOutputDirectory := @SingleDeckDirectory;
-        Result.ReuseBuildLock := True;
-      end;
-    'extract_version':
-      begin
-        Result.Run := @ExtractVersion;
-        Result.ResolveOutputDirectory := @BulkExpansionDirectory;
-        Result.ReuseBuildLock := True;
-      end;
-    'import_deck': Result.Run := @ImportDeckCommand;
-    'initialize_library':
-      begin
-        Result.Mode := cmInitialize;
-        Result.Run := @InitializeLibrary;
-      end;
-    'list_versions': Result.Run := @ListVersions;
-    'lock_version': Result.Run := @LockVersion;
-    'recover_library':
-      begin
-        Result.Mode := cmRecover;
-        Result.Run := @SaveRecoveredLibrary;
-      end;
-    'save_library', 'quit_session':
-      begin
-        Result.Run := @SaveLibrary;
-      end;
-    'show_history':
-      begin
-        Result.Mode := cmHistory;
-        Result.Run := @ShowHistory;
-      end;
-    'show_library': Result.Run := @ShowLibrary;
-    'create_version': Result.Run := @CreateVersion;
-    'verify_audit': Result.Mode := cmVerifyAudit;
-    'verify_decks':
-      begin
-        Result.Run := @VerifyDecks;
-        Result.ResolveOutputDirectory := @VerificationDirectory;
-        Result.ReuseBuildLock := True;
-      end;
-    else
-      raise EScuError.CreateFmt('No implementation for command "%s".', [Name]);
-  end;
+  for Index := Low(Registrations) to High(Registrations) do
+    if Registrations[Index].Name = Name then Exit(Registrations[Index].Handler);
+  raise EScuError.CreateFmt('No implementation for command "%s".', [Name]);
 end;
 
 end.

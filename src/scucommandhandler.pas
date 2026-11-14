@@ -5,7 +5,7 @@ unit ScuCommandHandler;
 interface
 
 uses
-  ScuAudit, ScuCommand, ScuLibrary, ScuOutput, ScuSQLite;
+  ScuCommandSnapshots, ScuCommand, ScuLibrary, ScuOutput, ScuSQLite;
 
 type
   TBuildRequest = record
@@ -27,18 +27,17 @@ type
 
   TCommandOperation = function(var Context: TCommandContext): string;
   TResolveOutputDirectory = function(const Context: TCommandContext): string;
-  // True asks the executor to commit the preparation before running the command.
-  TPrepareCommand = function(const Context: TCommandContext): Boolean;
   TReportCommand = procedure(const Context: TCommandContext);
 
   TCommandMode = (cmLibrary, cmInitialize, cmHistory, cmVerifyAudit, cmRecover);
+  TOutputLockPolicy = (olExclusive, olReuseBuild);
+
   TCommandHandler = record
     Mode: TCommandMode;
     Run: TCommandOperation;
     ResolveOutputDirectory: TResolveOutputDirectory;
-    Prepare: TPrepareCommand;
     ReportCommitted: TReportCommand;
-    ReuseBuildLock: Boolean;
+    OutputLockPolicy: TOutputLockPolicy;
   end;
 
 function BooleanArgument(Command: TScuCommand; const Name: string; const Default: string = 'yes'): Boolean;
@@ -79,12 +78,16 @@ begin
 end;
 
 function ResolveDeck(var Context: TCommandContext): string;
+var Snapshot: TLibrarySnapshot;
 begin
   Result := Context.Command['deck_name'];
   if SameText(Result, LastModifiedDeckSelector) then
   begin
     Result := ResolveLastModifiedDeck(Context.LibraryFile);
     Context.Snapshots.ResolvedDeck := Result;
+    if ((Context.Command.Name = 'extract_deck') or (Context.Command.Name = 'edit_deck')) and
+      not Context.LibraryFile.TryDeckSnapshot(Result, Context.LibraryFile.Revision, Snapshot) then
+      raise EScuError.Create('The last modified deck "' + Result + '" is deleted. Specify deck_name explicitly.');
   end;
 end;
 

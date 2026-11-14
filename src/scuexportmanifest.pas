@@ -33,19 +33,20 @@ type
     destructor Destroy; override;
     // Recovery is explicit and must run while the caller holds the directory lock.
     procedure Recover;
+    function TracksFile(const LibraryPath, FileName: string): Boolean;
     function IsGeneratedFile(const FileName: RawByteString): Boolean;
     procedure PlanExport(const LibraryPath, OutputPath, Deck, Version, DeckVersion: string;
       Mode: TExportMode; const ExpansionUTC, Prefix: string; const Bytes: RawByteString;
       ReplaceExisting: Boolean = False);
     procedure PlanDelete(const LibraryPath, OutputPath, Version: string; ReplaceExisting: Boolean = False);
+    procedure Observe(const Entry: TExportRecord; Removed: Boolean);
+    procedure SaveObservations;
     procedure Publish;
-    procedure WriteExport(const LibraryPath, OutputPath, Deck, Version, DeckVersion,
-      Mode, ExpansionUTC, Prefix: string; const Bytes: RawByteString; ReplaceExisting: Boolean = False);
+    procedure WriteExport(const LibraryPath, OutputPath, Deck, Version, DeckVersion: string;
+      Mode: TExportMode; const ExpansionUTC, Prefix: string; const Bytes: RawByteString; ReplaceExisting: Boolean = False);
     property Count: Integer read GetCount;
     property Entries[Index: Integer]: TExportRecord read GetEntry; default;
   end;
-
-function ExportModeName(Mode: TExportMode): string;
 
 implementation
 
@@ -63,11 +64,6 @@ type
     ReplaceExisting, DeleteOutput: Boolean;
   end;
 
-function ExportModeName(Mode: TExportMode): string;
-begin
-  if Mode = emExpand then Result := 'expand' else Result := 'extract';
-end;
-
 function ByteKey(const Value: RawByteString): string;
 const
   Digits = '0123456789abcdef';
@@ -80,6 +76,11 @@ begin
     Result[Index * 2 - 1] := Digits[(Byte(Value[Index]) shr 4) + 1];
     Result[Index * 2] := Digits[(Byte(Value[Index]) and 15) + 1];
   end;
+end;
+
+function FileKey(const Value: RawByteString): string;
+begin
+  Result := AuditSHA256(Value);
 end;
 
 function DecodeKey(const Value, Context: string): RawByteString;
@@ -212,7 +213,7 @@ var
     Previous := Field(Item, 'previous_sha256', jtString, Context).AsString;
     if (Previous <> '') and not IsHexDigest(Previous, 64) then
       raise EScuError.Create(Context + ': invalid previous output checksum.');
-    if FPlanNames.Find(ByteKey(Entry.FileName)) <> nil then
+    if FPlanNames.Find(FileKey(Entry.FileName)) <> nil then
       raise EScuError.Create(Context + ': duplicate pending file name.');
     Plan := TExportPlan.Create;
     Plan.Data := Entry;
@@ -220,7 +221,7 @@ var
     if Assigned(Item.Find('delete')) then
       Plan.DeleteOutput := Field(Item, 'delete', jtBoolean, Context).AsBoolean;
     FPending.Add(Plan);
-    FPlanNames.Add(ByteKey(Entry.FileName), Plan);
+    FPlanNames.Add(FileKey(Entry.FileName), Plan);
   end;
 
 begin
@@ -239,7 +240,7 @@ begin
         if not (Files[Index] is TJSONObject) then
           raise EScuError.Create(Context + ': expected a file record.');
         Entry := ReadRecord(TJSONObject(Files[Index]), Context);
-        if Assigned(FFiles.Find(ByteKey(Entry.FileName))) then
+        if Assigned(FFiles.Find(FileKey(Entry.FileName))) then
           raise EScuError.Create(Context + ': invalid or duplicate file name.');
         Install(Entry);
       end;
@@ -273,11 +274,11 @@ procedure TExportManifest.Install(const Entry: TExportRecord);
 var
   Item: TExportItem;
 begin
-  Item := TExportItem(FFiles.Find(ByteKey(Entry.FileName)));
+  Item := TExportItem(FFiles.Find(FileKey(Entry.FileName)));
   if not Assigned(Item) then
   begin
     Item := TExportItem.Create;
-    FFiles.Add(ByteKey(Entry.FileName), Item);
+    FFiles.Add(FileKey(Entry.FileName), Item);
   end;
   if Item.Removed then Dec(FRemovedCount);
   Item.Removed := False;
@@ -287,7 +288,7 @@ end;
 procedure TExportManifest.RemoveRecord(const FileName: RawByteString);
 var Item: TExportItem;
 begin
-  Item := TExportItem(FFiles.Find(ByteKey(FileName)));
+  Item := TExportItem(FFiles.Find(FileKey(FileName)));
   if Assigned(Item) and not Item.Removed then
   begin
     Item.Removed := True;
@@ -389,13 +390,44 @@ begin
   FPending.Clear;
 end;
 
+function TExportManifest.TracksFile(const LibraryPath, FileName: string): Boolean;
+var Item: TExportItem;
+begin
+  Item := TExportItem(FFiles.Find(FileKey(FileName)));
+  Result := Assigned(Item) and (Item.Data.LibraryPath = CanonicalFile(LibraryPath));
+end;
+
 function TExportManifest.IsGeneratedFile(const FileName: RawByteString): Boolean;
 var Item: TExportItem;
 begin
-  Item := TExportItem(FFiles.Find(ByteKey(FileName)));
+  Item := TExportItem(FFiles.Find(FileKey(FileName)));
   if Assigned(Item) and (Item.Data.Mode = emExpand) then Exit(True);
-  Item := TExportItem(FPlanNames.Find(ByteKey(FileName)));
+  Item := TExportItem(FPlanNames.Find(FileKey(FileName)));
   Result := Assigned(Item) and (Item.Data.Mode = emExpand);
+end;
+
+procedure TExportManifest.Observe(const Entry: TExportRecord; Removed: Boolean);
+var Path: string; Existing: TExportItem;
+begin
+  ValidateFilePattern(Entry.FileName);
+  if Entry.FileName = ExportManifestName then
+    raise EScuError.Create('The export manifest is not a working source filename.');
+  Path := IncludeTrailingPathDelimiter(ExtractFileDir(FPath)) + Entry.FileName;
+  if Removed then
+  begin
+    Existing := TExportItem(FFiles.Find(FileKey(Entry.FileName)));
+    if not RegularFileExists(Path) and Assigned(Existing) and
+      (Existing.Data.LibraryPath = Entry.LibraryPath) and (Existing.Data.Mode = emExtract) then
+      RemoveRecord(Entry.FileName);
+  end
+  else if RegularFileExists(Path) and (AuditSHA256(ReadBytes(Path, MaxDeckSize)) = Entry.SHA256) then
+    Install(Entry);
+end;
+
+procedure TExportManifest.SaveObservations;
+begin
+  CompactRecords;
+  Save;
 end;
 
 procedure TExportManifest.PlanExport(const LibraryPath, OutputPath, Deck, Version, DeckVersion: string;
@@ -413,17 +445,17 @@ begin
   Previous := '';
   if RegularFileExists(OutputPath) then Previous := AuditSHA256(ReadBytes(OutputPath, MaxDeckSize));
   CanonicalLibrary := CanonicalFile(LibraryPath);
-  Existing := TExportItem(FFiles.Find(ByteKey(Name)));
+  Existing := TExportItem(FFiles.Find(FileKey(Name)));
   if (Previous <> '') and (Previous <> AuditSHA256(Bytes)) and not ReplaceExisting and
     (not Assigned(Existing) or (Existing.Data.SHA256 <> Previous) or Existing.Data.Interrupted or
       (Existing.Data.LibraryPath <> CanonicalLibrary)) then
     raise EScuError.Create('Refusing to overwrite untracked or edited output "' + OutputPath + '". Use replace=yes to replace it explicitly.');
-  if FPlanNames.Find(ByteKey(Name)) <> nil then
+  if FPlanNames.Find(FileKey(Name)) <> nil then
     raise EScuError.Create('Duplicate output path in export batch: "' + OutputPath + '".');
-  if FStageDirectory = '' then FStageDirectory := MakeTempDirectory('scu-export-stage');
+  if FStageDirectory = '' then FStageDirectory := MakeStagingDirectory(ExtractFileDir(FPath));
   Plan := TExportPlan.Create;
   FPlanned.Add(Plan);
-  FPlanNames.Add(ByteKey(Name), Plan);
+  FPlanNames.Add(FileKey(Name), Plan);
   Plan.Data.FileName := Name;
   SetCodePage(Plan.Data.FileName, CP_UTF8, False);
   Plan.Data.LibraryPath := CanonicalLibrary;
@@ -456,17 +488,20 @@ begin
   Name := ExtractFileName(OutputPath);
   if (Name = '') or (Name = ExportManifestName) or (Pos(#0, Name) > 0) then
     raise EScuError.Create('Invalid release cleanup filename.');
-  if FPlanNames.Find(ByteKey(Name)) <> nil then
+  if FPlanNames.Find(FileKey(Name)) <> nil then
     raise EScuError.Create('Duplicate output path in release cleanup.');
   Previous := '';
   if RegularFileExists(OutputPath) then Previous := AuditSHA256(ReadBytes(OutputPath, MaxDeckSize));
-  Existing := TExportItem(FFiles.Find(ByteKey(Name)));
+  Existing := TExportItem(FFiles.Find(FileKey(Name)));
+  if (Previous <> '') and not ReplaceExisting and
+    (not Assigned(Existing) or (Existing.Data.LibraryPath <> CanonicalFile(LibraryPath))) then
+    raise EScuError.Create('Refusing to remove untracked release file "' + OutputPath + '". Use replace=yes to remove it explicitly.');
   if Assigned(Existing) and not ReplaceExisting and (Previous <> '') and
     ((Existing.Data.SHA256 <> Previous) or (Existing.Data.LibraryPath <> CanonicalFile(LibraryPath))) then
     raise EScuError.Create('Refusing to remove edited release output "' + OutputPath + '". Use replace=yes to remove it explicitly.');
   Plan := TExportPlan.Create;
   FPlanned.Add(Plan);
-  FPlanNames.Add(ByteKey(Name), Plan);
+  FPlanNames.Add(FileKey(Name), Plan);
   if Assigned(Existing) then Plan.Data := Existing.Data
   else
   begin
@@ -520,7 +555,8 @@ begin
     end
     else
     begin
-      AtomicWrite(Path, ReadBytes(Plan.StageFile, MaxDeckSize), [awSourceOutput]);
+      if Actual <> Plan.Data.SHA256 then
+        AtomicWrite(Path, ReadBytes(Plan.StageFile, MaxDeckSize), [awSourceOutput]);
       Install(Plan.Data);
     end;
   end;
@@ -533,13 +569,10 @@ begin
   FPlanned.Clear;
 end;
 
-procedure TExportManifest.WriteExport(const LibraryPath, OutputPath, Deck, Version, DeckVersion,
-  Mode, ExpansionUTC, Prefix: string; const Bytes: RawByteString; ReplaceExisting: Boolean);
-var
-  Kind: TExportMode;
+procedure TExportManifest.WriteExport(const LibraryPath, OutputPath, Deck, Version, DeckVersion: string;
+  Mode: TExportMode; const ExpansionUTC, Prefix: string; const Bytes: RawByteString; ReplaceExisting: Boolean);
 begin
-  if Mode = 'expand' then Kind := emExpand else Kind := emExtract;
-  PlanExport(LibraryPath, OutputPath, Deck, Version, DeckVersion, Kind, ExpansionUTC, Prefix, Bytes, ReplaceExisting);
+  PlanExport(LibraryPath, OutputPath, Deck, Version, DeckVersion, Mode, ExpansionUTC, Prefix, Bytes, ReplaceExisting);
   Publish;
 end;
 

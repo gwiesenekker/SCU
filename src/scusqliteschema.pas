@@ -17,15 +17,6 @@ uses
 const
   ApplicationID = '1396921650';
 
-procedure CreateExpansionCheckpoints(Database: TSQLiteConnection);
-begin
-  Database.Execute('CREATE TABLE expansion_checkpoints (' +
-    'version TEXT NOT NULL, output_directory TEXT NOT NULL, ' +
-    'revision INTEGER NOT NULL CHECK (revision >= 0), comment_prefix TEXT, ' +
-    'build_pending INTEGER NOT NULL DEFAULT 0 CHECK (build_pending IN (0, 1)), ' +
-    'PRIMARY KEY (version, output_directory)); PRAGMA user_version = 3');
-end;
-
 procedure CreateAuditState(Database: TSQLiteConnection);
 begin
   Database.Execute('CREATE TABLE IF NOT EXISTS audit_state (' +
@@ -57,6 +48,15 @@ begin
   Database.Execute('PRAGMA user_version = 6');
 end;
 
+procedure CreateWorkingExports(Database: TSQLiteConnection);
+begin
+  Database.Execute('CREATE TABLE IF NOT EXISTS pending_working_exports (' +
+    'file_key TEXT PRIMARY KEY, file_name BLOB NOT NULL, deck_name TEXT NOT NULL, ' +
+    'library_version TEXT NOT NULL, deck_version TEXT NOT NULL, sha256 TEXT NOT NULL, ' +
+    'removed INTEGER NOT NULL CHECK (removed IN (0, 1))); ' +
+    'DROP TABLE IF EXISTS expansion_checkpoints; PRAGMA user_version = 7');
+end;
+
 function EnsureLibrarySchema(Database: TSQLiteConnection; AllowCreate: Boolean): Integer;
 var
   ID: RawByteString;
@@ -65,19 +65,16 @@ begin
   if ID = ApplicationID then
   begin
     Result := StrToIntDef(Database.Scalar('PRAGMA user_version'), 0);
-    if not (Result in [1..6]) then
-      raise EScuError.Create('Unsupported SQLite library schema.');
+    if not (Result in [1..7]) then
+      raise EScuError.Create('Unsupported SQLite library schema in "' + Database.Path + '".');
     if not Database.ReadOnly then
     begin
       if Result = 1 then
       begin
-        CreateExpansionCheckpoints(Database);
         Result := 3;
       end;
       if Result = 2 then
       begin
-        Database.Execute('ALTER TABLE expansion_checkpoints ADD COLUMN build_pending INTEGER NOT NULL DEFAULT 0 ' +
-          'CHECK (build_pending IN (0, 1)); PRAGMA user_version = 3');
         Result := 3;
       end;
       if Result = 3 then
@@ -95,6 +92,11 @@ begin
         CreateDeletionIndex(Database);
         Result := 6;
       end;
+      if Result = 6 then
+      begin
+        CreateWorkingExports(Database);
+        Result := 7;
+      end;
     end;
     Exit;
   end;
@@ -108,11 +110,11 @@ begin
     'CREATE INDEX deck_revision_history ON deck_revisions (deck_name, sequence);' +
     'CREATE TABLE audit_records (sequence INTEGER PRIMARY KEY, line TEXT NOT NULL);' +
     'PRAGMA application_id = ' + ApplicationID);
-  CreateExpansionCheckpoints(Database);
   CreateAuditState(Database);
   CreateCopyMetadata(Database);
   CreateDeletionIndex(Database);
-  Result := 6;
+  CreateWorkingExports(Database);
+  Result := 7;
 end;
 
 end.

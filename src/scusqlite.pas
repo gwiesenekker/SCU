@@ -5,7 +5,7 @@ unit ScuSQLite;
 interface
 
 uses
-  ScuSQLiteDB, ScuSQLiteRevision, ScuSQLiteAudit, ScuSQLiteCheckpoint;
+  ScuSQLiteDB, ScuSQLiteRevision, ScuSQLiteAudit;
 
 type
   TSQLiteLibrary = class(TSQLiteConnection)
@@ -14,7 +14,6 @@ type
   private
     FRevisions: TSQLiteRevisionStore;
     FAudit: TSQLiteAuditStore;
-    FCheckpoints: TSQLiteCheckpointStore;
     class function OpenTransaction(const LibraryPath: string; Mode: TOpenMode): TSQLiteLibrary; static;
   public
     // Each factory returns a connection with an active transaction.
@@ -24,7 +23,6 @@ type
     destructor Destroy; override;
     property Revisions: TSQLiteRevisionStore read FRevisions;
     property Audit: TSQLiteAuditStore read FAudit;
-    property Checkpoints: TSQLiteCheckpointStore read FCheckpoints;
   end;
 
 implementation
@@ -62,7 +60,6 @@ begin
     SchemaVersion := EnsureLibrarySchema(Result, Mode = omInitialize);
     Result.FRevisions := TSQLiteRevisionStore.Create(Result, SchemaVersion);
     Result.FAudit := TSQLiteAuditStore.Create(Result, SchemaVersion);
-    Result.FCheckpoints := TSQLiteCheckpointStore.Create(Result);
   except
     Result.Free;
     raise;
@@ -71,7 +68,6 @@ end;
 
 destructor TSQLiteLibrary.Destroy;
 begin
-  FCheckpoints.Free;
   FAudit.Free;
   FRevisions.Free;
   inherited Destroy;

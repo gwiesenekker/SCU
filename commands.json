@@ -146,7 +146,7 @@
           "completion": "deck"
         }
       ],
-      "help": "Append a deletion revision without removing earlier source. The deck disappears from the current snapshot and later versions until create_deck or import_deck recreates it. Locked versions cannot be changed. Existing extracted or expanded files are left in place.",
+      "help": "Append a deletion revision without removing earlier source. The deck disappears from the current snapshot and later versions until create_deck or import_deck recreates it. Locked versions cannot be changed. Existing extracted or expanded files are left in place. A kept working file is named in the output: remove it to prevent a later pattern import recreating the deck. last_modified_deck includes deletions; bare edit/extract requires an explicit deck choice if it is deleted.",
       "examples": [
         {
           "command": "delete_deck main.pas",
@@ -408,7 +408,7 @@
           "values": ["normal", "unified"]
         }
       ],
-      "help": "Show source diffs for all decks whose contents differ between the selected versions. Include inherited decks and represent added or removed source with /dev/null. Added or removed empty decks have an explicit notice. By default ignore whitespace amount changes and trailing whitespace, like diff -b. Set ignore_space_changes=no for exact comparison. Default to normal diff output; use output_format=unified for unified output with three context lines.",
+      "help": "Show source diffs for all decks whose contents differ between the selected versions. Include inherited decks and represent added or removed source with /dev/null. Added or removed empty decks have an explicit notice. By default ignore whitespace amount changes and trailing whitespace, like diff -b. Set ignore_space_changes=no for exact comparison. Default to normal diff output; use output_format=unified for unified output with three context lines. Unified textual output uses quoted a/ and b/ recorded filenames and tab-separated versions, suitable for patch -p1. Search limits fall back to complete replacements rather than minimal hunks.",
       "examples": [
         {
           "command": "scu display_version_diff",
@@ -506,7 +506,7 @@
       "aliases": ["edifp"],
       "summary": "Edit the library file patterns, one wildcard or filename per line.",
       "arguments": [],
-      "help": "Open the file_patterns list in the configured editor. Enter one wildcard or exact filename per line, for files directly in the library directory; blank lines are ignored and surrounding whitespace is trimmed. Preserve spaces within filenames. Save and close the editor to store the list automatically. An empty list clears the selection. Directory components, including subdirectory patterns, are rejected; subdirectory support is planned as a future library option. Configure GUI editors with a wait option, such as editor=[\"code\", \"--wait\"]. The list is library-wide and can be edited while the current version is locked. Run import_deck without arguments to snapshot the configured files; this editor command itself does not import files.",
+      "help": "Open the file_patterns list in the configured editor. Enter one wildcard or exact filename per line, for files directly in the library directory; blank lines are ignored and surrounding whitespace is trimmed. Preserve spaces within filenames. Save and close the editor to store the list automatically. An empty list clears the selection. Directory components, including subdirectory patterns, are rejected; subdirectory support is planned as a future library option. Configure GUI editors with a wait option, such as editor=[\"code\", \"--wait\"]. The list is library-wide and can be edited while the current version is locked. Run import_deck without arguments to snapshot the configured files; this editor command itself does not import files. Invalid edits are preserved in a private recovery file, whose path is included in the error.",
       "examples": [
         {
           "command": "scu edit_file_patterns",
@@ -534,7 +534,7 @@
           "aliases": ["o", "output"],
           "value": "scu$deck_name",
           "prompt_for_default": false,
-          "description": "Destination for original source bytes. Defaults to the deck name; an explicit output_file is used unchanged.",
+          "description": "Destination for original bytes. Defaults to the selected revision's recorded source filename, or the deck name if absent; an explicit output_file is honored.",
           "completion": "file"
         },
         {
@@ -591,7 +591,7 @@
           "prompt_for_default": false
         }
       ],
-      "help": "Select a library version (default scu$current_version) and optionally a deck revision within that version. With no revision, select the latest visible deck, including inherited decks. Version and revision may be combined, for example version=1.1 revision=0.001. A complete deck version such as version=1.1-0.001 is equivalent; do not combine it with a separate revision. Write the original source bytes, including COPY directives and macro text. Internal library revision numbers are not command selectors. Default to <deck_name> beside the library; honor an explicit output_file unchanged. Default outputs go beside the library, using <deck_name>. Existing untracked or locally edited outputs require replace=yes. Edited source files require replace=yes; SQLite libraries cannot be overwritten. Run the configured build command from the library directory after successful extraction; build=no skips it.",
+      "help": "Select a library version (default scu$current_version) and optionally a deck revision within that version. With no revision, select the latest visible deck, including inherited decks. Version and revision may be combined, for example version=1.1 revision=0.001. A complete deck version such as version=1.1-0.001 is equivalent; do not combine it with a separate revision. Write the original source bytes, including COPY directives and macro text. Internal library revision numbers are not command selectors. Default to the recorded source filename beside the library; honor an explicit output_file unchanged. Differing untracked or locally edited outputs require replace=yes; SQLite libraries cannot be overwritten. Run the configured build command from the library directory after successful extraction; build=no skips it. Preserve the recorded filename's case; fall back to the deck name only when no source filename was recorded. Restoring old source files does not change the current library version; import records them as new revisions.",
       "examples": [
         {
           "command": "scu extract_deck main.pas release-1.1.pas version=1.1",
@@ -603,7 +603,7 @@
         },
         {
           "command": "scu extract_deck",
-          "description": "Write the last modified deck to <deck_name> beside the library."
+          "description": "Write the last modified deck to its recorded source filename beside the library."
         }
       ]
     },
@@ -667,7 +667,7 @@
           "prompt_for_default": false
         }
       ],
-      "help": "Extract every live deck in the selected library version, including inherited decks, under its original filename. Default to scu$current_version and the library directory. Preserve macro text without expansion. Update the export manifest, then run the configured build once from the library directory unless build=no. Unchanged files need no replacement permission; edited or untracked differing files require replace=yes. SQLite libraries cannot be overwritten.",
+      "help": "Extract every live deck in the selected library version, including inherited decks, under its recorded source filename. Default to scu$current_version and the library directory. Preserve macro text without expansion. Update the export manifest, then run the configured build once from the library directory unless build=no. Unchanged files need no replacement permission; edited or untracked differing files require replace=yes. SQLite libraries cannot be overwritten. Preserve the recorded filename's case; fall back to the deck name only when no source filename was recorded. Restoring old source files does not change the current library version; import records them as new revisions.",
       "examples": [
         {
           "command": "scu extract_version output_directory=build",
@@ -710,7 +710,7 @@
           "description": "Comment prefix for new or changed revisions. Omit to retain each deck prefix or use the version default for new decks."
         }
       ],
-      "help": "With deck_name, import a source file into a new, existing, or deleted deck. source_file must be a bare filename in the library directory; directory components and absolute paths are rejected. Omit it to use the deck's recorded filename. Without deck_name or source_file, scan file_patterns relative to the library directory: store new files, revise changed files, and create deletion revisions for missing decks covered by those patterns. Compare exact source bytes; unchanged decks keep their deck versions, including inherited decks. Show changed decks, resolved deck versions, and new/changed/deleted status in aligned columns, followed by counts. Commit the whole snapshot and its audit records together. A failed scan leaves the library unchanged. Scan only the directory containing the library, without descending into subdirectories. Directory components in file_patterns are rejected; subdirectory support is planned as a future library option. Unsupported deck filenames and case-normalized name collisions are errors. Ignore directories, operational SQLite files, and the export manifest; reject selected symlinks. Wildcards use *, ?, and bracket expressions in filenames. Narrowing file_patterns does not delete decks outside the new selection. Requires an unlocked version.",
+      "help": "With deck_name, import a source file into a new, existing, or deleted deck. source_file must be a bare filename in the library directory; directory components and absolute paths are rejected. Omit it to use the deck's recorded filename. Without deck_name or source_file, scan file_patterns relative to the library directory: store new files, revise changed files, and create deletion revisions for missing decks covered by those patterns. Compare exact source bytes; unchanged decks keep their deck versions, including inherited decks. Show changed decks, resolved deck versions, and new/changed/deleted status in aligned columns, followed by counts. Commit the whole snapshot and its audit records together. A failed scan leaves the library unchanged. Scan only the directory containing the library, without descending into subdirectories. Directory components in file_patterns are rejected; subdirectory support is planned as a future library option. Unsupported deck filenames and case-normalized name collisions are errors. Ignore directories, operational SQLite files, and the export manifest; reject selected symlinks. Wildcards use *, ?, and bracket expressions in filenames. Narrowing file_patterns does not delete decks outside the new selection. Requires an unlocked version. Non-deck filenames (spaces, Unicode or long names) receive stable hashed deck IDs in scans while preserving their exact filename. Working-manifest updates commit through a replayable SQLite observation queue; no source file is rewritten.",
       "examples": [
         {
           "command": "scu import_deck",
@@ -762,7 +762,7 @@
           "description": "Describe the changes completed in this version."
         }
       ],
-      "help": "Lock the current version with a required description and record the lock date and time in UTC.",
+      "help": "Lock the current version with a required description and record the lock date and time in UTC. This locks stored revisions only; import external edits first if they should belong to the release.",
       "examples": [
         {
           "command": "lock_version description=\"Initial release\"",
@@ -830,7 +830,7 @@
           "aliases": ["rp"],
           "value": "no",
           "prompt_for_default": false,
-          "description": "Explicitly replace edited or untracked output files. Working sources and SQLite libraries remain protected.",
+          "description": "Explicitly replace edited outputs or remove untracked matching release files. SQLite storage and working sources remain protected.",
           "values": [
             {
               "name": "yes",
@@ -843,7 +843,7 @@
           ]
         }
       ],
-      "help": "Write every live deck in the selected version, including inherited decks, to release_directory (default release beside the library). Every run publishes the full snapshot. Expand only uppercase SCU$DATE, SCU$TIME, SCU$DATE_TIME, SCU$DECK_VERSION, and SCU$VERSION. Date/time values are the deck modification timestamp in UTC; VERSION is the selected library version. COPY directives and other text remain literal. Remove obsolete regular files matching file_patterns only when absent from the selected snapshot; keep unrelated files, subdirectories, symbolic links, and SQLite storage. Update the export manifest with recoverable writes and deletions. Edited tracked outputs require replace=yes. No build command runs during publication.",
+      "help": "Write every live deck in the selected version, including inherited decks, to release_directory (default release beside the library). Every run publishes the full snapshot. Expand only uppercase SCU$DATE, SCU$TIME, SCU$DATE_TIME, SCU$DECK_VERSION, and SCU$VERSION. Date/time values are the deck modification timestamp in UTC; VERSION is the selected library version. COPY directives and other text remain literal. Remove obsolete regular files previously recorded by this library matching file_patterns only when absent from the selected snapshot; untracked matching files are named and kept unless replace=yes; keep unrelated files, subdirectories, symbolic links, and SQLite storage. Update the export manifest with recoverable writes and deletions. Edited tracked outputs require replace=yes. No build command runs during publication. Use each selected revision's recorded source filename, preserving case and exact bytes. Warn once if former COPY directives are found; they remain literal.",
       "examples": [
         {
           "command": "scu release_version",
@@ -924,7 +924,7 @@
           "completion": "library_version"
         }
       ],
-      "help": "Verify files recorded in .scu-exports.json without overwriting them or running builds. Automatically reconcile interrupted manifest updates; report interrupted exports requiring explicit re-export when the file matches neither the previous nor intended checksum. Compare extraction with original source and expansion with expanded release macros. Release macro values come from stored deck modification times and the selected version, so verification is deterministic. Report current, outdated, locally modified, missing, unavailable, or untracked files. Return a failing exit status when any tracked file needs attention. Existing untracked files whose names match known decks are reported as untracked; renamed old exports cannot be identified automatically. Records for other libraries are ignored. Use compact File, Mode, Exported, Latest, and Status columns with detailed errors and custom deck mappings below the table. Both version columns are deck versions. delete_deck does not immediately change exports. A release publication removes obsolete matching files and their manifest records; retained deleted exports are reported as deleted. Finish with a Needs attention list naming every affected deck, file, and full reason; omit current files and continue after individual file read errors. Successful verification ends with No errors were found.",
+      "help": "Verify files recorded in .scu-exports.json without overwriting them or running builds. Automatically reconcile interrupted manifest updates; report interrupted exports requiring explicit re-export when the file matches neither the previous nor intended checksum. Compare extraction with original source and expansion with expanded release macros. Release macro values come from stored deck modification times and the selected version, so verification is deterministic. Report current, outdated, locally modified, missing, unavailable, or untracked files. Return a failing exit status when any tracked file needs attention. Existing untracked files whose names match known decks are reported as untracked; renamed old exports cannot be identified automatically. Records for other libraries are ignored. Use compact File, Mode, Exported, Latest, and Status columns with detailed errors and custom deck mappings below the table. Both version columns are deck versions. delete_deck does not immediately change exports. A release publication removes obsolete matching files and their manifest records; retained deleted exports are reported as deleted. Finish with a Needs attention list naming every affected deck, file, and full reason; omit current files and continue after individual file read errors. Successful verification ends with No errors were found. Retry pending committed working-file observations when verifying the library directory. Warn once for former COPY directives without expanding them.",
       "examples": [
         {
           "command": "scu verify_decks",

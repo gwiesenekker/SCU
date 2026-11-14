@@ -3,7 +3,7 @@ program ExecutorProbe;
 {$mode objfpc}{$H+}
 
 uses
-  Classes, SysUtils, ScuCommand, ScuErrors, ScuExecutor, ScuLibraryModel, ScuLibraryStore, ScuOutput, ScuSQLite, ScuTable;
+  Classes, FPJSON, SysUtils, ScuCommand, ScuErrors, ScuExecutor, ScuLibraryModel, ScuLibraryStore, ScuOutput, ScuSQLite, ScuTable;
 
 type
   TCapturedOutput = class(TScuOutput)
@@ -156,6 +156,38 @@ begin
 end;
 
 
+
+procedure CheckLegacyNumberGuards;
+var
+  Entry: TLibraryRevision;
+  Payload: TJSONObject;
+  Rejected: Boolean;
+begin
+  Entry := TLibraryRevision.CreateIndex('modern', '0.000', 1);
+  try
+    Rejected := False;
+    try
+      Entry.SetLegacyNumber(1);
+    except
+      on E: EScuError do Rejected := True;
+    end;
+    if not Rejected then raise Exception.Create('Modern revision number was mutable.');
+  finally
+    Entry.Free;
+  end;
+  Payload := TJSONObject.Create;
+  Payload.Add('deck', 'legacy');
+  Entry := TLibraryRevision.CreatePayload(Payload, 1);
+  try
+    Entry.SetLegacyNumber(0);
+    if (Entry.Number <> 0) or (Pos('deck_revision', Entry.Serialized) > 0) then
+      raise Exception.Create('Legacy numbering changed its audited payload.');
+  finally
+    Entry.Free;
+    Payload.Free;
+  end;
+end;
+
 var
   Capture: TCapturedOutput;
   Executor: TScuExecutor;
@@ -218,6 +250,7 @@ begin
       raise Exception.Create('Unexpected executor output.');
     CheckLazyRevision(ParamStr(1));
     CheckUnloadedPayloadGuards;
+    CheckLegacyNumberGuards;
     CheckTableDisplayWidths;
     CheckBackendLibraryNames(ParamStr(1));
   finally

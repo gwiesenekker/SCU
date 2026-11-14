@@ -33,7 +33,10 @@ var
   Deck, Path: string;
   Bytes: RawByteString;
   Revision: Integer;
+  StoreOptions: TDeckStoreOptions;
 begin
+  StoreOptions := [];
+  if CreateOnly then Include(StoreOptions, dsoCreateOnly);
   Deck := ResolveDeck(Context);
   Context.LibraryFile.RequireOpenVersion;
   Deck := DeckName(Deck);
@@ -41,7 +44,7 @@ begin
   Bytes := '';
   if not CreateOnly or (Path <> '') then
     Bytes := ReadBytes(Path, MaxDeckSize);
-  Revision := Context.LibraryFile.Store(Context.Database, Deck, Bytes, CreateOnly, PrefixArgument(Context.Command));
+  Revision := Context.LibraryFile.Store(Context.Database, Deck, Bytes, StoreOptions, PrefixArgument(Context.Command));
   Result := DeckWriteReport(Context.LibraryFile, Deck, Revision);
 end;
 
@@ -52,12 +55,16 @@ end;
 
 function DeleteDeck(var Context: TCommandContext): string;
 var
-  Deck: string;
+  Deck, WorkingFile: string;
   Revision: Integer;
 begin
   Deck := DeckName(ResolveDeck(Context));
+  WorkingFile := IncludeTrailingPathDelimiter(ExtractFileDir(Context.LibraryPath)) +
+    Context.LibraryFile.DeckSourcePath(Context.Database, Deck);
   Revision := Context.LibraryFile.Delete(Context.Database, Deck);
   Result := 'Deleted ' + DeckWriteReport(Context.LibraryFile, Deck, Revision);
+  if FileExists(WorkingFile) then
+    Result := Result + LineEnding + 'Working file "' + WorkingFile + '" kept; remove it or import_deck will recreate the deck.';
 end;
 
 function EditDeckCommand(var Context: TCommandContext): string;
@@ -79,7 +86,7 @@ begin
   Deck := DeckName(ResolveDeck(Context));
   Rows := Context.LibraryFile.DeckHistory(Context.Database, Deck, Limit);
   Context.Output.WriteLine(FormatTerminalLines(Format('Deck "%s".', [Deck]),
-    TerminalColumns(StdOutputHandle)));
+    Context.Output.Columns));
   WriteDeckHistory(Rows, Context.Output);
   Result := '';
 end;
@@ -121,8 +128,8 @@ begin
     FromSnapshot := LibraryFile.PreviousDeckSnapshot(Deck, ToSnapshot.LibraryRevision);
     Context.Snapshots.FromDeckVersion := LibraryFile.DeckVersion[FromSnapshot.LibraryRevision];
   end;
-  Source := LibraryFile.Extract(Context.Database, Deck, FromSnapshot.LibraryRevision, '', True);
-  OtherSource := LibraryFile.Extract(Context.Database, Deck, ToSnapshot.LibraryRevision, '', True);
+  Source := LibraryFile.Extract(Context.Database, Deck, FromSnapshot.LibraryRevision, '', [deoAllowDeleted]);
+  OtherSource := LibraryFile.Extract(Context.Database, Deck, ToSnapshot.LibraryRevision, '', [deoAllowDeleted]);
   FromLabel := Deck + '@' + Context.Snapshots.FromDeckVersion;
   ToLabel := Deck + '@' + Context.Snapshots.ToDeckVersion;
   if Source.Deleted then

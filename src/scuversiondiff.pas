@@ -14,6 +14,33 @@ implementation
 uses
   Classes, ScuDiff, ScuLibrary, ScuSignals;
 
+function PatchLabel(const Path, Version: string): string;
+const Octal = '01234567';
+var
+  Character: Char;
+  NeedsQuote: Boolean;
+  Number: Byte;
+begin
+  NeedsQuote := False;
+  for Character in Path do
+    if Character in [#0..#32, #127..#255, '"', '\'] then NeedsQuote := True;
+  Result := Path;
+  if NeedsQuote then
+  begin
+    Result := '"';
+    for Character in Path do
+    begin
+      Number := Byte(Character);
+      if Character in ['"', '\'] then Result := Result + '\' + Character
+      else if (Number < 32) or (Number > 126) then
+        Result := Result + '\' + Octal[(Number shr 6) + 1] + Octal[((Number shr 3) and 7) + 1] + Octal[(Number and 7) + 1]
+      else Result := Result + Character;
+    end;
+    Result := Result + '"';
+  end;
+  Result := Result + #9 + Version;
+end;
+
 procedure WriteChangedDeck(const Context: TCommandContext; const Deck: string; IgnoreSpaceChanges: Boolean; Format: TDiffFormat);
 var
   FromDeck, ToDeck: TLibrarySnapshot;
@@ -32,12 +59,14 @@ begin
   if InFrom then
   begin
     FromSource := Context.LibraryFile.Extract(Context.Database, Deck, FromDeck.LibraryRevision);
-    FromLabel := Deck + '@' + FromSource.DeckVersion;
+    if Format = dfUnified then FromLabel := PatchLabel('a/' + FromSource.SourcePath, FromSource.DeckVersion)
+    else FromLabel := Deck + '@' + FromSource.DeckVersion;
   end;
   if InTo then
   begin
     ToSource := Context.LibraryFile.Extract(Context.Database, Deck, ToDeck.LibraryRevision);
-    ToLabel := Deck + '@' + ToSource.DeckVersion;
+    if Format = dfUnified then ToLabel := PatchLabel('b/' + ToSource.SourcePath, ToSource.DeckVersion)
+    else ToLabel := Deck + '@' + ToSource.DeckVersion;
   end;
   if (FromSource.Bytes = '') and (ToSource.Bytes = '') and (InFrom <> InTo) then
   begin

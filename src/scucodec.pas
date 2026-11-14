@@ -7,6 +7,9 @@ interface
 const
   MaxDeckSize = 64 * 1024 * 1024;
 
+function EncodeBytesHex(const Data: RawByteString): string;
+function DecodeBytesHex(const Data, Context: string): RawByteString;
+
 function DeckSHA1(const Data: RawByteString): string;
 function AuditSHA256(const Data: RawByteString): string;
 function IsHexDigest(const Digest: string; Size: SizeInt): Boolean;
@@ -63,6 +66,32 @@ begin
     Result[2 * Index + 1] := Digits[1 + (Digest[Index] shr 4)];
     Result[2 * Index + 2] := Digits[1 + (Digest[Index] and $0F)];
   end;
+end;
+
+function EncodeBytesHex(const Data: RawByteString): string;
+const Digits = '0123456789abcdef';
+var Index: SizeInt;
+begin
+  SetLength(Result, Length(Data) * 2);
+  for Index := 1 to Length(Data) do
+  begin
+    Result[Index * 2 - 1] := Digits[(Byte(Data[Index]) shr 4) + 1];
+    Result[Index * 2] := Digits[(Byte(Data[Index]) and 15) + 1];
+  end;
+end;
+
+function DecodeBytesHex(const Data, Context: string): RawByteString;
+var Index, Number: SizeInt;
+begin
+  if not IsHexDigest(Data, Length(Data)) or Odd(Length(Data)) then
+    raise EScuError.Create(Context + ': invalid filename byte encoding.');
+  SetLength(Result, Length(Data) div 2);
+  for Index := 1 to Length(Result) do
+  begin
+    Number := StrToInt('$' + Copy(Data, Index * 2 - 1, 2));
+    Result[Index] := AnsiChar(Number);
+  end;
+  SetCodePage(Result, CP_UTF8, False);
 end;
 
 function DeckSHA1(const Data: RawByteString): string;

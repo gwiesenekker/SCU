@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Fix review X13/X14: release cleanup keeps untracked matching files unless replace=yes, reports kept/removed names, and all exports use the selected revision's recorded filename and exact filename bytes.
+- Fix L8/L9: support arbitrary root filenames through stable deck IDs; queue working-manifest observations in SQLite with import/audit transactions and replay them after interruption. Preserve source files and rollback semantics.
+- Fix long manifest keys, skip identical file replacement, move private staging beside output with dead-process cleanup, and handle one-shot termination gracefully.
+- Warn once for former COPY directives in release/verification. Breaking behavior: COPY remains literal and is never expanded.
+- Make unified version diffs patchable with recorded filenames; retain bounded complete-replacement fallback for resource-intensive comparisons.
+- Preserve invalid file-pattern edits for correction, explain kept files after deletion, reflow completion pages on resize, and correct the group-preservation test's replacement permission.
+- Refactor command dispatch into a typed registration table, separate header/revision/names/query units and command snapshots, use named option sets/lock policies, and remove dead checkpoint and COPY-cache APIs while preserving legacy audited payloads.
+- Document every open review finding as fixed, revalidated, or an explicit retained design decision in REVIEW_STATUS.md; add regression tests for data safety, observation replay/rollback, filenames, staging, patching, terminal behavior and edit recovery.
+
 - Rename expand_version (expv) to release_version (relv), updating dispatch, completion, command help, documentation, and regression tests. Retired spellings report the replacement command.
 
 - Separate source extraction/building from release publication. extract_deck and extract_version maintain raw-source manifests and run build_command (build=yes by default) from the library directory; extract_version retrieves the complete selected snapshot, including inheritance.

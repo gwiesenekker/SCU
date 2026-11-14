@@ -24,9 +24,7 @@ type
     procedure ReadRevisionIndex(Visit: TRevisionIndexVisitor);
     // The caller owns the returned JSON objects.
     function ReadRevision(Sequence: Integer): TJSONObject;
-    function ReadCopyMetadata(Revision: Integer): TJSONObject;
     function ReadRevisionCopyMetadata(Sequence: Integer): RawByteString;
-    procedure CacheCopyMetadata(Sequence: Integer; const Metadata: RawByteString);
     procedure SaveMetadata(const Payload: RawByteString);
     procedure AppendRevision(Sequence: Integer;
       const Deck, Version, DeckRevision, Payload, CopyMetadata: RawByteString; Deleted: Boolean);
@@ -160,53 +158,6 @@ begin
     Statement.Bind(1, Sequence);
     if Statement.Step then
       Result := Statement.Text[0];
-  finally
-    Statement.Free;
-  end;
-end;
-
-procedure TSQLiteRevisionStore.CacheCopyMetadata(Sequence: Integer; const Metadata: RawByteString);
-var
-  Statement: TSQLiteStatement;
-begin
-  Statement := FDatabase.Prepare('UPDATE deck_revisions SET copy_metadata = ? WHERE sequence = ? AND copy_metadata IS NULL');
-  try
-    Statement.Bind(1, Metadata);
-    Statement.Bind(2, Sequence);
-    Statement.Step;
-  finally
-    Statement.Free;
-  end;
-end;
-
-function TSQLiteRevisionStore.ReadCopyMetadata(Revision: Integer): TJSONObject;
-var
-  Statement: TSQLiteStatement;
-  Name, Visibility: string;
-begin
-  Visibility := '';
-  if FSchemaVersion >= 6 then
-    Visibility := ' WHERE stored.deleted = 0';
-  Statement := FDatabase.Prepare('SELECT stored.deck_name, stored.copy_metadata FROM (' +
-    'SELECT max(sequence) AS sequence FROM deck_revisions WHERE sequence <= ? GROUP BY deck_name' +
-    ') AS visible JOIN deck_revisions AS stored ON stored.sequence = visible.sequence' + Visibility);
-  try
-    Statement.Bind(1, Revision);
-    Result := TJSONObject.Create;
-    try
-      while Statement.Step do
-      begin
-        Name := Statement.Text[0];
-        if Statement.IsNull(1) then
-          Result.Add(Name)
-        else
-          Result.Add(Name, ParseObject(Statement.Text[1],
-            Format('SQLite COPY metadata for deck "%s" in "%s"', [Name, FDatabase.Path])));
-      end;
-    except
-      Result.Free;
-      raise;
-    end;
   finally
     Statement.Free;
   end;

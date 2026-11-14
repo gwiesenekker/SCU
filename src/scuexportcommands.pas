@@ -1,4 +1,4 @@
-unit ScuExpandCommands;
+unit ScuExportCommands;
 
 {$mode objfpc}{$H+}
 
@@ -8,7 +8,7 @@ uses
   ScuCommand, ScuCommandHandler;
 
 function SingleDeckDirectory(const Context: TCommandContext): string;
-function BulkExpansionDirectory(const Context: TCommandContext): string;
+function VersionOutputDirectory(const Context: TCommandContext): string;
 function ExtractDeck(var Context: TCommandContext): string;
 function ExtractVersion(var Context: TCommandContext): string;
 function ReleaseVersion(var Context: TCommandContext): string;
@@ -16,7 +16,7 @@ function ReleaseVersion(var Context: TCommandContext): string;
 implementation
 
 uses
-  ScuClock, ScuReleaseCleanup, ScuExportManifest, ScuExportPaths, ScuExportTypes, ScuDeckExport, ScuLibraryDisplay, ScuTable, Classes, SysUtils, ScuCommands, ScuErrors, ScuFiles, ScuLibrary,
+  ScuWorkingExports, FPJSON, ScuClock, ScuReleaseCleanup, ScuExportManifest, ScuExportPaths, ScuExportTypes, ScuDeckExport, ScuLibraryDisplay, ScuTable, Classes, SysUtils, ScuCommands, ScuErrors, ScuFiles, ScuLibrary,
   ScuLibraryPaths, ScuSignals, ScuVersions;
 
 const
@@ -40,7 +40,6 @@ begin
     raise EScuError.Create('The output path would overwrite a library or audit file.');
   if ExtractFileName(Result) = ExportManifestName then
     raise EScuError.Create('The output path is reserved for the SCU export manifest.');
-  RegularFileExists(Result);
   if (Context.Command.Name <> 'extract_deck') and
     (Context.Command.Name <> 'extract_version') and Assigned(Context.LibraryFile) and
     (ExtractFileDir(Result) = ExtractFileDir(CanonicalFile(Context.LibraryPath))) then
@@ -63,7 +62,7 @@ begin
     Result := ExtractFileDir(ExpandFileName(Path));
 end;
 
-function BulkExpansionDirectory(const Context: TCommandContext): string;
+function VersionOutputDirectory(const Context: TCommandContext): string;
 begin
   Result := Context.Command['output_directory'];
   if SameText(Result, ExportDirectorySelector) then
@@ -104,26 +103,28 @@ begin
     Context.Command.Argument('revision'));
   Context.Snapshots.Selected := Selection.Snapshot;
   Context.Snapshots.ResolvedDeck := Deck;
+  Rendered := RenderDeck(Context.LibraryFile, Context.Database, Deck, Selection, emExtract);
   Path := OutputFileArgument(Context.Command);
   if SameText(Path, DeckNameSelector + '.scu') then
     Path := DeckName(Deck) + '.scu'
   else if SameText(Path, DeckNameSelector) then
-    Path := DeckName(Deck)
+    Path := Rendered.FileName
   else if SameText(Path, LastModifiedDeckSelector) then
     Path := ResolveLastModifiedDeck(Context.LibraryFile);
   if not Context.Command.Provided['output_file'] and not Context.Command.Provided['output'] then
     Path := IncludeTrailingPathDelimiter(Context.OutputDirectory) + ExtractFileName(Path);
   Path := OutputPath(Context, Path);
   Context.Snapshots.OutputPath := Path;
-  Rendered := RenderDeck(Context.LibraryFile, Context.Database, Deck, Selection, emExtract);
   Bytes := Rendered.Bytes;
   ResolvedDeckVersion := Rendered.DeckVersion;
   CheckSessionInterrupt;
+  if ExtractFileDir(Path) = ExtractFileDir(CanonicalFile(Context.LibraryPath)) then
+    RefreshWorkingExports(Context.Database, Context.LibraryPath);
   Manifest := TExportManifest.Create(ExtractFileDir(Path));
   try
     Manifest.Recover;
     Manifest.WriteExport(Context.LibraryPath, Path, Deck, Selection.Snapshot.Version,
-      ResolvedDeckVersion, 'extract', '', '', Bytes, BooleanArgument(Context.Command, 'replace', 'no'));
+      ResolvedDeckVersion, emExtract, '', '', Bytes, BooleanArgument(Context.Command, 'replace', 'no'));
     Context.FilesPublished := True;
   finally
     Manifest.Free;
@@ -134,18 +135,20 @@ begin
   Result := '';
 end;
 
-function TransferVersion(var Context: TCommandContext; Expand: Boolean): string;
+function TransferVersion(var Context: TCommandContext; Mode: TExportMode): string;
 var
   Version, Directory, ExpansionUTC: string;
   Revision, Base, Index, DeletedCount: Integer;
   Snapshot: TLibrarySnapshot;
   Selection: TDeckSelection;
-  Names: TStringList;
+  Names, FileNames, Removed, Preserved: TStringList;
   Manifest: TExportManifest;
   Rendered: TRenderedDeck;
-  Kind: TExportMode;
+  Expand: Boolean;
   Written: TDeckListEntries;
+  LegacyCopy: Boolean;
 begin
+  Expand := Mode = emExpand;
   if SameText(Context.Command['version'], LatestVersionSelector) then
     Snapshot := Context.LibraryFile.CurrentSnapshot
   else Snapshot := Context.LibraryFile.ParseLibrarySnapshot(Context.Command['version']);
@@ -157,6 +160,11 @@ begin
   Context.Snapshots.OutputDirectory := Directory;
   Context.Snapshots.Selected := Snapshot;
   Names := TStringList.Create;
+  FileNames := TStringList.Create;
+  FileNames.Sorted := True;
+  FileNames.CaseSensitive := True;
+  Removed := TStringList.Create;
+  Preserved := TStringList.Create;
   Manifest := nil;
   try
     Names.Sorted := True;
@@ -166,44 +174,56 @@ begin
     for Index := Names.Count - 1 downto 0 do
       if not Context.LibraryFile.TryDeckSnapshot(Names[Index], Revision, Snapshot) then
         Names.Delete(Index);
+    if Directory = ExtractFileDir(CanonicalFile(Context.LibraryPath)) then
+      RefreshWorkingExports(Context.Database, Context.LibraryPath);
     Manifest := TExportManifest.Create(Directory);
     Manifest.Recover;
     ExpansionUTC := UtcTimestamp(UtcNow);
+    LegacyCopy := False;
     SetLength(Written, Names.Count);
     for Index := 0 to Names.Count - 1 do
     begin
       Selection := Default(TDeckSelection);
       Selection.Snapshot := Context.Snapshots.Selected;
-      if Expand then Kind := emExpand else Kind := emExtract;
-      Rendered := RenderDeck(Context.LibraryFile, Context.Database, Names[Index], Selection, Kind, ExpansionUTC);
-      Manifest.PlanExport(Context.LibraryPath, OutputPath(Context, IncludeTrailingPathDelimiter(Directory) + Names[Index]),
-        Names[Index], Version, Rendered.DeckVersion, Kind, Rendered.ExpansionUTC, '', Rendered.Bytes,
+      Rendered := RenderDeck(Context.LibraryFile, Context.Database, Names[Index], Selection, Mode, ExpansionUTC);
+      LegacyCopy := LegacyCopy or Rendered.LegacyCopy;
+      if FileNames.IndexOf(Rendered.FileName) >= 0 then
+        raise EScuError.Create('Several decks export to source filename "' + Rendered.FileName + '". Choose unique source associations before exporting.');
+      FileNames.Add(Rendered.FileName);
+      Manifest.PlanExport(Context.LibraryPath, OutputPath(Context, IncludeTrailingPathDelimiter(Directory) + Rendered.FileName),
+        Names[Index], Version, Rendered.DeckVersion, Mode, Rendered.ExpansionUTC, '', Rendered.Bytes,
         BooleanArgument(Context.Command, 'replace', 'no'));
       Written[Index].Name := Names[Index];
       Written[Index].DeckVersion := Rendered.DeckVersion;
     end;
     DeletedCount := 0;
-    if Expand then DeletedCount := PlanReleaseCleanup(Context, Directory, Version, Names, Manifest);
+    if Expand then DeletedCount := PlanReleaseCleanup(Context, Directory, Version, FileNames, Manifest, Removed, Preserved);
     Manifest.Publish;
     Context.FilesPublished := (Names.Count > 0) or (DeletedCount > 0);
+    if LegacyCopy then Context.Output.Report('Warning: COPY is no longer expanded; COPY directives are released as literal source.');
     if Names.Count > 0 then WriteDeckList(Written, Context.Output);
+    for Index := 0 to Removed.Count - 1 do Context.Output.WriteLine('Removed obsolete release file "' + StringToJSONString(Removed[Index]) + '".');
+    for Index := 0 to Preserved.Count - 1 do Context.Output.WriteLine('Kept untracked release file "' + StringToJSONString(Preserved[Index]) + '"; use replace=yes to remove it.');
     if not Expand then ScheduleBuild(Context, Directory);
     Result := Format('Wrote %d deck(s) for version %s', [Names.Count, Version]);
     if DeletedCount > 0 then Result := Result + Format('; removed %d obsolete file(s).', [DeletedCount]);
   finally
     Manifest.Free;
+    Preserved.Free;
+    Removed.Free;
+    FileNames.Free;
     Names.Free;
   end;
 end;
 
 function ExtractVersion(var Context: TCommandContext): string;
 begin
-  Result := TransferVersion(Context, False);
+  Result := TransferVersion(Context, emExtract);
 end;
 
 function ReleaseVersion(var Context: TCommandContext): string;
 begin
-  Result := TransferVersion(Context, True);
+  Result := TransferVersion(Context, emExpand);
 end;
 
 end.

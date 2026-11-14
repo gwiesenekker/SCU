@@ -5,14 +5,10 @@ unit ScuAudit;
 interface
 
 uses
-  FPJSON, FGL, ScuCommand, ScuLibrary, ScuSQLite, ScuSQLiteAudit;
+  FPJSON, FGL, ScuCommandSnapshots, ScuCommand, ScuLibrary, ScuSQLite, ScuSQLiteAudit;
 
 type
-  TAuditSnapshots = record
-    Selected, FromVersion, ToVersion: TLibrarySnapshot;
-    ResolvedDeck, DeckVersion, FromDeckVersion, ToDeckVersion: string;
-    OutputPath, OutputDirectory: string;
-  end;
+  TAuditSnapshots = ScuCommandSnapshots.TAuditSnapshots;
 
   TAuditRevisionDigests = specialize TFPGMap<Integer, string>;
 

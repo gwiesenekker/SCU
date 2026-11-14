@@ -88,7 +88,6 @@ begin
   try
     Result := ParseObject(Metadata, Context);
   except
-    on E: ECommandCancelled do raise;
     // Use the full parser on malformed metadata so its error locations still
     // refer to the original payload.
     on E: EScuError do Exit(ParseObject(Payload, Context));

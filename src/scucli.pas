@@ -365,17 +365,8 @@ begin
 end;
 
 procedure TScuCLI.RunInteractive(Tokens: TStrings);
-var
-  Previous: TSessionSignalHandlers;
 begin
-  StartSessionSignals(Previous);
-  try
-    RunInteractiveSession(Tokens);
-  finally
-    if PendingSignal in [SIGTERM, SIGQUIT] then
-      ExitCode := 128 + PendingSignal;
-    RestoreSessionSignals(Previous);
-  end;
+  RunInteractiveSession(Tokens);
 end;
 
 function TScuCLI.ParseSessionLine(const Line: string; Tokens: TStrings;
@@ -527,7 +518,9 @@ var
   Tokens: TStringList;
   Index, CommandIndex: Integer;
   Command: TScuCommand;
+  Previous: TSessionSignalHandlers;
 begin
+  StartSessionSignals(Previous);
   Tokens := TStringList.Create;
   try
     for Index := 1 to ParamCount do
@@ -565,6 +558,8 @@ begin
     end;
   finally
     Tokens.Free;
+    if PendingSignal in [SIGTERM, SIGQUIT] then ExitCode := 128 + PendingSignal;
+    RestoreSessionSignals(Previous);
   end;
 end;
 

@@ -39,7 +39,7 @@ function MatchesFilePattern(const Pattern, Name: string): Boolean;
 implementation
 
 uses
-  SysUtils, BaseUnix, ScuErrors, ScuFiles, ScuLibraryModel, ScuLibraryPaths, ScuSignals;
+  SysUtils, BaseUnix, ScuCodec, ScuErrors, ScuFiles, ScuLibraryModel, ScuLibraryPaths, ScuSignals;
 
 function fnmatch(Pattern, Name: PChar; Flags: LongInt): LongInt; cdecl; external 'c';
 
@@ -127,6 +127,8 @@ var
   Index: Integer;
   Owner: TDeckFileBinding;
 begin
+  // Honor the same root/single-line filename contract as explicit imports.
+  ValidateFilePattern(RelativePath);
   Owner := nil;
   if Assigned(FOwners) then
     Owner := TDeckFileBinding(FOwners.Find(RelativePath));
@@ -137,7 +139,13 @@ begin
     Deck := Owner.Deck;
   end
   else
-    Deck := DeckName(ExtractFileName(RelativePath));
+  begin
+    try
+      Deck := DeckName(ExtractFileName(RelativePath));
+    except
+      on E: EScuError do Deck := 'file-' + AuditSHA256(RelativePath);
+    end;
+  end;
   Index := Find(Deck);
   if Index >= 0 then
   begin

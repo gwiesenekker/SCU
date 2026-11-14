@@ -21,6 +21,7 @@ function ReadBytes(const Path: string; Limit: Int64; Options: TReadBytesOptions 
 procedure AtomicWrite(const Path: string; const Data: RawByteString; Options: TAtomicWriteOptions = []); overload;
 procedure AtomicWrite(const Path: string; Data: TStream; Options: TAtomicWriteOptions = []); overload;
 function MakeTempDirectory(const Prefix: string): string;
+function MakeStagingDirectory(const Directory: string): string;
 procedure SyncFile(Handle: THandle; const Path: string);
 procedure SyncParent(const Path: string);
 
@@ -41,6 +42,14 @@ begin
   UniqueString(Result);
   if mkdtemp(PChar(Result)) = nil then
     RaiseSystemError('Could not create temporary directory "' + Result + '"', cerrno);
+end;
+
+function MakeStagingDirectory(const Directory: string): string;
+begin
+  Result := IncludeTrailingPathDelimiter(Directory) + '.scu-stage-' + IntToStr(fpGetPid) + '-XXXXXX';
+  UniqueString(Result);
+  if mkdtemp(PChar(Result)) = nil then
+    RaiseSystemError('Could not create export staging directory in "' + Directory + '"', cerrno);
 end;
 
 function CanonicalFile(const Path: string): string;
@@ -151,6 +160,42 @@ begin
   Result := False;
 end;
 
+procedure RemoveStaleStages(const Directory: string);
+var
+  Search, Child: TSearchRec;
+  Tail, Path, Item: string;
+  Dash, Pid, Number: Integer;
+  Info: Stat;
+begin
+  if FindFirst(IncludeTrailingPathDelimiter(Directory) + '.scu-stage-*', faAnyFile, Search) <> 0 then Exit;
+  try
+    repeat
+      Tail := Copy(Search.Name, 12, MaxInt);
+      Dash := Pos('-', Tail);
+      if (Dash < 2) or (Length(Tail) - Dash <> 6) or
+        not TryStrToInt(Copy(Tail, 1, Dash - 1), Pid) or (Pid <= 0) then Continue;
+      if (fpKill(Pid, 0) = 0) or (fpGetErrNo <> ESysESRCH) then Continue;
+      Path := IncludeTrailingPathDelimiter(Directory) + Search.Name;
+      if (fpLStat(Path, Info) <> 0) or not FPS_ISDIR(Info.st_mode) or (Info.st_uid <> fpGetEUid) then Continue;
+      if FindFirst(Path + '/*', faAnyFile, Child) = 0 then
+      try
+        repeat
+          if not TryStrToInt(Child.Name, Number) or (Number <= 0) then Continue;
+          Item := Path + '/' + Child.Name;
+          if (fpLStat(Item, Info) = 0) and FPS_ISREG(Info.st_mode) and (Info.st_uid = fpGetEUid) then
+            fpUnlink(Item);
+        until FindNext(Child) <> 0;
+      finally
+        FindClose(Child);
+      end;
+      // Refuse to recurse into directories or follow links, even inside a stale stage.
+      if RemoveDir(Path) then SyncParent(Path);
+    until FindNext(Search) <> 0;
+  finally
+    FindClose(Search);
+  end;
+end;
+
 procedure CleanupStaleAtomicFiles(const Directory: string);
 var
   Search: TSearchRec;
@@ -159,6 +204,7 @@ var
   Info: Stat;
   Changed: Boolean;
 begin
+  RemoveStaleStages(Directory);
   Changed := False;
   if FindFirst(IncludeTrailingPathDelimiter(Directory) + '.scu-tmp-*', faAnyFile, Search) <> 0 then Exit;
   try

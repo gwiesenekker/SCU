@@ -136,7 +136,6 @@ begin
     LibraryFile.ParseDeckSnapshot(Candidate, Selector);
     Result := True;
   except
-    on E: ECommandCancelled do raise;
     on E: EScuError do Result := False;
   end;
 end;

@@ -1,6 +1,9 @@
 unit ScuExportTypes;
+
 {$mode objfpc}{$H+}
+
 interface
+
 type
   TExportMode = (emExtract, emExpand);
   TExportRecord = record
@@ -11,6 +14,7 @@ type
   end;
 function ExportModeName(Mode: TExportMode): string;
 implementation
+
 function ExportModeName(Mode: TExportMode): string;
 begin
   if Mode = emExpand then Result := 'expand' else Result := 'extract';

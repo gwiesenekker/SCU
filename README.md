@@ -82,7 +82,10 @@ When reading redirected input, SCU omits the `scu>` prompt.
 
 ## Edit, build, and publish
 
-Working sources live directly beside the SQLite library. Build them there using
+Working sources live directly beside the SQLite library. Filenames containing
+spaces, Unicode, or more than 128 bytes receive stable hashed deck IDs during a
+pattern scan; their original filename bytes remain the export names. Names such
+as `Makefile` and `Main.pas` keep their case during extraction and release. Build them there using
 the programming language's own include facilities. SCU does not interpret COPY
 directives. A line containing `SCU_COPY` or `SCU$COPY` remains ordinary source text.
 
@@ -100,7 +103,10 @@ scu project.sqlite release_version
 
 `import_deck` (`impd`) without a deck name scans `file_patterns` in the library
 directory, importing new and changed files and recording deletion revisions for
-missing tracked files. Unchanged bytes create no revision. Decks created without
+missing tracked files. Unchanged bytes and source associations create no revision. Working-file manifest
+observations are queued transactionally with the imported revision and audit,
+then applied after commit. A later extraction or verification retries pending
+updates after interruption, without writing source files. Decks created without
 a backing source file remain outside the deletion scan. With a deck name, import
 one file: `import_deck main.pas source_file=main.pas`. A source filename must have
 no directory component. SCU never imports a tracked generated release file as
@@ -115,8 +121,8 @@ versions retain the deck, and it can be recreated later.
 ### Extraction and builds
 
 `extract_deck` (`extd`) writes one deck's original bytes. `extract_version` (`extv`)
-writes the complete selected version, including inherited decks. Both use original
-deck filenames, default to the library directory, maintain its `.scu-exports.json`,
+writes the complete selected version, including inherited decks. Both use the selected revision's recorded source filename (falling back to its
+deck ID when none was recorded), default to the library directory, maintain its `.scu-exports.json`,
 and run the configured build command after successful extraction. COPY text and
 macros are preserved in working files. No `.scu` suffix is added.
 
@@ -149,7 +155,7 @@ sources. `build_directory` and `expand_deck` have been removed.
 
 `release_version` (`relv`) publishes **every live deck** in the selected version,
 including inherited decks, on every run. It expands only the macros below, writes
-original deck filenames, and maintains a separate `.scu-exports.json` in the release
+recorded source filenames, and maintains a separate `.scu-exports.json` in the release
 directory. It never invokes `build_command`. There is no incremental expansion
 checkpoint; the checkpoint display/reset commands have been removed.
 
@@ -159,11 +165,13 @@ scu release_version version=1.1
 scu configure_library release_directory=github-release
 ```
 
-Before publication completes, SCU removes obsolete regular files in the output
-directory that match `file_patterns` and are absent from the selected snapshot.
-This includes untracked matching files; keep non-source release assets outside
-those patterns. Files present in the snapshot are retained and rewritten with the
-selected contents. Unmatched files, subdirectories, symbolic links, SQLite files,
+Before publication completes, SCU removes obsolete regular files previously
+recorded by this library in the output directory that match `file_patterns` and
+are absent from the selected snapshot.
+Untracked or foreign matching files are named and kept unless `replace=yes`
+explicitly authorizes their removal. Keep non-source release assets outside
+those patterns. Files present in the snapshot receive the selected contents; identical files
+retain their inode and modification time. Unmatched files, subdirectories, symbolic links, SQLite files,
 and SQLite operational files are preserved. Edited tracked release files require
 `replace=yes` for replacement or deletion. Working source files are never removed
 by release cleanup. All output is planned before any new file is published or
@@ -191,6 +199,8 @@ An inherited deck retains its modification timestamp and deck version, while
 `SCU$VERSION` reflects the selected release. Re-publishing an unchanged snapshot
 produces identical source bytes: macros do not use the wall-clock publication time.
 Normal identifier boundaries apply, so `SCU$VERSION_SUFFIX` is not partially expanded.
+A release or verification warns once when it encounters a former COPY directive;
+no include expansion is performed.
 
 ## Versions and revisions
 
@@ -230,7 +240,10 @@ Bulk extraction and publication select library versions only. The older
 current/previous library-version defaults. Both compare original stored source,
 ignore changes in whitespace amount by default (`diff -b` semantics), and produce
 normal diff output. Use `ignore_space_changes=no` or `output_format=unified` to
-change that behavior. Diffs are generated directly in Free Pascal without GNU
+change that behavior. Textual unified version diffs use `a/` and `b/` source
+filenames, with versions in tab-separated metadata, and can be applied using
+`patch -p1`. Diff search is bounded at 3,072 edits and 256 MiB of search work;
+a limit produces a complete replacement rather than minimal hunks. Diffs are generated directly in Free Pascal without GNU
 diff or temporary files. `deck_name` defaults to `scu$last_modified_deck` for
 single-deck display, diff, edit, and extraction commands.
 
@@ -246,7 +259,8 @@ SCU's Free Pascal line editor provides cursor editing, persistent Up/Down histor
 Ctrl+R reverse search, and Tab completion of commands, parameter names, aliases,
 decks, versions, revisions, and paths. Completion uses the selected snapshot and
 omits parameters already supplied through any spelling. A second Tab lists
-aligned matches; tall lists paginate with Space/Tab, Enter, and Q/Esc. Ctrl+C
+aligned matches; tall lists paginate with Space/Tab, Enter, and Q/Esc. Resizing
+restarts the page at the new dimensions while retaining the command draft. Ctrl+C
 cancels the current input or operation. No GNU Readline dependency is required.
 
 ## Verify extracted and released files
@@ -256,8 +270,11 @@ the library, deck, selected version, actual deck version, mode, checksum, and
 expansion metadata. Filenames and library paths retain their exact byte identity
 separately from readable UTF-8 labels. Legacy manifest formats remain readable.
 
-Before exporting a batch, SCU stages rendered bytes privately and writes one
-intent array. It then replaces files atomically or unlinks obsolete release
+Before exporting a batch, SCU stages rendered bytes in a private PID-tagged
+`.scu-stage-*` directory inside the output directory and writes one intent array.
+Recovery removes stale stages owned by terminated processes, leaving live stages,
+links and unknown directory contents alone. Identical output bytes are not
+rewritten; their manifest metadata can still be refreshed. It then replaces files atomically or unlinks obsolete release
 files, syncing the affected directory, and writes one completed manifest. This
 avoids rewriting and syncing the whole manifest for every deck. Deletion intents
 are journaled alongside writes. Builds run only after extraction completes.
@@ -269,7 +286,8 @@ After interruption, the next export or verification reconciles each intent:
 - Previous bytes or previous absence: retain the previous record.
 - Unexpected bytes: preserve the file and mark the export interrupted for review.
 
-Recovery never overwrites or deletes a file, invokes a build, or replays commands.
+Recovery never overwrites or deletes a destination file, invokes a build, or
+replays commands; it can remove dead-process private staging files.
 Repeated recovery is safe. `replace=yes` permits an explicit retry of conflicting
 outputs. Corrupt manifests report how to restore a backup or reset tracking.
 
@@ -291,9 +309,9 @@ publication removes obsolete matching files and records as described above.
 
 | Command | Parameters in positional order | Default destination |
 | --- | --- | --- |
-| `extract_deck` (`extd`) | `deck_name`, `output_file`, `revision`, `version`, `replace`, `build` | Library directory, `<deck>` |
-| `extract_version` (`extv`) | `version`, `output_directory`, `replace`, `build` | Library directory, `<deck>` |
-| `release_version` (`relv`) | `version`, `output_directory`, `replace` | Release directory, `<deck>` |
+| `extract_deck` (`extd`) | `deck_name`, `output_file`, `revision`, `version`, `replace`, `build` | Library directory, `<recorded source filename>` |
+| `extract_version` (`extv`) | `version`, `output_directory`, `replace`, `build` | Library directory, `<recorded source filename>` |
+| `release_version` (`relv`) | `version`, `output_directory`, `replace` | Release directory, `<recorded source filename>` |
 
 Defaults are `deck_name=scu$last_modified_deck`, `version=scu$current_version`,
 `replace=no`, and `build=yes` for extraction. `revision` is optional. An explicit
@@ -704,3 +722,23 @@ criteria for choosing decks. It also describes `INCLUDE_COPYING_DECKS` for
 finding decks that include a changed common deck. This implementation's bulk
 commands select decks by their stored version history.
 [CDC NOS/VE Source Code Management, revision G, pp. 1-30–1-31](https://www.bitsavers.org/pdf/cdc/cyber/nos_ve/manuals/60464313G_NOS_VE_Source_Code_Management_198804.pdf)
+
+## Review decisions and recovery notes
+
+[Review status](REVIEW_STATUS.md) accounts for every open issue from Claude's
+review of 6afc937, including retained design decisions.
+
+The export manifest is private local tracking state (0600), not a required public
+release artifact. Extraction restores raw bytes; release deliberately substitutes
+its five macro tokens wherever they occur, including in binary decks.
+
+Extracting an older version does not move the library's current version. A later
+import records those working bytes as new revisions. Locking freezes stored decks;
+import external edits before locking if they should belong to the release.
+
+An invalid file-pattern edit is preserved in a private `scu-patterns-recovery-*`
+file and the error reports its full path. Correct the retained text and copy it
+back through the configured editor. If an editor session is forcibly killed,
+private `/tmp/scu-edit-*` working files may remain; inspect and copy valuable
+edits beside the library before importing them. They are not automatically erased
+because they can contain the only copy of an edit.
