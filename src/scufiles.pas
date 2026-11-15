@@ -178,7 +178,7 @@ begin
       if (fpLStat(Path, Info) <> 0) or not FPS_ISDIR(Info.st_mode) or (Info.st_uid <> fpGetEUid) then Continue;
       // File locks identify a live owner across PID namespaces and shared hosts.
       // Old stages without this marker are left for explicit manual cleanup.
-      OwnerHandle := fpOpen(Path + '/.owner', O_RDWR or O_NOFOLLOW or O_CLOEXEC or O_NONBLOCK);
+      OwnerHandle := fpOpen(Path + '/.owner', O_RDONLY or O_NOFOLLOW or O_CLOEXEC or O_NONBLOCK);
       if OwnerHandle < 0 then Continue;
       try
         if (fpFStat(OwnerHandle, Info) <> 0) or not FPS_ISREG(Info.st_mode) or
@@ -224,7 +224,7 @@ begin
       if (Dash < 2) or (Length(Tail) - Dash <> 6) or
         not TryStrToInt(Copy(Tail, 1, Dash - 1), Pid) or (Pid <= 0) then Continue;
       Path := IncludeTrailingPathDelimiter(Directory) + Search.Name;
-      Handle := fpOpen(Path, O_RDWR or O_NOFOLLOW or O_CLOEXEC or O_NONBLOCK);
+      Handle := fpOpen(Path, O_RDONLY or O_NOFOLLOW or O_CLOEXEC or O_NONBLOCK);
       if Handle < 0 then Continue;
       try
         if (fpFStat(Handle, Info) = 0) and FPS_ISREG(Info.st_mode) and (Info.st_uid = fpGetEUid) and

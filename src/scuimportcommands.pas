@@ -14,7 +14,7 @@ procedure RefreshImportedFiles(const Context: TCommandContext);
 implementation
 
 uses
-  ScuWorkingExports, ScuExportTypes, ScuLibraryNames, Classes, Contnrs, SysUtils, ScuCodec, ScuErrors, ScuFiles, ScuFileScan, ScuLibrary,
+  ScuArchiveCompatibility, ScuWorkingExports, ScuExportTypes, ScuLibraryNames, Classes, Contnrs, SysUtils, ScuCodec, ScuErrors, ScuFiles, ScuFileScan, ScuLibrary,
   ScuExportManifest, ScuSignals, ScuTable, ScuTerminal;
 
 type
@@ -242,6 +242,7 @@ begin
       Deck := DeckName(ResolveDeck(Context));
       if Path = '' then
       begin
+        RequireArchiveSourceNames(Context.LibraryFile, Context.Database);
         Path := Context.LibraryFile.DeckSourcePath(Context.Database, Deck);
         if Pos('/', Path) > 0 then
           raise EScuError.Create('The recorded deck source is in a subdirectory. Specify source_file as a filename in the library directory.');

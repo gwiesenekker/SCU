@@ -1,3 +1,38 @@
+# Current review status
+
+The current disposition covers Claude's review of **5d70945** and all earlier
+findings. **No implementation fixes from that review are deferred.** Old imported
+archives still require the explicit rebuild described below; audited revisions
+are never rewritten. Earlier sections contain supporting detail, and their
+validation counts are explicitly historical.
+
+| ID | Current disposition | Reason or change |
+| --- | --- | --- |
+| X21 | Fixed | Check every stored revision of the import-manifest deck, rather than only its live snapshot. Old provenance remains effective after deletion, recreation, or replacement. Check only that deck's metadata; decompress only candidates with the old recorded filename. Regression tests cover deletion, recreation, a single remaining numeric deck, default/bulk exports, verification, unified diff, explicit-file rescue and intact audited revisions. |
+| X20 | Fixed | Open cleanup candidates and `.owner` markers with `O_RDONLY`, retaining no-follow, ownership/type checks and nonblocking exclusive flock. Read-only stale files can be unlinked using directory permissions. Regression covers 0444/0644 atomic temporaries and a 0400 ownership marker. |
+| X18 | Guarded; rebuild required | The library-wide history guard prevents unsafe default filenames. Named import without `source_file` now gives the same rebuild instruction. Explicit source-file import and literal output-file extraction remain available for rescue. Rebuild old archives into a new database, preserving any later edits separately. Ordinary numeric filenames without old provenance remain valid. |
+| X19 | Fixed; real-process test added | In addition to simulated lock owners, pause a real SCU after staging, confirm its `.owner` cannot be locked by another process, start a concurrent release, and verify it waits without deleting the live stage. Kill the first SCU and confirm the waiting release cleans the stale stage, completes publication and passes audit/manifest verification. |
+| Filename notices | Fixed where needed | The delete working-file notice now JSON-escapes line breaks. Release kept/removed notices already did so; the regression verifies both. |
+| D3 | Closed, documented contract | Headers use recorded filenames in both comparison modes. Exact textual patch applicability requires `ignore_space_changes=no`; the default remains the requested whitespace-insensitive review mode. |
+| D1 | Retained design | Bounded diff search prevents pathological memory/time use; fallback emits a complete replacement. |
+| M5 | Retained design | Typed owners retain canonical JSON to preserve existing audit digests and unknown extensions. |
+| M11, M17 | Retained design | Further naming/property changes and arbitrary routine-length limits are style preferences, not identified correctness defects. Responsibility splits already made remain in place. |
+| M24, M25 | Retained design | Keep explicit typed SQL ownership and coherent reader state instead of introducing generic wrappers or a second input-source hierarchy. |
+| P20, P21 | Retained behavior | Recoverable editor files are retained for rescue; last_modified_deck literally includes deletions and reports them explicitly. Neither behavior silently discards/substitutes user work. |
+
+Other recommendations: README examples now use `ARCHIVE`, the X15 summary uses
+lock-based cleanup, and historical test counts are labeled by the fixes they
+validated. Claude Desktop's failing shell is an external application/environment
+issue; it is not an SCU defect and is not changed here. This workspace's shell,
+build, crash-injection and process tests are available and exercised.
+
+Validation: `make test` passed with 276 tests run: 275 passed and one skipped
+because this host has no second writable group. Five new regressions cover the
+changes above. The executor probe and catalog checks passed; `git diff --check`
+also passed.
+
+---
+
 # Disposition of Claude's review of b2688d9
 
 Claude's reading-only review correctly identified additional workflow edges. The
@@ -26,7 +61,7 @@ feature. The prior commit is left intact; no history rewriting is proposed to
 split an already reviewed commit. Future commits can separate independent
 behavior and refactoring changes.
 
-Validation: `make test` passed after the final changes: 271 tests run, 270
+Validation of the b2688d9 fixes at 5d70945: `make test` passed: 271 tests run, 270
 passed and one skipped because this host has no second writable group. The ten
 new regression tests cover the findings above, and the executor probe and catalog
 checks passed. `git diff --check` passed.
@@ -58,11 +93,11 @@ left “partly fixed” without a decision.
 | ID | Disposition | Change or reason |
 | --- | --- | --- |
 | C3 | Fixed | The group-preservation test passes `replace=yes`. It still legitimately skips when there is no second writable group on the test host. |
-| X15 | Fixed | Private staging directories live under the output directory, include the owning PID, and are cleaned after normal completion. One-shot commands now install the same termination handlers as sessions. Recovery removes dead-PID stages without following links or recursively deleting unknown contents; live-PID stages are retained. A forced kill necessarily defers cleanup until the next operation. |
+| X15 | Fixed | Private staging directories live under the output directory, include the owning PID, and are cleaned after normal completion. One-shot commands now install the same termination handlers as sessions. Recovery removes unlocked stages without following links or recursively deleting unknown contents; stages with held ownership locks are retained (X19). The PID in the name is diagnostic only. A forced kill necessarily defers cleanup until the next operation. |
 | X17 | Fixed | Release and verification each warn once when a selected deck contains a former COPY directive. Source remains literal. The removal is explicitly documented as breaking. |
 | X16 | Fixed | In-memory manifest identities use fixed-length SHA-256 keys. Full path bytes remain separately encoded in JSON; long common filename prefixes cannot truncate map keys. |
 | F8 | Fixed | Publication rechecks the destination checksum, skips replacement/fsync for identical bytes, and still updates the manifest. Inode/mtime preservation is tested. |
-| D3 | Fixed for textual unified version diffs | With `ignore_space_changes=no`, headers use `a/<recorded filename>` and `b/<recorded filename>`, with deck versions after a tab. An application test covers multiple changed, added and removed files with `patch -p1`. Normal comparison output and single-deck descriptive labels are retained. Binary differences and empty-deck notices are comparisons, not executable patch instructions. |
+| D3 | Fixed for textual unified version diffs | Headers use `a/<recorded filename>` and `b/<recorded filename>` in both modes, with deck versions after a tab. Exact patch applicability requires `ignore_space_changes=no`. An application test covers multiple changed, added and removed files with `patch -p1`. Normal comparison output and single-deck descriptive labels are retained. Binary differences and empty-deck notices are comparisons, not executable patch instructions. |
 | I10 | Fixed pager resizing; deliberate key timing | SIGWINCH restarts the completion page using current dimensions and retains the command draft/cursor. The editor intentionally uses one horizontally scrolling row. The 500 ms lone-Escape and 1 s sequence timeouts are retained to distinguish Escape from delayed terminal/SSH key sequences. |
 | M11 | Scoped fix; remaining naming is style | New domain/query implementations use `strict private`; library storage/extraction use named option sets and output locks use an enum policy. Methods taking selection/query parameters remain methods. Converting every accessor or unit-private loader helper to a property is not a correctness requirement. |
 | M12 | Closed: ownership is explicit | Store-owned lazy entries are documented as borrowed; returned value records/arrays are managed values; configuration copies are caller-owned; `var` JSON handoffs clear the original owner. Executor cleanup remains centralized in `finally`. No outstanding lifetime defect was identified; constructor/factory names need not all encode Pascal's conventional ownership rules. |
@@ -93,7 +128,7 @@ left “partly fixed” without a decision.
   Automatically importing or scanning external edits would change the meaning of
   that command. The help/workflow now reminds users to import first.
 
-## Validation
+## Historical validation of the 6afc937 fixes
 
 Regression tests cover the four data/workflow fixes, observation replay and audit
 rollback, long filename identities, actual filename preservation, stale stages,

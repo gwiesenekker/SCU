@@ -7,41 +7,60 @@ interface
 uses ScuLibrary, ScuSQLite;
 
 // Never guess a numeric filename or rewrite revisions covered by audit digests.
-procedure RequireArchiveSourceNames(LibraryFile: TDeckLibrary; Database: TSQLiteLibrary;
-  LibraryRevision: Integer);
+procedure RequireArchiveSourceNames(LibraryFile: TDeckLibrary; Database: TSQLiteLibrary);
 
 implementation
 
-uses FPJSON, ScuJSON, ScuErrors;
+uses Classes, SysUtils, FPJSON, ScuJSON, ScuErrors, ScuSignals;
 
-procedure RequireArchiveSourceNames(LibraryFile: TDeckLibrary; Database: TSQLiteLibrary;
-  LibraryRevision: Integer);
+function HasLegacyProvenance(LibraryFile: TDeckLibrary; Database: TSQLiteLibrary;
+  Revision: Integer): Boolean;
 const ManifestDeck = 'scu-import-manifest.json';
 var
-  Snapshot: TLibrarySnapshot;
   Source: TDeckSource;
   Document: TJSONObject;
 begin
-  if not LibraryFile.TryDeckSnapshot(ManifestDeck, LibraryRevision, Snapshot) then Exit;
-  Source := LibraryFile.ReadDeckMetadata(Database, ManifestDeck, Snapshot.LibraryRevision);
+  Result := False;
+  if LibraryFile.RevisionDeleted[Revision] then Exit;
+  Source := LibraryFile.ReadDeckMetadata(Database, ManifestDeck, Revision);
   if Source.SourcePath <> 'manifest.json' then Exit;
-  Source := LibraryFile.Extract(Database, ManifestDeck, Snapshot.LibraryRevision);
+  Source := LibraryFile.Extract(Database, ManifestDeck, Revision);
   try
     Document := ParseObject(Source.Bytes, ManifestDeck);
   except
     on E: EScuError do Exit; // An ordinary deck with the same name is not provenance.
   end;
   try
-    if not Assigned(Document.Find('source_archive', jtString)) or
-      not Assigned(Document.Find('files', jtArray)) or
-      not Assigned(Document.Find('history', jtArray)) or
-      not Assigned(Document.Find('format', jtNumber)) then Exit;
-    if Document.Integers['format'] <> 1 then Exit;
-    raise EScuError.Create('This archive library was created by the old importer with temporary source filenames. ' +
-      'Rebuild from the original archive with tools/import_versions.py ARCHIVE NEW.sqlite, then verify and use the new library. ' +
-      'The existing library and its audited revisions have not been rewritten.');
+    Result := Assigned(Document.Find('source_archive', jtString)) and
+      Assigned(Document.Find('files', jtArray)) and
+      Assigned(Document.Find('history', jtArray)) and
+      Assigned(Document.Find('format', jtNumber));
+    if Result then Result := Document.Find('format').AsJSON = '1';
   finally
     Document.Free;
+  end;
+end;
+
+procedure RequireArchiveSourceNames(LibraryFile: TDeckLibrary; Database: TSQLiteLibrary);
+var
+  Revisions: TStringList;
+  Item: string;
+begin
+  // Provenance is library-wide. Deleting or replacing its latest deck must not
+  // hide an older importer revision, even when selecting a different snapshot.
+  Revisions := TStringList.Create;
+  try
+    LibraryFile.ListDeckRevisions('scu-import-manifest.json', Revisions, [drLibraryRevision]);
+    for Item in Revisions do
+    begin
+      CheckSessionInterrupt;
+      if HasLegacyProvenance(LibraryFile, Database, StrToInt(Item)) then
+        raise EScuError.Create('This archive library was created by the old importer with temporary source filenames. ' +
+          'Rebuild from the original archive with tools/import_versions.py ARCHIVE NEW.sqlite, then verify and use the new library. ' +
+          'The existing library and its audited revisions have not been rewritten.');
+    end;
+  finally
+    Revisions.Free;
   end;
 end;
 

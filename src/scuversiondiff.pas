@@ -93,8 +93,7 @@ begin
   Context.Snapshots.ToVersion := Context.LibraryFile.ParseLibrarySnapshot(Context.Command['to_version']);
   if Format = dfUnified then
   begin
-    RequireArchiveSourceNames(Context.LibraryFile, Context.Database, Context.Snapshots.FromVersion.LibraryRevision);
-    RequireArchiveSourceNames(Context.LibraryFile, Context.Database, Context.Snapshots.ToVersion.LibraryRevision);
+    RequireArchiveSourceNames(Context.LibraryFile, Context.Database);
   end;
   Context.Output.Report('From version ' + Context.Snapshots.FromVersion.Version + '.');
   Context.Output.Report('To version ' + Context.Snapshots.ToVersion.Version + '.');

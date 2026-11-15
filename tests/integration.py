@@ -6490,6 +6490,136 @@ char *mkdtemp(char *pattern) {
         self.assertEqual(self.run_scu("disvd", "of=unified"), "")
         self.assertIn("-first  line", self.run_scu("disvd", "of=unified", "isc=no"))
 
+    def make_old_importer_fixture(self):
+        (self.root / "0").write_bytes(b"first")
+        self.run_scu("impd", "first.pas", "0")
+        (self.root / "0").write_bytes(b"second")
+        self.run_scu("impd", "second.pas", "0")
+        (self.root / "manifest.json").write_text(json.dumps({
+            "format": 1, "source_archive": "ARCHIVE", "history": [], "files": []}))
+        self.run_scu("impd", "scu-import-manifest.json", "manifest.json")
+        self.run_scu("locv", "Old import"); self.run_scu("crev", "1.1")
+
+    def test_review_c_x21_deleted_or_recreated_provenance_still_guards_library(self):
+        self.make_old_importer_fixture()
+        self.run_scu("deld", "scu-import-manifest.json")
+        self.run_scu("deld", "second.pas")
+        for stage in ("deleted", "recreated"):
+            if stage == "recreated":
+                (self.root / "scu-import-manifest.json").write_text("ordinary replacement")
+                self.run_scu("impd", "scu-import-manifest.json", "scu-import-manifest.json")
+            before = self.read_library()["revisions"]
+            for command in (("extv", "build=no"), ("relv",), ("extd", "first.pas"), ("verd",),
+                            ("disvd", "of=unified")):
+                with self.subTest(stage=stage, command=command):
+                    self.run_scu(*command, error="old importer with temporary source filenames")
+            self.assertEqual(self.read_library()["revisions"], before)
+            self.assertFalse((self.root / "release/0").exists())
+            self.run_scu("extd", "first.pas", "o=rescue.pas", "build=no")
+            self.assertEqual((self.root / "rescue.pas").read_bytes(), b"first")
+        self.run_scu("vera")
+
+    def test_review_c_old_importer_default_import_reports_rebuild(self):
+        self.make_old_importer_fixture()
+        self.run_scu("deld", "scu-import-manifest.json")
+        (self.root / "0").unlink()
+        self.run_scu("impd", "first.pas", error="old importer with temporary source filenames")
+        # Explicit source selection is still available for deliberate repair/rescue.
+        (self.root / "First.pas").write_bytes(b"new source")
+        self.run_scu("impd", "first.pas", "First.pas")
+        self.run_scu("extd", "first.pas", "o=rescue.pas", "build=no")
+        self.assertEqual((self.root / "rescue.pas").read_bytes(), b"new source")
+        self.run_scu("vera")
+
+    def test_review_c_x20_read_only_stale_temporaries_are_removed(self):
+        self.store("main", b"source")
+        directory = self.root / "release"
+        directory.mkdir()
+        paths = [directory / f".scu-tmp-{os.getpid()}-{suffix}" for suffix in ("READON", "WRITAB")]
+        for path, mode in zip(paths, (0o444, 0o644)):
+            path.write_bytes(b"stale"); path.chmod(mode)
+        # A read-only ownership marker also permits stale-stage cleanup.
+        stage = directory / f".scu-stage-{os.getpid()}-ABCDEF"
+        stage.mkdir(mode=0o700)
+        (stage / ".owner").touch(mode=0o400)
+        (stage / "1").write_bytes(b"stale staged bytes")
+        self.run_scu("relv")
+        self.assertTrue(all(not path.exists() for path in paths))
+        self.assertFalse(stage.exists())
+        self.run_scu("relv")
+        self.assertIn("No errors were found", self.run_scu("verd"))
+
+    def test_review_c_x19_real_scu_holds_stage_lock_until_killed(self):
+        self.store("main", b"staged source")
+        directory = self.root / "release"
+        ready = self.root / "stage-ready"
+        shim = self.review_shim("pause_staged_scu", r'''
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+int mkstemp(char *pattern) {
+  static int (*next)(char *); static int paused;
+  if (!next) next=dlsym(RTLD_NEXT,"mkstemp");
+  const char *directory=getenv("SCU_TEST_DIRECTORY"), *ready=getenv("SCU_TEST_READY");
+  if (!paused && directory && ready && !strncmp(pattern,directory,strlen(directory)) &&
+      !strncmp(pattern+strlen(directory),"/.scu-tmp-",10)) {
+    paused=1; int fd=open(ready,O_WRONLY|O_CREAT,0600); if(fd>=0) close(fd);
+    raise(SIGSTOP);
+  }
+  return next(pattern);
+}
+''')
+        first = subprocess.Popen([SCU, "relv"], cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 env=dict(os.environ, LD_PRELOAD=str(shim), SCU_TEST_DIRECTORY=str(directory),
+                                          SCU_TEST_READY=str(ready)))
+        second = None
+        try:
+            deadline = time.monotonic() + 5
+            while not ready.exists() and first.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(ready.exists(), "SCU did not reach the staged-publication pause")
+            stages = list(directory.glob(".scu-stage-*"))
+            self.assertEqual(len(stages), 1)
+            self.assertEqual((stages[0] / "1").read_bytes(), b"staged source")
+            with (stages[0] / ".owner").open("rb") as owner:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            second = subprocess.Popen([SCU, "relv"], cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            time.sleep(0.1)
+            self.assertIsNone(second.poll())
+            self.assertTrue((stages[0] / "1").exists())
+            first.kill(); first.communicate(timeout=5)
+            output, error = second.communicate(timeout=10)
+            self.assertEqual(second.returncode, 0, error)
+            self.assertEqual(list(directory.glob(".scu-stage-*")), [])
+            self.assertEqual((directory / "main").read_bytes(), b"staged source")
+            self.assertIn("No errors were found", self.run_scu("verd"))
+            self.run_scu("vera")
+        finally:
+            for process in (first, second):
+                if process is not None:
+                    if process.poll() is None: process.kill()
+                    process.communicate(timeout=5)
+
+    def test_review_c_filename_notices_escape_line_breaks(self):
+        source = self.root / "source\nname.pas"
+        source.write_bytes(b"source")
+        self.run_scu("impd", "main.pas", "source_file=" + source.name)
+        result = self.run_scu("deld", "main.pas")
+        self.assertIn('source\\nname.pas" kept;', result)
+        self.assertNotIn("source\nname.pas", result)
+        self.configure_file_patterns(["*.pas"])
+        (self.root / "release").mkdir()
+        (self.root / "release" / source.name).write_bytes(b"untracked")
+        result = self.run_scu("relv")
+        self.assertIn('Kept untracked release file "source\\nname.pas"', result)
+        self.assertNotIn("source\nname.pas", result)
+
+
 
 if __name__ == "__main__":
     unittest.main()

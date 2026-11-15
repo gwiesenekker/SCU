@@ -286,7 +286,9 @@ A held file lock identifies a live stage, independently of local PIDs, including
 on shared filesystems with working advisory locks. Recovery removes unlocked
 stages, leaving locked stages, links and unknown directory contents alone.
 Legacy stages without an ownership marker require manual cleanup. Atomic
-replacement temporaries also remain locked until publication finishes. Identical output bytes are not
+replacement temporaries also remain locked until publication finishes. Cleanup
+opens stale temporaries and ownership markers read-only, so preserved read-only
+output permissions do not prevent recovery. Identical output bytes are not
 rewritten; their manifest metadata can still be refreshed. It then replaces files atomically or unlinks obsolete release
 files, syncing the affected directory, and writes one completed manifest. This
 avoids rewriting and syncing the whole manifest for every deck. Deletion intents
@@ -739,7 +741,7 @@ commands select decks by their stored version history.
 ## Review decisions and recovery notes
 
 [Review status](REVIEW_STATUS.md) accounts for every open issue from Claude's
-reviews of 6afc937 and b2688d9, including retained design decisions.
+reviews through 5d70945, including retained design decisions.
 
 The export manifest is private local tracking state (0600), not a required public
 release artifact. Extraction restores raw bytes; release deliberately substitutes
@@ -765,17 +767,20 @@ because they can contain the only copy of an edit.
 
 Archive imports made before b2688d9 recorded numeric staging filenames (`0`, `1`,
 …) and `manifest.json` rather than their original source names. Inherited decks
-can share these numbers. SCU detects the old import manifest and refuses default source exports, bulk
-exports, verification and unified version patches before publishing wrong
-names. Numeric filenames in ordinary libraries remain valid. Existing audited
+can share these numbers. SCU checks the entire import-manifest deck history, even after deletion or
+replacement, and refuses default source exports, bulk exports, verification and
+unified version patches before publishing wrong names. A named `import_deck`
+without `source_file` also reports the rebuild requirement instead of trying a
+staging filename. Explicit `source_file` selection remains available. Numeric filenames in ordinary libraries remain valid. Existing audited
 revisions are never rewritten or guessed from their deck IDs.
 
-Rebuild such an archive into a **new** library with the current importer:
+Rebuild such an archive into a **new** library with the current importer
+(replace `ARCHIVE` with the source archive directory):
 
 ```sh
-python3 tools/import_versions.py /tmp2/gwies/gwd8/SCU build/gwd8-rebuilt.sqlite
-build/scu build/gwd8-rebuilt.sqlite verify_audit_trail
-build/scu build/gwd8-rebuilt.sqlite release_version
+python3 tools/import_versions.py ARCHIVE build/rebuilt.sqlite
+build/scu build/rebuilt.sqlite verify_audit_trail
+build/scu build/rebuilt.sqlite release_version
 ```
 
 Keep the old database until the rebuilt snapshots and released filenames have

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Keep the old-importer guard active after the provenance deck is deleted or replaced by checking its complete revision history. Explain rebuilding for named imports that rely on a recorded temporary filename; explicit-file rescue remains available.
+- Clean read-only stale atomic temporaries and stage ownership markers without requiring write access to their contents.
+- Escape line breaks in the delete_deck working-file notice; release cleanup notices already escape filename bytes.
+- Add regressions for deleted/recreated importer provenance, implicit import diagnostics, read-only cleanup, actual SCU staging locks across concurrent publication and SIGKILL, and filename notices.
+- Consolidate current review dispositions, clarify historical validation counts and lock-based cleanup, and replace the machine-specific README rebuild path with an archive placeholder.
+
 - Detect archives made with numeric staging filenames by the old importer; refuse unsafe source exports and document rebuilding into a new library without rewriting audited history.
 - Validate POSIX source filenames separately from file patterns; preserve backslash, colon and line-break filenames during scans, import, extraction, release and manifest replay.
 - Ignore unreadable/oversized observation hints instead of blocking other files, and preserve batch cancellation during post-commit manifest refresh while reporting the committed import.

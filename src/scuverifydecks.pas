@@ -239,7 +239,7 @@ var
   Index: Integer;
   Detail: string;
 begin
-  RequireArchiveSourceNames(FContext.LibraryFile, FContext.Database, FContext.Snapshots.Selected.LibraryRevision);
+  RequireArchiveSourceNames(FContext.LibraryFile, FContext.Database);
   if FContext.OutputDirectory = ExtractFileDir(CanonicalFile(FContext.LibraryPath)) then
     RefreshWorkingExports(FContext.Database, FContext.LibraryPath);
   Manifest := TExportManifest.Create(FContext.OutputDirectory);

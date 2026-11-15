@@ -106,7 +106,7 @@ begin
   Path := OutputFileArgument(Context.Command);
   if not Context.Command.Provided['output_file'] or SameText(Path, DeckNameSelector) or
     SameText(Path, LastModifiedDeckSelector) then
-    RequireArchiveSourceNames(Context.LibraryFile, Context.Database, Selection.Snapshot.LibraryRevision);
+    RequireArchiveSourceNames(Context.LibraryFile, Context.Database);
   Rendered := RenderDeck(Context.LibraryFile, Context.Database, Deck, Selection, emExtract);
   if SameText(Path, DeckNameSelector + '.scu') then
     Path := DeckName(Deck) + '.scu'
@@ -156,7 +156,7 @@ begin
     Snapshot := Context.LibraryFile.CurrentSnapshot
   else Snapshot := Context.LibraryFile.ParseLibrarySnapshot(Context.Command['version']);
   Version := Snapshot.Version;
-  RequireArchiveSourceNames(Context.LibraryFile, Context.Database, Snapshot.LibraryRevision);
+  RequireArchiveSourceNames(Context.LibraryFile, Context.Database);
   Context.LibraryFile.VersionBounds(Version, Base, Revision);
   Directory := CanonicalDirectory(Context.OutputDirectory);
   if Expand and (Directory = ExtractFileDir(CanonicalFile(Context.LibraryPath))) then

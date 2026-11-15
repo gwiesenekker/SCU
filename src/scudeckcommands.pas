@@ -17,7 +17,7 @@ function DiffDeck(var Context: TCommandContext): string;
 implementation
 
 uses
-  Classes, SysUtils, ScuCodec, ScuErrors, ScuDiff, ScuLibraryDisplay, ScuEdit, ScuFiles, ScuLibrary, ScuTerminal, ScuVersions;
+  Classes, SysUtils, FPJSON, ScuCodec, ScuErrors, ScuDiff, ScuLibraryDisplay, ScuEdit, ScuFiles, ScuLibrary, ScuTerminal, ScuVersions;
 
 function DeckWriteReport(LibraryFile: TDeckLibrary; const Deck: string; StoredRevision: Integer): string;
 begin
@@ -64,7 +64,7 @@ begin
     Context.LibraryFile.DeckSourcePath(Context.Database, Deck);
   Result := 'Deleted ' + DeckWriteReport(Context.LibraryFile, Deck, Revision);
   if FileExists(WorkingFile) then
-    Result := Result + LineEnding + 'Working file "' + WorkingFile + '" kept; remove it or import_deck will recreate the deck.';
+    Result := Result + LineEnding + 'Working file "' + StringToJSONString(WorkingFile) + '" kept; remove it or import_deck will recreate the deck.';
 end;
 
 function EditDeckCommand(var Context: TCommandContext): string;
