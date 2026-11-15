@@ -5,7 +5,7 @@ unit ScuExportManifest;
 interface
 
 uses
-  Classes, Contnrs, ScuExportTypes;
+  Classes, Contnrs, ScuExportTypes, ScuLocks;
 
 const
   ExportManifestName = '.scu-exports.json';
@@ -17,6 +17,7 @@ type
   TExportManifest = class
   private
     FPath, FStageDirectory: string;
+    FStageLock: TFileLock;
     FFiles: TFPHashObjectList;
     FRemovedCount: Integer;
     FPending, FPlanned: TObjectList;
@@ -52,7 +53,7 @@ implementation
 
 uses
   SysUtils, FPJSON, DateUtils, ScuClock, ScuCodec, ScuErrors, ScuFiles, ScuJSON,
-  ScuSignals, ScuLibraryModel, ScuVersions;
+  ScuSignals, ScuLibraryNames, ScuLibraryModel, ScuVersions;
 
 type
   TExportItem = class
@@ -190,7 +191,12 @@ begin
     for Index := 0 to FPlanned.Count - 1 do
       if TExportPlan(FPlanned[Index]).StageFile <> '' then
         DeleteFile(TExportPlan(FPlanned[Index]).StageFile);
-  if FStageDirectory <> '' then RemoveDir(FStageDirectory);
+  if FStageDirectory <> '' then
+  begin
+    DeleteFile(FStageDirectory + '/.owner');
+    FreeAndNil(FStageLock);
+    RemoveDir(FStageDirectory);
+  end;
   FPlanNames.Free;
   FPlanned.Free;
   FPending.Free;
@@ -409,19 +415,23 @@ end;
 procedure TExportManifest.Observe(const Entry: TExportRecord; Removed: Boolean);
 var Path: string; Existing: TExportItem;
 begin
-  ValidateFilePattern(Entry.FileName);
-  if Entry.FileName = ExportManifestName then
-    raise EScuError.Create('The export manifest is not a working source filename.');
+  ValidateSourceFileName(Entry.FileName);
   Path := IncludeTrailingPathDelimiter(ExtractFileDir(FPath)) + Entry.FileName;
-  if Removed then
-  begin
-    Existing := TExportItem(FFiles.Find(FileKey(Entry.FileName)));
-    if not RegularFileExists(Path) and Assigned(Existing) and
-      (Existing.Data.LibraryPath = Entry.LibraryPath) and (Existing.Data.Mode = emExtract) then
-      RemoveRecord(Entry.FileName);
-  end
-  else if RegularFileExists(Path) and (AuditSHA256(ReadBytes(Path, MaxDeckSize)) = Entry.SHA256) then
-    Install(Entry);
+  // Observations are hints. A changed, unreadable, non-regular or oversized
+  // working file must not block other observations or later commands.
+  try
+    if Removed then
+    begin
+      Existing := TExportItem(FFiles.Find(FileKey(Entry.FileName)));
+      if not RegularFileExists(Path) and Assigned(Existing) and
+        (Existing.Data.LibraryPath = Entry.LibraryPath) and (Existing.Data.Mode = emExtract) then
+        RemoveRecord(Entry.FileName);
+    end
+    else if RegularFileExists(Path) and (AuditSHA256(ReadBytes(Path, MaxDeckSize, [rbNoFollow])) = Entry.SHA256) then
+      Install(Entry);
+  except
+    on E: EScuError do Exit;
+  end;
 end;
 
 procedure TExportManifest.SaveObservations;
@@ -452,7 +462,11 @@ begin
     raise EScuError.Create('Refusing to overwrite untracked or edited output "' + OutputPath + '". Use replace=yes to replace it explicitly.');
   if FPlanNames.Find(FileKey(Name)) <> nil then
     raise EScuError.Create('Duplicate output path in export batch: "' + OutputPath + '".');
-  if FStageDirectory = '' then FStageDirectory := MakeStagingDirectory(ExtractFileDir(FPath));
+  if FStageDirectory = '' then
+  begin
+    FStageDirectory := MakeStagingDirectory(ExtractFileDir(FPath));
+    FStageLock := TFileLock.Create(FStageDirectory + '/.owner');
+  end;
   Plan := TExportPlan.Create;
   FPlanned.Add(Plan);
   FPlanNames.Add(FileKey(Name), Plan);

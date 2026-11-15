@@ -21,7 +21,7 @@ var
   Patterns: TStringList;
   Index: Integer;
   Updated: RawByteString;
-  RecoveryPath: string;
+  RecoveryPath, RecoveryDirectory, RecoveryError: string;
 begin
   Patterns := TStringList.Create;
   try
@@ -43,8 +43,20 @@ begin
     except
       on E: EScuError do
       begin
-        RecoveryPath := MakeTempDirectory('scu-patterns-recovery') + '/file_patterns.txt';
-        AtomicWrite(RecoveryPath, Updated);
+        RecoveryDirectory := '';
+        try
+          RecoveryDirectory := MakeTempDirectory('scu-patterns-recovery');
+          RecoveryPath := RecoveryDirectory + '/file_patterns.txt';
+          AtomicWrite(RecoveryPath, Updated);
+        except
+          on SaveError: ECommandCancelled do raise;
+          on SaveError: Exception do
+          begin
+            RecoveryError := SaveError.Message;
+            if RecoveryDirectory <> '' then RemoveDir(RecoveryDirectory);
+            raise EScuError.Create(E.Message + ' Could not preserve edited patterns: ' + RecoveryError);
+          end;
+        end;
         raise EScuError.Create(E.Message + ' Edited patterns were preserved in "' + RecoveryPath + '".');
       end;
     end;

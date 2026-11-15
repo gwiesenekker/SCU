@@ -408,7 +408,7 @@
           "values": ["normal", "unified"]
         }
       ],
-      "help": "Show source diffs for all decks whose contents differ between the selected versions. Include inherited decks and represent added or removed source with /dev/null. Added or removed empty decks have an explicit notice. By default ignore whitespace amount changes and trailing whitespace, like diff -b. Set ignore_space_changes=no for exact comparison. Default to normal diff output; use output_format=unified for unified output with three context lines. Unified textual output uses quoted a/ and b/ recorded filenames and tab-separated versions, suitable for patch -p1. Search limits fall back to complete replacements rather than minimal hunks.",
+      "help": "Show source diffs for all decks whose contents differ between the selected versions. Include inherited decks and represent added or removed source with /dev/null. Added or removed empty decks have an explicit notice. By default ignore whitespace amount changes and trailing whitespace, like diff -b. Set ignore_space_changes=no for exact comparison. Default to normal diff output; use output_format=unified for unified output with three context lines. Unified textual output uses quoted a/ and b/ recorded filenames and tab-separated versions, suitable for patch -p1. Search limits fall back to complete replacements rather than minimal hunks. For an exact textual patch suitable for patch -p1, set output_format=unified ignore_space_changes=no. The default ignore_space_changes=yes is for review and can omit whitespace-only changes; it does not guarantee reconstruction of the target bytes.",
       "examples": [
         {
           "command": "scu display_version_diff",

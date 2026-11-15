@@ -81,6 +81,9 @@ type
     function DeckFileBacked(Database: TSQLiteLibrary; const Deck: string): Boolean;
     function IsWorkingSourceFile(Database: TSQLiteLibrary; const FileName: string): Boolean;
     function Delete(Database: TSQLiteLibrary; const Deck: string): Integer;
+    // Returns metadata with Bytes empty; does not decompress the source.
+    function ReadDeckMetadata(Database: TSQLiteLibrary; const Deck: string; LibraryRevision: Integer;
+      const SelectedVersion: string = ''; Options: TDeckExtractOptions = []): TDeckSource;
     function Extract(Database: TSQLiteLibrary; const Deck: string; LibraryRevision: Integer;
       const SelectedVersion: string = ''; Options: TDeckExtractOptions = []): TDeckSource;
     procedure RequireOpenVersion;
@@ -380,7 +383,7 @@ begin
   Result := Revision;
 end;
 
-function TDeckLibrary.Extract(Database: TSQLiteLibrary; const Deck: string; LibraryRevision: Integer;
+function TDeckLibrary.ReadDeckMetadata(Database: TSQLiteLibrary; const Deck: string; LibraryRevision: Integer;
   const SelectedVersion: string; Options: TDeckExtractOptions): TDeckSource;
 var
   Name: string;
@@ -402,7 +405,14 @@ begin
   Result.SourcePath := Entry.SourcePath;
   Result.ModifiedUTC := Entry.ModifiedUTC;
   Result.DeckVersion := DeckVersionAt(StoredRevision);
-  Result.Bytes := Entry.Decode;
+  Result.Bytes := '';
+end;
+
+function TDeckLibrary.Extract(Database: TSQLiteLibrary; const Deck: string; LibraryRevision: Integer;
+  const SelectedVersion: string; Options: TDeckExtractOptions): TDeckSource;
+begin
+  Result := ReadDeckMetadata(Database, Deck, LibraryRevision, SelectedVersion, Options);
+  Result.Bytes := FStore.PayloadAt(Result.LibraryRevision - 1, Database).Decode;
 end;
 
 function TDeckLibrary.DeckList(LibraryRevision: Integer): TDeckListEntries;

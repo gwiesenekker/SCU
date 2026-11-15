@@ -14,7 +14,7 @@ procedure RefreshImportedFiles(const Context: TCommandContext);
 implementation
 
 uses
-  ScuWorkingExports, ScuExportTypes, Classes, Contnrs, SysUtils, ScuCodec, ScuErrors, ScuFiles, ScuFileScan, ScuLibrary,
+  ScuWorkingExports, ScuExportTypes, ScuLibraryNames, Classes, Contnrs, SysUtils, ScuCodec, ScuErrors, ScuFiles, ScuFileScan, ScuLibrary,
   ScuExportManifest, ScuSignals, ScuTable, ScuTerminal;
 
 type
@@ -71,7 +71,7 @@ begin
   Entry.FileName := RelativePath;
   Entry.Deck := Deck;
   Entry.LibraryVersion := Selection.Snapshot.Version;
-  if Sequence = 0 then Entry.DeckVersion := Context.LibraryFile.Extract(Context.Database, Deck, Selection.Snapshot.LibraryRevision).DeckVersion
+  if Sequence = 0 then Entry.DeckVersion := Context.LibraryFile.DeckVersion[Selection.RootRevision]
   else Entry.DeckVersion := Context.LibraryFile.DeckVersion[Sequence];
   Entry.SHA256 := AuditSHA256(Bytes);
   QueueWorkingExport(Context.Database, Entry);
@@ -103,7 +103,7 @@ begin
   Entry.FileName := Context.LibraryFile.DeckSourcePath(Context.Database, Deck);
   Entry.Deck := Deck;
   Entry.LibraryVersion := Context.LibraryFile.CurrentVersion;
-  Entry.DeckVersion := Context.LibraryFile.Extract(Context.Database, Deck, Context.LibraryFile.Revision).DeckVersion;
+  Entry.DeckVersion := Context.LibraryFile.DeckVersion[Context.LibraryFile.SelectDeck(Deck, '', '').RootRevision];
   Entry.SHA256 := AuditSHA256('');
   QueueWorkingExport(Context.Database, Entry, True);
   Sequence := Context.LibraryFile.Delete(Context.Database, Deck);
@@ -201,13 +201,14 @@ procedure RefreshImportedFiles(const Context: TCommandContext);
 begin
   try
     Context.Database.BeginTransaction;
+    CheckSessionInterrupt;
     RefreshWorkingExports(Context.Database, Context.LibraryPath);
+    CheckSessionInterrupt;
     Context.Database.Commit;
   except
     on E: ECommandCancelled do
     begin
-      ClearInterrupt;
-      Context.Output.Report('Import was saved; its working-file manifest update remains pending.');
+      raise ECommandCancelled.Create('Import was saved; working-file manifest refresh was cancelled and remains pending.');
     end;
     on E: Exception do
       raise EScuError.Create('Import was saved; its working-file manifest update remains pending: ' + E.Message);
@@ -227,9 +228,7 @@ begin
     raise EScuError.Create('deck_name was supplied empty. Omit it entirely to snapshot file_patterns.');
   if Context.Command.Provided['source_file'] and (Path = '') then
     raise EScuError.Create('source_file was supplied empty. Omit it to use the recorded source filename.');
-  if (Pos('/', Path) > 0) or (Pos('\', Path) > 0) or
-    ((Length(Path) > 1) and (Path[2] = ':')) or (Path = '.') or (Path = '..') then
-    raise EScuError.Create('source_file must be a filename without a directory component, in the library directory.');
+  if Path <> '' then ValidateSourceFileName(Path);
   if (Deck = '') and (Path <> '') then
     raise EScuError.Create('Specify deck_name when using source_file; omit both to scan file_patterns.');
   if (Deck = '') and (Context.LibraryFile.FilePatternCount = 0) then
@@ -244,7 +243,7 @@ begin
       if Path = '' then
       begin
         Path := Context.LibraryFile.DeckSourcePath(Context.Database, Deck);
-        if (Pos('/', Path) > 0) or (Pos('\', Path) > 0) then
+        if Pos('/', Path) > 0 then
           raise EScuError.Create('The recorded deck source is in a subdirectory. Specify source_file as a filename in the library directory.');
       end;
   Report.Imported(Context, Deck, Directory + Path, Path);

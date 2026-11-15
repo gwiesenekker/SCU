@@ -8,6 +8,7 @@ const MaxDeckRevision = 999;
 
 function DeckName(const Name: string): string;
 procedure ValidateRelativeSourcePath(const Pattern: string);
+procedure ValidateSourceFileName(const Name: string);
 procedure ValidateFilePattern(const Pattern: string);
 
 implementation
@@ -46,6 +47,17 @@ begin
   finally
     Parts.Free;
   end;
+end;
+
+procedure ValidateSourceFileName(const Name: string);
+begin
+  // POSIX filenames are bytes. Backslash, colon and newline are ordinary bytes.
+  if (Name = '') or (Name = '.') or (Name = '..') or
+    (Pos('/', Name) > 0) or (Pos(#0, Name) > 0) then
+    raise EScuError.CreateFmt('Invalid source filename "%s": expected a nonempty filename without a directory component or NUL.',
+      [StringReplace(StringReplace(Name, #10, '\n', [rfReplaceAll]), #13, '\r', [rfReplaceAll])]);
+  if Name = '.scu-exports.json' then
+    raise EScuError.CreateFmt('Source filename "%s" is reserved for the export manifest.', [Name]);
 end;
 
 procedure ValidateFilePattern(const Pattern: string);

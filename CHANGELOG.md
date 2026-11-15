@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Detect archives made with numeric staging filenames by the old importer; refuse unsafe source exports and document rebuilding into a new library without rewriting audited history.
+- Validate POSIX source filenames separately from file patterns; preserve backslash, colon and line-break filenames during scans, import, extraction, release and manifest replay.
+- Ignore unreadable/oversized observation hints instead of blocking other files, and preserve batch cancellation during post-commit manifest refresh while reporting the committed import.
+- Read deck metadata without decompression in unchanged import reporting and untracked-file verification; report bad metadata in the verification table.
+- Protect live staging directories and atomic temporaries with advisory file locks rather than local PID tests; retain legacy unmarked stages for manual inspection.
+- Keep original validation diagnostics when preserving invalid pattern edits fails; remove empty failed-recovery directories, retain recoverable edits, and align last-modified output filenames with recorded source names.
+- Clarify that exact unified version patches require ignore_space_changes=no; document the one-way schema-7 upgrade and add review regression tests.
+
 - Fix review X13/X14: release cleanup keeps untracked matching files unless replace=yes, reports kept/removed names, and all exports use the selected revision's recorded filename and exact filename bytes.
 - Fix L8/L9: support arbitrary root filenames through stable deck IDs; queue working-manifest observations in SQLite with import/audit transactions and replay them after interruption. Preserve source files and rollback semantics.
 - Fix long manifest keys, skip identical file replacement, move private staging beside output with dead-process cleanup, and handle one-shot termination gracefully.

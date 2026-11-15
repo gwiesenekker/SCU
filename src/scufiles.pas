@@ -164,7 +164,7 @@ procedure RemoveStaleStages(const Directory: string);
 var
   Search, Child: TSearchRec;
   Tail, Path, Item: string;
-  Dash, Pid, Number: Integer;
+  Dash, Pid, Number, OwnerHandle: Integer;
   Info: Stat;
 begin
   if FindFirst(IncludeTrailingPathDelimiter(Directory) + '.scu-stage-*', faAnyFile, Search) <> 0 then Exit;
@@ -174,22 +174,32 @@ begin
       Dash := Pos('-', Tail);
       if (Dash < 2) or (Length(Tail) - Dash <> 6) or
         not TryStrToInt(Copy(Tail, 1, Dash - 1), Pid) or (Pid <= 0) then Continue;
-      if (fpKill(Pid, 0) = 0) or (fpGetErrNo <> ESysESRCH) then Continue;
       Path := IncludeTrailingPathDelimiter(Directory) + Search.Name;
       if (fpLStat(Path, Info) <> 0) or not FPS_ISDIR(Info.st_mode) or (Info.st_uid <> fpGetEUid) then Continue;
-      if FindFirst(Path + '/*', faAnyFile, Child) = 0 then
+      // File locks identify a live owner across PID namespaces and shared hosts.
+      // Old stages without this marker are left for explicit manual cleanup.
+      OwnerHandle := fpOpen(Path + '/.owner', O_RDWR or O_NOFOLLOW or O_CLOEXEC or O_NONBLOCK);
+      if OwnerHandle < 0 then Continue;
       try
-        repeat
-          if not TryStrToInt(Child.Name, Number) or (Number <= 0) then Continue;
-          Item := Path + '/' + Child.Name;
-          if (fpLStat(Item, Info) = 0) and FPS_ISREG(Info.st_mode) and (Info.st_uid = fpGetEUid) then
-            fpUnlink(Item);
-        until FindNext(Child) <> 0;
+        if (fpFStat(OwnerHandle, Info) <> 0) or not FPS_ISREG(Info.st_mode) or
+          (Info.st_uid <> fpGetEUid) or (fpFlock(OwnerHandle, LOCK_EX or LOCK_NB) <> 0) then Continue;
+        if FindFirst(Path + '/*', faAnyFile, Child) = 0 then
+        try
+          repeat
+            if not TryStrToInt(Child.Name, Number) or (Number <= 0) then Continue;
+            Item := Path + '/' + Child.Name;
+            if (fpLStat(Item, Info) = 0) and FPS_ISREG(Info.st_mode) and (Info.st_uid = fpGetEUid) then
+              fpUnlink(Item);
+          until FindNext(Child) <> 0;
+        finally
+          FindClose(Child);
+        end;
+        // Refuse to recurse into directories or follow links, even inside a stale stage.
+        fpUnlink(Path + '/.owner');
+        if RemoveDir(Path) then SyncParent(Path);
       finally
-        FindClose(Child);
+        fpClose(OwnerHandle);
       end;
-      // Refuse to recurse into directories or follow links, even inside a stale stage.
-      if RemoveDir(Path) then SyncParent(Path);
     until FindNext(Search) <> 0;
   finally
     FindClose(Search);
@@ -200,7 +210,7 @@ procedure CleanupStaleAtomicFiles(const Directory: string);
 var
   Search: TSearchRec;
   Tail, Path: string;
-  Dash, Pid: Integer;
+  Dash, Pid, Handle: Integer;
   Info: Stat;
   Changed: Boolean;
 begin
@@ -213,10 +223,16 @@ begin
       Dash := Pos('-', Tail);
       if (Dash < 2) or (Length(Tail) - Dash <> 6) or
         not TryStrToInt(Copy(Tail, 1, Dash - 1), Pid) or (Pid <= 0) then Continue;
-      if (fpKill(Pid, 0) = 0) or (fpGetErrNo <> ESysESRCH) then Continue;
       Path := IncludeTrailingPathDelimiter(Directory) + Search.Name;
-      if (fpLStat(Path, Info) = 0) and FPS_ISREG(Info.st_mode) and (Info.st_uid = fpGetEUid) then
-        if fpUnlink(Path) = 0 then Changed := True;
+      Handle := fpOpen(Path, O_RDWR or O_NOFOLLOW or O_CLOEXEC or O_NONBLOCK);
+      if Handle < 0 then Continue;
+      try
+        if (fpFStat(Handle, Info) = 0) and FPS_ISREG(Info.st_mode) and (Info.st_uid = fpGetEUid) and
+          (fpFlock(Handle, LOCK_EX or LOCK_NB) = 0) then
+          if fpUnlink(Path) = 0 then Changed := True;
+      finally
+        fpClose(Handle);
+      end;
     until FindNext(Search) <> 0;
   finally
     FindClose(Search);
@@ -261,44 +277,42 @@ begin
     raise EScuError.CreateFmt('Could not create temporary file in %s: %s',
       [ExtractFileDir(Path), SysErrorMessage(cerrno)]);
   try
+    if fpFlock(Handle, LOCK_EX or LOCK_NB) <> 0 then
+      RaiseSystemError('Could not lock temporary output "' + TempPath + '"', fpGetErrNo);
+    Stream := THandleStream.Create(Handle);
     try
-      Stream := THandleStream.Create(Handle);
       try
-        try
-          if Data.Size > Data.Position then
-            Stream.CopyFrom(Data, Data.Size - Data.Position);
-        except
-          on E: EStreamError do
-            raise EScuError.CreateFmt('Could not write "%s": %s', [Path, E.Message]);
-        end;
-        if awSourceOutput in Options then
-        begin
-          if (fpLStat(Path, Info) = 0) and FPS_ISREG(Info.st_mode) then
-          begin
-            Mode := Info.st_mode and &777;
-            if not (awNoReplace in Options) then
-            begin
-              if fpFStat(Handle, TempInfo) <> 0 then
-                RaiseSystemError('Could not inspect temporary output for "' + Path + '"', fpGetErrNo);
-              if (Info.st_gid <> TempInfo.st_gid) and (fchown(Handle, uid_t(-1), Info.st_gid) <> 0) then
-                RaiseSystemError('Could not preserve the group of "' + Path + '"', cerrno);
-            end;
-          end
-          else
-          begin
-            Mask := fpUmask(0);
-            fpUmask(Mask);
-            Mode := &666 and not Mask;
-          end;
-          if fchmod(Handle, Mode) <> 0 then
-            RaiseSystemError('Could not set permissions for "' + Path + '"', cerrno);
-        end;
-        SyncFile(Handle, TempPath);
-      finally
-        Stream.Free;
+        if Data.Size > Data.Position then
+          Stream.CopyFrom(Data, Data.Size - Data.Position);
+      except
+        on E: EStreamError do
+          raise EScuError.CreateFmt('Could not write "%s": %s', [Path, E.Message]);
       end;
+      if awSourceOutput in Options then
+      begin
+        if (fpLStat(Path, Info) = 0) and FPS_ISREG(Info.st_mode) then
+        begin
+          Mode := Info.st_mode and &777;
+          if not (awNoReplace in Options) then
+          begin
+            if fpFStat(Handle, TempInfo) <> 0 then
+              RaiseSystemError('Could not inspect temporary output for "' + Path + '"', fpGetErrNo);
+            if (Info.st_gid <> TempInfo.st_gid) and (fchown(Handle, uid_t(-1), Info.st_gid) <> 0) then
+              RaiseSystemError('Could not preserve the group of "' + Path + '"', cerrno);
+          end;
+        end
+        else
+        begin
+          Mask := fpUmask(0);
+          fpUmask(Mask);
+          Mode := &666 and not Mask;
+        end;
+        if fchmod(Handle, Mode) <> 0 then
+          RaiseSystemError('Could not set permissions for "' + Path + '"', cerrno);
+      end;
+      SyncFile(Handle, TempPath);
     finally
-      fpClose(Handle);
+      Stream.Free;
     end;
     if not (awNoReplace in Options) then
     begin
@@ -318,6 +332,7 @@ begin
   finally
     if TempPath <> '' then
       fpUnlink(TempPath);
+    fpClose(Handle);
   end;
 end;
 

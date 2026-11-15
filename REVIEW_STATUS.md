@@ -1,3 +1,38 @@
+# Disposition of Claude's review of b2688d9
+
+Claude's reading-only review correctly identified additional workflow edges. The
+findings below have been checked against the full checkout; the original review
+is unchanged. Earlier dispositions follow below.
+
+| ID | Disposition | Change or reason |
+| --- | --- | --- |
+| X18 | Guarded; rebuild required for old archives | Detect the old importer's provenance manifest and refuse default/bulk exports, verification and unified version patches before temporary names can be published. Ordinary numeric source filenames are valid. Rebuild from the archive into a new database using the current importer; the regression reproduces inherited duplicate numeric associations, checks refusal leaves revisions intact, and rebuilds/releases a replacement. No audited revision is rewritten and no filename is guessed. Later edits unique to the old library must be rescued before switching; single-deck extraction with an explicit literal output filename remains available and is tested. |
+| L10 | Fixed | A POSIX source-filename validator is separate from pattern syntax. It rejects empty/dot names, slash, NUL and the reserved manifest name, naming the offending file. Backslash, colon, newline and carriage return remain valid bytes, with scan/export/replay round-trip tests. Pattern configuration still uses single lines and has its own restrictions. |
+| D3 | Clarified contract | Exact textual unified patches require `ignore_space_changes=no`. Keep the requested `diff -b` default for review; help and README now state that `output_format=unified` alone cannot guarantee target bytes. The existing multi-file patch-application regression uses exact comparison. Binary/empty-file comparisons retain their documented limitations. |
+| L11 | Fixed | Read failures, oversize files and non-regular-file mismatches discard an observation hint without blocking other observations. Manifest/SQLite corruption and manifest-write failures remain errors. Failed commands can roll back queue deletion; replay is idempotent and a later successful command drains it. The regression checks oversized-file preservation, valid observations, queue drainage and subsequent exports. |
+| I23 | Confirmed and fixed | Check cancellation around post-commit refresh and propagate a saved-import cancellation message. Batch execution stops by its usual error policy; committed source revisions and successful audit records remain saved. Pending observations replay later. A deterministic signal-injection test checks this boundary. |
+| F9 | Fixed and measured by decode counts | Import reporting reads the selected revision's indexed deck version; deletion reporting also avoids extracting source. `ReadDeckMetadata` supplies filenames without zstd decompression for untracked verification. Metadata errors are caught per row. Instrumented tests require one decode per unchanged imported deck and one per tracked verification render, with no extra metadata pass. |
+| X19 | Fixed | Stages carry a held `.owner` advisory lock, and cleanup tries that lock rather than consulting local PIDs. Atomic-write temporaries stay locked through rename/sync too. Tests cover a locked stage with a nonexistent local PID and an unlocked stage with a live unrelated PID. Shared filesystems must provide working advisory locks, as required by SCU's existing library/output locking. Legacy unmarked stages are retained for manual cleanup. |
+| M27 | Fixed or deliberately retained recovery data | Remove dead filename fallbacks and check deck existence/deletion before constructing its working path. Recovery-write failures preserve the original validation diagnostic and remove empty failed-recovery directories. A recovery file and its containing directory are intentionally retained until the user rescues the edit; automatic removal would discard it. Failure injection and existing retained-edit regressions cover both outcomes. |
+| C3 | Revalidated | The group-preservation test already passes `replace=yes`; hosts without a second writable group still skip it. This review did not exercise it. |
+| P17, P19 | Revalidated | Existing batch/editor-interrupt, failed-build history and wrapped-word regressions remain in the full suite. These were already fixed; the review did not read/run their tests. |
+
+Additional notes: schema-7's one-way upgrade and creation of the working manifest
+on first import are now explicit in the README. `output_file=scu$last_modified_deck`
+now uses that deck's recorded source filename, consistently with the default.
+Long hashed IDs intentionally provide collision-resistant identity while retaining
+exact filenames; shorter interactive filename selectors would be a separate UX
+feature. The prior commit is left intact; no history rewriting is proposed to
+split an already reviewed commit. Future commits can separate independent
+behavior and refactoring changes.
+
+Validation: `make test` passed after the final changes: 271 tests run, 270
+passed and one skipped because this host has no second writable group. The ten
+new regression tests cover the findings above, and the executor probe and catalog
+checks passed. `git diff --check` passed.
+
+---
+
 # Disposition of Claude's review of 6afc937
 
 This records the disposition of every issue listed as open in
@@ -27,7 +62,7 @@ left “partly fixed” without a decision.
 | X17 | Fixed | Release and verification each warn once when a selected deck contains a former COPY directive. Source remains literal. The removal is explicitly documented as breaking. |
 | X16 | Fixed | In-memory manifest identities use fixed-length SHA-256 keys. Full path bytes remain separately encoded in JSON; long common filename prefixes cannot truncate map keys. |
 | F8 | Fixed | Publication rechecks the destination checksum, skips replacement/fsync for identical bytes, and still updates the manifest. Inode/mtime preservation is tested. |
-| D3 | Fixed for textual unified version diffs | Headers use `a/<recorded filename>` and `b/<recorded filename>`, with deck versions after a tab. An application test covers multiple changed, added and removed files with `patch -p1`. Normal comparison output and single-deck descriptive labels are retained. Binary differences and empty-deck notices are comparisons, not executable patch instructions. |
+| D3 | Fixed for textual unified version diffs | With `ignore_space_changes=no`, headers use `a/<recorded filename>` and `b/<recorded filename>`, with deck versions after a tab. An application test covers multiple changed, added and removed files with `patch -p1`. Normal comparison output and single-deck descriptive labels are retained. Binary differences and empty-deck notices are comparisons, not executable patch instructions. |
 | I10 | Fixed pager resizing; deliberate key timing | SIGWINCH restarts the completion page using current dimensions and retains the command draft/cursor. The editor intentionally uses one horizontally scrolling row. The 500 ms lone-Escape and 1 s sequence timeouts are retained to distinguish Escape from delayed terminal/SSH key sequences. |
 | M11 | Scoped fix; remaining naming is style | New domain/query implementations use `strict private`; library storage/extraction use named option sets and output locks use an enum policy. Methods taking selection/query parameters remain methods. Converting every accessor or unit-private loader helper to a property is not a correctness requirement. |
 | M12 | Closed: ownership is explicit | Store-owned lazy entries are documented as borrowed; returned value records/arrays are managed values; configuration copies are caller-owned; `var` JSON handoffs clear the original owner. Executor cleanup remains centralized in `finally`. No outstanding lifetime defect was identified; constructor/factory names need not all encode Pascal's conventional ownership rules. |

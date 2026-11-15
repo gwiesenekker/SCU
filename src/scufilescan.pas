@@ -39,7 +39,7 @@ function MatchesFilePattern(const Pattern, Name: string): Boolean;
 implementation
 
 uses
-  SysUtils, BaseUnix, ScuCodec, ScuErrors, ScuFiles, ScuLibraryModel, ScuLibraryPaths, ScuSignals;
+  SysUtils, BaseUnix, ScuCodec, ScuErrors, ScuFiles, ScuLibraryModel, ScuLibraryNames, ScuLibraryPaths, ScuSignals;
 
 function fnmatch(Pattern, Name: PChar; Flags: LongInt): LongInt; cdecl; external 'c';
 
@@ -127,8 +127,7 @@ var
   Index: Integer;
   Owner: TDeckFileBinding;
 begin
-  // Honor the same root/single-line filename contract as explicit imports.
-  ValidateFilePattern(RelativePath);
+  ValidateSourceFileName(RelativePath);
   Owner := nil;
   if Assigned(FOwners) then
     Owner := TDeckFileBinding(FOwners.Find(RelativePath));
@@ -181,7 +180,7 @@ function TLibraryFileScan.Includes(const RelativePath: string): Boolean;
 var
   Pattern: string;
 begin
-  if (Pos('/', RelativePath) > 0) or (Pos('\', RelativePath) > 0) then
+  if Pos('/', RelativePath) > 0 then
     Exit(False);
   if IsLibraryStoragePath(FDirectory + RelativePath, FLibraryPath) or
     (ExtractFileName(RelativePath) = '.scu-exports.json') then

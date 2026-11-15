@@ -1796,8 +1796,7 @@ int mkstemp(char *pattern) {
         self.assertEqual((self.root / "check").read_bytes(), b"library directory source")
         with closing(sqlite3.connect(library)) as database:
             before = self.sqlite_state(database)[:2]
-        for value in ("./main.c", "../main.c", "src/main.c", str(directory / "main.c"),
-                      "src\\main.c", "C:\\main.c", "C:main.c", ".", ".."):
+        for value in ("./main.c", "../main.c", "src/main.c", str(directory / "main.c"), ".", ".."):
             with self.subTest(value=value):
                 self.run_scu(library, "impd", "main.c", "source_file=" + value,
                              error="filename without a directory component")
@@ -6272,6 +6271,224 @@ int mkstemp(char *pattern) {
         self.assertIn(str(self.library), result.stderr)
         self.assertIn("header", result.stderr)
         self.assertIn("editor", result.stderr)
+
+    def review_shim(self, name, source):
+        compiler = shutil.which("cc")
+        if compiler is None:
+            self.skipTest("C compiler required for deterministic I/O instrumentation")
+        path = self.root / (name + ".c")
+        path.write_text(source)
+        shim = self.root / (name + ".so")
+        subprocess.run([compiler, "-shared", "-fPIC", "-o", shim, path, "-ldl"],
+                       check=True, capture_output=True, timeout=20)
+        return shim
+
+    def test_review_b_x18_legacy_importer_provenance_requires_rebuild_before_export(self):
+        archive = self.root / "archive"
+        for version, files in (("1.0", {"Main.pas": b"old", "Other.pas": b"inherited"}),
+                               ("1.1", {"Main.pas": b"new", "Other.pas": b"inherited"})):
+            directory = archive / version
+            directory.mkdir(parents=True)
+            for name, data in files.items(): (directory / name).write_bytes(data)
+        (archive / "HISTORY").write_text("Revision: 1.0\nDescription: First\nRevision: 1.1\nDescription: Next\n")
+        # Reproduce the old importer's audited numeric staging associations.
+        (self.root / "0").write_bytes(b"inherited")
+        self.run_scu("impd", "other.pas", "0")
+        (self.root / "0").write_bytes(b"new")
+        self.run_scu("impd", "main.pas", "0")
+        (self.root / "manifest.json").write_text(json.dumps({
+            "format": 1, "source_archive": str(archive), "history": [], "files": []}))
+        self.run_scu("impd", "scu-import-manifest.json", "manifest.json")
+        before = self.read_library()["revisions"]
+        for command in (("extv", "build=no"), ("relv",), ("extd", "main.pas"), ("verd",)):
+            self.run_scu(*command, error="old importer with temporary source filenames")
+        self.assertEqual(self.read_library()["revisions"], before)
+        self.assertFalse((self.root / "release/0").exists())
+        self.run_scu("extd", "main.pas", "output_file=rescued.pas", "build=no")
+        self.assertEqual((self.root / "rescued.pas").read_bytes(), b"new")
+        rebuilt = self.root / "rebuilt.sqlite"
+        self.run_import(archive, rebuilt)
+        (self.root / "rebuilt-release").mkdir()
+        self.run_scu(rebuilt, "relv", "od=" + str(self.root / "rebuilt-release"))
+        self.assertEqual((self.root / "rebuilt-release/Main.pas").read_bytes(), b"new")
+        self.assertEqual((self.root / "rebuilt-release/Other.pas").read_bytes(), b"inherited")
+        self.run_scu("vera"); self.run_scu(rebuilt, "vera")
+
+    def test_review_b_l10_posix_filenames_are_not_patterns(self):
+        names = ["src\\main.c", "C:main.c", "line\nbreak.c", "carriage\rreturn.c"]
+        self.configure_file_patterns(["*.c"])
+        for index, name in enumerate(names): (self.root / name).write_bytes(str(index).encode())
+        self.assertIn("4 new", self.run_scu("impd"))
+        self.assertIn("4 unchanged", self.run_scu("impd"))
+        self.run_scu("extv", "build=no"); self.run_scu("relv")
+        for index, name in enumerate(names):
+            self.assertEqual((self.root / "release" / name).read_bytes(), str(index).encode())
+        self.assertIn("No errors were found", self.run_scu("verd"))
+        self.assertIn("No errors were found", self.run_scu("verd", "od=."))
+        self.run_scu("vera")
+
+    def test_review_b_l11_bad_observation_does_not_block_other_entries_or_exports(self):
+        self.configure_file_patterns(["*.pas"])
+        for name in ("big.pas", "good.pas"): (self.root / name).write_bytes(b"original")
+        self.crash_export_write(1, self.root, "impd")
+        with (self.root / "big.pas").open("wb") as stream:
+            stream.truncate(64 * 1024 * 1024 + 1)
+        result = self.run_scu("verd", "od=.", error="need attention")
+        self.assertIn("untracked", result)
+        manifest = json.loads((self.root / ".scu-exports.json").read_bytes())
+        self.assertEqual([entry["file"] for entry in manifest["files"]], ["good.pas"])
+        self.run_scu("extd", "good.pas", "build=no")
+        with closing(sqlite3.connect(self.library)) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM pending_working_exports").fetchone(), (0,))
+        (self.root / "retrieved").mkdir()
+        self.run_scu("extv", "od=retrieved", "build=no")
+        self.assertEqual((self.root / "retrieved/big.pas").read_bytes(), b"original")
+        self.assertEqual((self.root / "big.pas").stat().st_size, 64 * 1024 * 1024 + 1)
+        self.run_scu("vera")
+
+    def test_review_b_i23_post_commit_interrupt_stops_command_file_with_saved_import(self):
+        (self.root / "Main.pas").write_bytes(b"saved import")
+        shim = self.review_shim("interrupt_observation", r'''
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+int mkstemp(char *pattern) {
+  static int (*next)(char *); static int sent;
+  if (!next) next=dlsym(RTLD_NEXT,"mkstemp");
+  const char *directory=getenv("SCU_TEST_DIRECTORY");
+  if (!sent && directory && !strncmp(pattern,directory,strlen(directory)) &&
+      !strncmp(pattern+strlen(directory),"/.scu-tmp-",10)) {
+    sent=1; kill(getpid(),SIGINT);
+  }
+  return next(pattern);
+}
+''')
+        script = self.root / "commands.txt"
+        script.write_text("impd main.pas Main.pas\ncred should-not-run\n")
+        result = subprocess.run([SCU, "!" + str(script)], cwd=self.root, capture_output=True,
+                                text=True, timeout=10, env=dict(os.environ, LD_PRELOAD=str(shim),
+                                                               SCU_TEST_DIRECTORY=str(self.root)))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Import was saved", result.stderr)
+        self.assertEqual([r["deck"] for r in self.read_library()["revisions"]], ["main.pas"])
+        with closing(sqlite3.connect(self.library)) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM pending_working_exports").fetchone(), (1,))
+        self.assertIn("No errors were found", self.run_scu("verd", "od=."))
+        self.run_scu("vera")
+
+    def test_review_b_f9_import_and_verify_do_not_decode_for_metadata(self):
+        names = [f"file-{index}.pas" for index in range(5)]
+        self.configure_file_patterns(["*.pas"])
+        for name in names: (self.root / name).write_bytes(b"payload")
+        self.run_scu("impd")
+        shim = self.review_shim("decode_count", r'''
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <unistd.h>
+size_t ZSTD_decompress(void *dst,size_t cap,const void *src,size_t size) {
+  static size_t (*next)(void*,size_t,const void*,size_t);
+  if (!next) next=dlsym(RTLD_NEXT,"ZSTD_decompress");
+  const char *path=getenv("SCU_DECODE_COUNT");
+  if (path) { int fd=open(path,O_WRONLY|O_CREAT|O_APPEND,0600); if(fd>=0) {write(fd,"x",1);close(fd);} }
+  return next(dst,cap,src,size);
+}
+''')
+        counter = self.root / "decode-count"
+        for command in (("impd",), ("verd", "od=.")):
+            counter.unlink(missing_ok=True)
+            result = subprocess.run([SCU, *command], cwd=self.root, capture_output=True, text=True,
+                                    timeout=10, env=dict(os.environ, LD_PRELOAD=str(shim),
+                                                        SCU_DECODE_COUNT=str(counter)))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(counter.read_bytes()), len(names), result.stdout)
+
+    def test_review_b_f9_untracked_bad_metadata_is_reported_without_aborting_table(self):
+        self.store("bad.pas", b"bad"); self.store("good.pas", b"good")
+        (self.root / "good.pas").write_bytes(b"untracked")
+        with closing(sqlite3.connect(self.library)) as db, db:
+            payload = json.loads(db.execute("SELECT payload FROM deck_revisions WHERE sequence=1").fetchone()[0])
+            payload["source_path_bytes"] = "not hex"
+            db.execute("UPDATE deck_revisions SET payload=? WHERE sequence=1", (json.dumps(payload),))
+        result = self.run_scu("verd", "od=.", error="need attention")
+        self.assertIn("unavailable", result); self.assertIn("good.pas", result)
+        self.assertIn("Needs attention:", result)
+
+    def test_review_b_x19_staging_liveness_uses_locks_not_pids(self):
+        self.store("main", b"source")
+        directory = self.root / "release"
+        directory.mkdir()
+        # This PID need not exist in this namespace. A held lock still protects it.
+        live = directory / ".scu-stage-2147483647-ABCDEF"
+        live.mkdir(mode=0o700); (live / "1").write_bytes(b"live staged bytes")
+        with (live / ".owner").open("wb") as owner:
+            fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.run_scu("relv")
+            self.assertEqual((live / "1").read_bytes(), b"live staged bytes")
+        self.run_scu("relv")
+        self.assertFalse(live.exists())
+        # An unrelated live PID no longer prevents stale cleanup.
+        stale = directory / f".scu-stage-{os.getpid()}-ABCDEF"
+        stale.mkdir(mode=0o700); (stale / ".owner").touch(); (stale / "1").write_bytes(b"stale")
+        self.run_scu("relv")
+        self.assertFalse(stale.exists())
+        legacy = directory / ".scu-stage-2147483647-LEGACY"
+        legacy.mkdir(); (legacy / "1").write_bytes(b"unknown owner")
+        self.run_scu("relv")
+        self.assertTrue((legacy / "1").exists())
+        atomic = directory / ".scu-tmp-2147483647-ABCDEF"
+        with atomic.open("wb") as temporary:
+            temporary.write(b"active atomic write"); temporary.flush()
+            fcntl.flock(temporary, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.run_scu("relv")
+            self.assertTrue(atomic.exists())
+        self.run_scu("relv")
+        self.assertFalse(atomic.exists())
+
+    def test_review_b_m27_pattern_recovery_failure_retains_original_diagnostic(self):
+        editor = self.root / "invalid-editor.py"
+        editor.write_text("import pathlib,sys; pathlib.Path(sys.argv[-1]).write_text('../bad\\n')")
+        self.run_scu("conl", "editor=" + json.dumps([sys.executable, str(editor)]))
+        shim = self.review_shim("recovery_failure", r'''
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <errno.h>
+#include <string.h>
+char *mkdtemp(char *pattern) {
+  static char *(*next)(char *);
+  if (!next) next=dlsym(RTLD_NEXT,"mkdtemp");
+  if (strstr(pattern,"scu-patterns-recovery")) {errno=ENOSPC;return 0;}
+  return next(pattern);
+}
+''')
+        result = subprocess.run([SCU, "edifp"], cwd=self.root, capture_output=True, text=True,
+                                timeout=10, env=dict(os.environ, LD_PRELOAD=str(shim)))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("parent-directory", result.stderr)
+        self.assertIn("Could not preserve edited patterns", result.stderr)
+        self.assertIn("No space left", result.stderr)
+
+    def test_review_b_last_modified_output_selector_preserves_source_case(self):
+        (self.root / "Main.pas").write_bytes(b"source")
+        self.run_scu("impd", "main.pas", "Main.pas")
+        self.run_scu("extd", "output_file=scu$last_modified_deck", "build=no")
+        self.assertFalse((self.root / "main.pas").exists())
+        self.assertEqual((self.root / "Main.pas").read_bytes(), b"source")
+
+
+    def test_review_b_d3_unified_help_requires_exact_whitespace_for_patch(self):
+        help_text = self.run_scu("disc", "disvd")
+        self.assertIn("output_format=unified ignore_space_changes=no", help_text)
+        self.assertIn("does not guarantee reconstruction of the target bytes", help_text)
+        self.store("main", b"first  line\n")
+        self.run_scu("locv", "Before"); self.run_scu("crev", "1.1")
+        self.store("main", b"first    line\n")
+        self.assertEqual(self.run_scu("disvd", "of=unified"), "")
+        self.assertIn("-first  line", self.run_scu("disvd", "of=unified", "isc=no"))
 
 
 if __name__ == "__main__":

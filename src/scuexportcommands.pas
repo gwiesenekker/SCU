@@ -16,7 +16,7 @@ function ReleaseVersion(var Context: TCommandContext): string;
 implementation
 
 uses
-  ScuWorkingExports, FPJSON, ScuClock, ScuReleaseCleanup, ScuExportManifest, ScuExportPaths, ScuExportTypes, ScuDeckExport, ScuLibraryDisplay, ScuTable, Classes, SysUtils, ScuCommands, ScuErrors, ScuFiles, ScuLibrary,
+  ScuArchiveCompatibility, ScuWorkingExports, FPJSON, ScuClock, ScuReleaseCleanup, ScuExportManifest, ScuExportPaths, ScuExportTypes, ScuDeckExport, ScuLibraryDisplay, ScuTable, Classes, SysUtils, ScuCommands, ScuErrors, ScuFiles, ScuLibrary,
   ScuLibraryPaths, ScuSignals, ScuVersions;
 
 const
@@ -103,14 +103,17 @@ begin
     Context.Command.Argument('revision'));
   Context.Snapshots.Selected := Selection.Snapshot;
   Context.Snapshots.ResolvedDeck := Deck;
-  Rendered := RenderDeck(Context.LibraryFile, Context.Database, Deck, Selection, emExtract);
   Path := OutputFileArgument(Context.Command);
+  if not Context.Command.Provided['output_file'] or SameText(Path, DeckNameSelector) or
+    SameText(Path, LastModifiedDeckSelector) then
+    RequireArchiveSourceNames(Context.LibraryFile, Context.Database, Selection.Snapshot.LibraryRevision);
+  Rendered := RenderDeck(Context.LibraryFile, Context.Database, Deck, Selection, emExtract);
   if SameText(Path, DeckNameSelector + '.scu') then
     Path := DeckName(Deck) + '.scu'
   else if SameText(Path, DeckNameSelector) then
     Path := Rendered.FileName
   else if SameText(Path, LastModifiedDeckSelector) then
-    Path := ResolveLastModifiedDeck(Context.LibraryFile);
+    Path := Context.LibraryFile.DeckSourcePath(Context.Database, ResolveLastModifiedDeck(Context.LibraryFile));
   if not Context.Command.Provided['output_file'] and not Context.Command.Provided['output'] then
     Path := IncludeTrailingPathDelimiter(Context.OutputDirectory) + ExtractFileName(Path);
   Path := OutputPath(Context, Path);
@@ -153,6 +156,7 @@ begin
     Snapshot := Context.LibraryFile.CurrentSnapshot
   else Snapshot := Context.LibraryFile.ParseLibrarySnapshot(Context.Command['version']);
   Version := Snapshot.Version;
+  RequireArchiveSourceNames(Context.LibraryFile, Context.Database, Snapshot.LibraryRevision);
   Context.LibraryFile.VersionBounds(Version, Base, Revision);
   Directory := CanonicalDirectory(Context.OutputDirectory);
   if Expand and (Directory = ExtractFileDir(CanonicalFile(Context.LibraryPath))) then

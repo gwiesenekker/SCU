@@ -84,7 +84,9 @@ When reading redirected input, SCU omits the `scu>` prompt.
 
 Working sources live directly beside the SQLite library. Filenames containing
 spaces, Unicode, or more than 128 bytes receive stable hashed deck IDs during a
-pattern scan; their original filename bytes remain the export names. Names such
+pattern scan; their original filename bytes remain the export names. On POSIX,
+backslashes, colons and line breaks are filename bytes, not directory separators.
+Scans accept them; file patterns themselves remain a single-line configuration. Names such
 as `Makefile` and `Main.pas` keep their case during extraction and release. Build them there using
 the programming language's own include facilities. SCU does not interpret COPY
 directives. A line containing `SCU_COPY` or `SCU$COPY` remains ordinary source text.
@@ -105,8 +107,12 @@ scu project.sqlite release_version
 directory, importing new and changed files and recording deletion revisions for
 missing tracked files. Unchanged bytes and source associations create no revision. Working-file manifest
 observations are queued transactionally with the imported revision and audit,
-then applied after commit. A later extraction or verification retries pending
-updates after interruption, without writing source files. Decks created without
+then applied after commit, creating `.scu-exports.json` beside the library on the
+first import. A later extraction or verification retries pending updates after
+interruption, without writing source files. Observations for unreadable,
+oversized or changed files are ignored rather than blocking other files. Those
+files still need attention or explicit restoration. Ctrl+C during this refresh
+stops a command file and reports that the import itself was already saved. Decks created without
 a backing source file remain outside the deletion scan. With a deck name, import
 one file: `import_deck main.pas source_file=main.pas`. A source filename must have
 no directory component. SCU never imports a tracked generated release file as
@@ -241,8 +247,12 @@ current/previous library-version defaults. Both compare original stored source,
 ignore changes in whitespace amount by default (`diff -b` semantics), and produce
 normal diff output. Use `ignore_space_changes=no` or `output_format=unified` to
 change that behavior. Textual unified version diffs use `a/` and `b/` source
-filenames, with versions in tab-separated metadata, and can be applied using
-`patch -p1`. Diff search is bounded at 3,072 edits and 256 MiB of search work;
+filenames, with versions in tab-separated metadata. To produce an exact textual
+patch for `patch -p1`, specify **both** `output_format=unified` and
+`ignore_space_changes=no`. The default whitespace-insensitive comparison is for
+review; it may omit changes and does not guarantee the target bytes. Patch
+application covers textual content at stable filenames; filename changes and
+empty-file lifecycle require separate handling. Diff search is bounded at 3,072 edits and 256 MiB of search work;
 a limit produces a complete replacement rather than minimal hunks. Diffs are generated directly in Free Pascal without GNU
 diff or temporary files. `deck_name` defaults to `scu$last_modified_deck` for
 single-deck display, diff, edit, and extraction commands.
@@ -272,8 +282,11 @@ separately from readable UTF-8 labels. Legacy manifest formats remain readable.
 
 Before exporting a batch, SCU stages rendered bytes in a private PID-tagged
 `.scu-stage-*` directory inside the output directory and writes one intent array.
-Recovery removes stale stages owned by terminated processes, leaving live stages,
-links and unknown directory contents alone. Identical output bytes are not
+A held file lock identifies a live stage, independently of local PIDs, including
+on shared filesystems with working advisory locks. Recovery removes unlocked
+stages, leaving locked stages, links and unknown directory contents alone.
+Legacy stages without an ownership marker require manual cleanup. Atomic
+replacement temporaries also remain locked until publication finishes. Identical output bytes are not
 rewritten; their manifest metadata can still be refreshed. It then replaces files atomically or unlinks obsolete release
 files, syncing the affected directory, and writes one completed manifest. This
 avoids rewriting and syncing the whole manifest for every deck. Deletion intents
@@ -726,7 +739,7 @@ commands select decks by their stored version history.
 ## Review decisions and recovery notes
 
 [Review status](REVIEW_STATUS.md) accounts for every open issue from Claude's
-review of 6afc937, including retained design decisions.
+reviews of 6afc937 and b2688d9, including retained design decisions.
 
 The export manifest is private local tracking state (0600), not a required public
 release artifact. Extraction restores raw bytes; release deliberately substitutes
@@ -738,7 +751,41 @@ import external edits before locking if they should belong to the release.
 
 An invalid file-pattern edit is preserved in a private `scu-patterns-recovery-*`
 file and the error reports its full path. Correct the retained text and copy it
-back through the configured editor. If an editor session is forcibly killed,
+back through the configured editor, then remove that recovery file and its
+containing directory. Successful recovery files are retained until you have
+rescued the edit; empty directories from failed recovery writes are removed.
+A recovery-write failure reports both the validation error and the save error.
+If an editor session is forcibly killed,
 private `/tmp/scu-edit-*` working files may remain; inspect and copy valuable
 edits beside the library before importing them. They are not automatically erased
 because they can contain the only copy of an edit.
+
+
+### Libraries made by the old archive importer
+
+Archive imports made before b2688d9 recorded numeric staging filenames (`0`, `1`,
+…) and `manifest.json` rather than their original source names. Inherited decks
+can share these numbers. SCU detects the old import manifest and refuses default source exports, bulk
+exports, verification and unified version patches before publishing wrong
+names. Numeric filenames in ordinary libraries remain valid. Existing audited
+revisions are never rewritten or guessed from their deck IDs.
+
+Rebuild such an archive into a **new** library with the current importer:
+
+```sh
+python3 tools/import_versions.py /tmp2/gwies/gwd8/SCU build/gwd8-rebuilt.sqlite
+build/scu build/gwd8-rebuilt.sqlite verify_audit_trail
+build/scu build/gwd8-rebuilt.sqlite release_version
+```
+
+Keep the old database until the rebuilt snapshots and released filenames have
+been checked. The importer refuses an existing destination. Rebuilding records
+new import/lock timestamps and a new audit chain while retaining HISTORY text and
+source bytes; it does not migrate later edits made only in the old database.
+Those edits must be preserved separately before switching libraries. Single-deck
+extraction to an explicit, literal `output_file` remains available for rescue:
+`scu OLD.sqlite extract_deck main.pas output_file=rescued-main.pas build=no`.
+
+Schema 7 removes obsolete expansion checkpoints and upgrades libraries in place.
+This is a one-way upgrade: binaries from 6afc937 and earlier cannot reopen a
+schema-7 database. Keep a separate backup if using an older binary is necessary.

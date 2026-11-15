@@ -18,7 +18,7 @@ function RenderDeck(LibraryFile: TDeckLibrary; Database: TSQLiteLibrary; const D
 implementation
 
 uses
-  SysUtils, ScuClock, ScuReleaseMacros, ScuErrors;
+  SysUtils, ScuClock, ScuReleaseMacros, ScuErrors, ScuLibraryNames;
 
 function RenderDeck(LibraryFile: TDeckLibrary; Database: TSQLiteLibrary; const Deck: string;
   const Selection: TDeckSelection; Mode: TExportMode; const ExpansionUTC: string): TRenderedDeck;
@@ -32,10 +32,7 @@ begin
   if Root = 0 then Root := Selection.Snapshot.LibraryRevision;
   Source := LibraryFile.Extract(Database, Deck, Root, Selection.Snapshot.Version);
   Result.FileName := Source.SourcePath;
-  if Result.FileName = '' then Result.FileName := Deck;
-  if (ExtractFileName(Result.FileName) <> Result.FileName) or
-    (Pos('\', Result.FileName) > 0) or (Result.FileName = '.') or (Result.FileName = '..') then
-    raise EScuError.Create('Deck "' + Deck + '" has a source filename with a directory component; subdirectory exports are not supported.');
+  ValidateSourceFileName(Result.FileName);
   if Mode = emExpand then
   begin
     Expander := TReleaseMacros.Create(Selection.Snapshot.Version);

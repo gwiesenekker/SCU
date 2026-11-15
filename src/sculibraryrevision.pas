@@ -167,7 +167,8 @@ begin
   if Assigned(FPayload.Find('source_path_bytes')) then
   begin
     Result := DecodeBytesHex(Field(FPayload, 'source_path_bytes', jtString, 'Deck source filename').AsString, 'Deck source filename');
-    ValidateRelativeSourcePath(Result);
+    if Pos('/', Result) > 0 then ValidateRelativeSourcePath(Result)
+    else ValidateSourceFileName(Result);
     Exit;
   end;
   if Assigned(FPayload.Find('source_path')) then
@@ -175,7 +176,8 @@ begin
     RawPath := Field(FPayload, 'source_path', jtString, 'Deck "' + Name + '" revision payload').AsString;
     SetCodePage(RawPath, CP_UTF8, False);
     Result := RawPath;
-    ValidateRelativeSourcePath(Result);
+    if Pos('/', Result) > 0 then ValidateRelativeSourcePath(Result)
+    else ValidateSourceFileName(Result);
   end;
 end;
 

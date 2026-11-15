@@ -12,7 +12,7 @@ function DisplayVersionDiff(var Context: TCommandContext): string;
 implementation
 
 uses
-  Classes, ScuDiff, ScuLibrary, ScuSignals;
+  ScuArchiveCompatibility, Classes, ScuDiff, ScuLibrary, ScuSignals;
 
 function PatchLabel(const Path, Version: string): string;
 const Octal = '01234567';
@@ -91,6 +91,11 @@ begin
   Format := ParseDiffFormat(Context.Command.Argument('output_format', 'normal'));
   Context.Snapshots.FromVersion := Context.LibraryFile.ParseLibrarySnapshot(Context.Command['from_version']);
   Context.Snapshots.ToVersion := Context.LibraryFile.ParseLibrarySnapshot(Context.Command['to_version']);
+  if Format = dfUnified then
+  begin
+    RequireArchiveSourceNames(Context.LibraryFile, Context.Database, Context.Snapshots.FromVersion.LibraryRevision);
+    RequireArchiveSourceNames(Context.LibraryFile, Context.Database, Context.Snapshots.ToVersion.LibraryRevision);
+  end;
   Context.Output.Report('From version ' + Context.Snapshots.FromVersion.Version + '.');
   Context.Output.Report('To version ' + Context.Snapshots.ToVersion.Version + '.');
   Decks := TStringList.Create;

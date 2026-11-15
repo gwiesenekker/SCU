@@ -59,9 +59,9 @@ var
   Revision: Integer;
 begin
   Deck := DeckName(ResolveDeck(Context));
+  Revision := Context.LibraryFile.Delete(Context.Database, Deck);
   WorkingFile := IncludeTrailingPathDelimiter(ExtractFileDir(Context.LibraryPath)) +
     Context.LibraryFile.DeckSourcePath(Context.Database, Deck);
-  Revision := Context.LibraryFile.Delete(Context.Database, Deck);
   Result := 'Deleted ' + DeckWriteReport(Context.LibraryFile, Deck, Revision);
   if FileExists(WorkingFile) then
     Result := Result + LineEnding + 'Working file "' + WorkingFile + '" kept; remove it or import_deck will recreate the deck.';

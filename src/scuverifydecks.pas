@@ -6,7 +6,7 @@ function VerificationDirectory(const Context: TCommandContext): string;
 function VerifyDecks(var Context: TCommandContext): string;
 implementation
 uses
-  ScuWorkingExports, Classes, SysUtils, FPJSON, ScuCodec, ScuErrors, ScuDeckExport, ScuExportTypes, ScuExportManifest,
+  ScuArchiveCompatibility, ScuWorkingExports, Classes, SysUtils, FPJSON, ScuCodec, ScuErrors, ScuDeckExport, ScuExportTypes, ScuExportManifest,
   ScuFiles, ScuExportPaths, ScuLibrary, ScuSignals, ScuTable, ScuTerminal;
 type
   TDeckFileIssue = (dfMissing, dfEdited, dfOutdated, dfDeleted, dfInterrupted, dfUntracked, dfUnavailable);
@@ -170,7 +170,7 @@ begin
     if Selection.RootRevision > 0 then Check.Latest := FContext.LibraryFile.DeckVersion[Selection.RootRevision];
     if (Selection.RootRevision > 0) and FContext.LibraryFile.RevisionDeleted[Selection.RootRevision] then
     begin
-      Source := FContext.LibraryFile.Extract(FContext.Database, Entry.Deck,
+      Source := FContext.LibraryFile.ReadDeckMetadata(FContext.Database, Entry.Deck,
         Selection.RootRevision, FContext.Snapshots.Selected.Version, [deoAllowDeleted]);
       Check.Latest := Source.DeckVersion;
       Include(Check.Issues, dfDeleted);
@@ -207,16 +207,16 @@ begin
     for Name in Names do
       begin
         if not FContext.LibraryFile.TryDeckSnapshot(Name, FContext.Snapshots.Selected.LibraryRevision, Selection.Snapshot) then Continue;
-        Source := FContext.LibraryFile.Extract(FContext.Database, Name, Selection.Snapshot.LibraryRevision);
         Check := Default(TDeckFileCheck);
-        Check.FileName := Source.SourcePath;
-        if Check.FileName = '' then Check.FileName := Name;
-        if FSeen.IndexOf(Check.FileName) >= 0 then Continue;
-        CheckSessionInterrupt;
+        Check.FileName := Name;
         Check.Deck := Name;
         Check.Exported := '-'; Check.Latest := '-';
-        Path := IncludeTrailingPathDelimiter(FContext.OutputDirectory) + Check.FileName;
+        CheckSessionInterrupt;
         try
+          Source := FContext.LibraryFile.ReadDeckMetadata(FContext.Database, Name, Selection.Snapshot.LibraryRevision);
+          Check.FileName := Source.SourcePath;
+          if FSeen.IndexOf(Check.FileName) >= 0 then Continue;
+          Path := IncludeTrailingPathDelimiter(FContext.OutputDirectory) + Check.FileName;
           if not RegularFileExists(Path) then Continue;
           Include(Check.Issues, dfUntracked);
         except
@@ -239,6 +239,7 @@ var
   Index: Integer;
   Detail: string;
 begin
+  RequireArchiveSourceNames(FContext.LibraryFile, FContext.Database, FContext.Snapshots.Selected.LibraryRevision);
   if FContext.OutputDirectory = ExtractFileDir(CanonicalFile(FContext.LibraryPath)) then
     RefreshWorkingExports(FContext.Database, FContext.LibraryPath);
   Manifest := TExportManifest.Create(FContext.OutputDirectory);
