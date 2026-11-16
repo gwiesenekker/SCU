@@ -102,7 +102,7 @@ type
   end;
 implementation
 uses Dialogs, StdCtrls, LCLType, LCLProc, ScuGuiCommands, ScuGuiReader,
-  ScuLibrary, ScuLibraryPaths, ScuFiles, ScuGuiOptions;
+  ScuLibrary, ScuLibraryPaths, ScuFiles, ScuGuiOptions, ScuPlatformPaths;
 destructor TGuiJob.Destroy;
 begin Command.Free; inherited Destroy; end;
 function MenuEntry(Owner: TComponent; Parent: TMenuItem; const Caption, Shortcut: string;
@@ -115,8 +115,8 @@ constructor TScuMainForm.Create(AOwner: TComponent);
 var EditMenu: TMenuItem;
 begin
   inherited Create(AOwner);
-  FExecutable := IncludeTrailingPathDelimiter(ExtractFileDir(ExpandFileName(ParamStr(0)))) + 'scu';
-  FCatalog := TCommandCatalog.Create(ExtractFileDir(FExecutable) + '/commands.json');
+  FExecutable := IncludeTrailingPathDelimiter(ExtractFileDir(InvocationExecutablePath)) + ExecutableName('scu');
+  FCatalog := TCommandCatalog.Create(IncludeTrailingPathDelimiter(ExtractFileDir(FExecutable)) + 'commands.json');
   FJobs := TObjectList.Create(True); FCloseRequests := TList.Create;
   FProcess := TGuiCommandProcess.Create;
   FProcess.OnOutput := @OutputReceived; FProcess.OnFinished := @CommandFinished;

@@ -17,7 +17,11 @@ build:
 build/executor_probe: tests/executor_probe.pas build/scu
 	$(FPC) $(FPCFLAGS) -Fu./src -FU./build -FE./build tests/executor_probe.pas
 
-test: all build/executor_probe
+build/platform_probe: tests/platform_probe.pas build/scu
+	$(FPC) $(FPCFLAGS) -Fu./src -FU./build -FE./build tests/platform_probe.pas
+
+test: all build/executor_probe build/platform_probe
+	python3 tests/platform.py ./build/platform_probe
 	python3 tests/integration.py ./build/scu
 
 format-commands:

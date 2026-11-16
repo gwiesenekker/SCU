@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Introduce platform clock and path interfaces with separate Linux and Windows backends; retain Linux UTC timestamps, canonical-path/symlink semantics, native filenames and XDG locations.
+- Add Windows UTC FILETIME, UTF-8/wide-character path resolution, executable discovery, application-data locations and case-insensitive storage-path comparison. Route CLI, GUI and library path helpers through the interfaces; the remaining application services still require porting.
+- Add standalone platform regression checks for UTC/timezones, path errors, symlinks, executable discovery, storage paths and configuration locations, run with the full integration suite.
+
 - Add Copy and Select All to the GUI log context menu while preserving right-click selection. Show user-command failures in dialogs with actual backend details, retaining modified buffers after a failed save.
 - Add File → Create new version, prefilled from the backend's version_increment calculation; preserve pending edits so locked-version save failures can be recovered into the new version.
 - Expand Preferences into Editor and Library panes for fonts, default comment string, external editor, build command, release directory, increments and file patterns. Submit only changed values via configure_library and respect comment-prefix version rules.

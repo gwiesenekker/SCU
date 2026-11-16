@@ -16,15 +16,12 @@ type
     property Path: string read FPath;
   end;
 implementation
-uses SysUtils, FPJSON, ScuJSON, ScuFiles;
+uses SysUtils, FPJSON, ScuJSON, ScuFiles, ScuPlatformPaths;
 constructor TScuGuiPreferences.Create;
-var Directory: string;
 begin
   inherited Create;
   FEditorFont := TFont.Create; FEditorFont.Name := 'monospace'; FEditorFont.Size := 11;
-  Directory := GetEnvironmentVariable('XDG_CONFIG_HOME');
-  if Directory = '' then Directory := IncludeTrailingPathDelimiter(GetUserDir) + '.config';
-  FPath := IncludeTrailingPathDelimiter(Directory) + 'scu/gui.json';
+  FPath := GuiPreferencesPath;
 end;
 destructor TScuGuiPreferences.Destroy;
 begin FEditorFont.Free; inherited Destroy; end;

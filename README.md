@@ -25,6 +25,34 @@ The integration tests use Python 3 with SQLite JSON functions. Keep
 it at startup for command names, ordered arguments, aliases, and
 help text.
 
+## Platform layer
+
+The clock and path services now have separate Linux and Windows backends behind
+`ScuPlatformClock` and `ScuPlatformPaths`. `ScuClock` retains the existing UTC
+millisecond timestamp format. Linux retains `gettimeofday`, `realpath`,
+`/proc/self/exe` for CLI catalog discovery, the GUI's invocation-based sibling
+lookup, XDG history/preferences locations, and case-sensitive native filename
+bytes. Canonical file paths resolve the parent directory without following the
+final filename, preserving existing atomic-replacement behavior.
+
+The Windows backends use UTC FILETIME and wide-character APIs for executable,
+absolute and canonical directory paths. Their path interface accepts and returns
+UTF-8, understands both separators and compares resolved storage paths without
+case sensitivity. Windows history and preferences locations use `LOCALAPPDATA`,
+falling back to `APPDATA`; the GUI locates its sibling CLI as `scu.exe`.
+Choosing a state/configuration path does not create directories.
+
+This is the first portability step: the application still targets Linux.
+Filesystem writes, locks, child processes, terminal/signals, native GUI setup,
+DLL loading and Windows export-filename validation still need porting. Existing
+Linux library filenames and source bytes are unchanged. Windows runtime behavior
+requires testing on Windows; compiling the isolated platform probe does not
+establish support for the complete application.
+
+`make test` includes `tests/platform.py` and its standalone Pascal probe, alongside
+the full integration suite. The probe isolates clock/path services from the
+remaining Linux-only filesystem and terminal units.
+
 ## Work with a library
 
 Libraries use SQLite. The default library is `library.sqlite` in the current

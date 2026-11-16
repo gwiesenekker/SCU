@@ -12,13 +12,13 @@ function IsLibraryStoragePath(const Candidate, LibraryPath: string): Boolean;
 implementation
 
 uses
-  SysUtils, ScuErrors;
+  SysUtils, ScuErrors, ScuPlatformPaths;
 
 function NormalizeLibraryName(const Path: string): string;
 var
   Extension: string;
 begin
-  if (Path = '') or (Path[Length(Path)] = DirectorySeparator) then
+  if (Path = '') or PathEndsInSeparator(Path) then
     raise EScuError.Create('Expected a library filename.');
   Extension := ExtractFileExt(Path);
   if Extension = '' then
@@ -40,9 +40,9 @@ end;
 
 function IsLibraryStoragePath(const Candidate, LibraryPath: string): Boolean;
 begin
-  Result := (Candidate = LibraryPath) or (Candidate = LibraryLockPath(LibraryPath)) or
-    (Candidate = LibraryPath + '-journal') or (Candidate = LibraryPath + '-wal') or
-    (Candidate = LibraryPath + '-shm');
+  Result := SameStoragePath(Candidate, LibraryPath) or SameStoragePath(Candidate, LibraryLockPath(LibraryPath)) or
+    SameStoragePath(Candidate, LibraryPath + '-journal') or SameStoragePath(Candidate, LibraryPath + '-wal') or
+    SameStoragePath(Candidate, LibraryPath + '-shm');
 end;
 
 end.

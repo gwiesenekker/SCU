@@ -42,7 +42,7 @@ implementation
 
 uses
   SysUtils, BaseUnix, ScuBinder, ScuHelp, ScuInput, ScuErrors,
-  ScuCommandRegistry, ScuLibrary, ScuLibraryPaths, ScuSignals, ScuTerminal, ScuTokenizer, Termio;
+  ScuCommandRegistry, ScuLibrary, ScuLibraryPaths, ScuSignals, ScuTerminal, ScuTokenizer, Termio, ScuPlatformPaths;
 
 const
   CLICommands: array[0..1] of string = ('display_command_list', 'display_command');
@@ -58,15 +58,8 @@ begin
 end;
 
 function CommandFile: string;
-var
-  Buffer: array[0..4095] of Char;
-  Count: ssize_t;
 begin
-  Count := fpReadLink('/proc/self/exe', @Buffer[0], SizeOf(Buffer));
-  if (Count < 0) or (Count = SizeOf(Buffer)) then
-    raise EScuError.Create('Could not locate the running SCU executable.');
-  SetString(Result, PChar(@Buffer[0]), Count);
-  Result := IncludeTrailingPathDelimiter(ExtractFileDir(Result)) + 'commands.json';
+  Result := IncludeTrailingPathDelimiter(ExtractFileDir(RunningExecutablePath)) + 'commands.json';
 end;
 
 constructor TScuCLI.Create;

@@ -3,7 +3,7 @@ program Scu;
 {$mode objfpc}{$H+}
 
 uses
-  SysUtils, BaseUnix, ScuCLI, ScuOutput;
+  SysUtils, BaseUnix, ScuCLI, ScuOutput, ScuPlatformPaths;
 
 var
   CLI: TScuCLI;
@@ -14,7 +14,7 @@ begin
 end;
 
 begin
-  AllowDirectorySeparators := ['/'];
+  InitializePlatformPaths;
   fpSignal(SIGPIPE, @HandleBrokenPipe);
   try
     CLI := TScuCLI.Create;

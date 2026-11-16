@@ -22,7 +22,7 @@ type
 implementation
 
 uses
-  SysUtils, BaseUnix, FPJSON, JSONScanner, ScuErrors, ScuFiles, ScuLocks;
+  SysUtils, BaseUnix, FPJSON, JSONScanner, ScuErrors, ScuFiles, ScuLocks, ScuPlatformPaths;
 
 const
   MaxHistoryEntries = 100;
@@ -45,14 +45,8 @@ var
   StateDir, Directory: string;
   Info: Stat;
 begin
-  StateDir := GetEnvironmentVariable('XDG_STATE_HOME');
-  if Copy(StateDir, 1, 1) <> DirectorySeparator then
-  begin
-    StateDir := GetEnvironmentVariable('HOME');
-    if Copy(StateDir, 1, 1) <> DirectorySeparator then
-      Exit('');
-    StateDir := IncludeTrailingPathDelimiter(StateDir) + '.local/state';
-  end;
+  StateDir := HistoryStateRoot;
+  if StateDir = '' then Exit('');
   if not EnsureDirectory(StateDir) then
     raise EScuError.CreateFmt('Could not create state directory %s.', [StateDir]);
   Directory := IncludeTrailingPathDelimiter(StateDir) + 'scu';

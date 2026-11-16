@@ -28,9 +28,8 @@ procedure SyncParent(const Path: string);
 implementation
 
 uses
-  BaseUnix, Unix, InitC, Linux, ScuErrors;
+  BaseUnix, Unix, InitC, Linux, ScuErrors, ScuPlatformPaths;
 
-function realpath(Path, Resolved: PChar): PChar; cdecl; external 'c';
 function mkstemp(Template: PChar): LongInt; cdecl; external 'c';
 function mkdtemp(Template: PChar): PChar; cdecl; external 'c';
 function fchmod(Handle: cint; Mode: mode_t): cint; cdecl; external 'c';
@@ -53,23 +52,13 @@ begin
 end;
 
 function CanonicalFile(const Path: string): string;
-var
-  FullPath, Parent: string;
 begin
-  if (Path = '') or (Path[Length(Path)] = DirectorySeparator) then
-    raise EScuError.Create('Expected a file path.');
-  FullPath := ExpandFileName(Path);
-  Parent := ExtractFileDir(FullPath);
-  Result := IncludeTrailingPathDelimiter(CanonicalDirectory(Parent)) + ExtractFileName(FullPath);
+  Result := PlatformCanonicalFile(Path);
 end;
 
 function CanonicalDirectory(const Path: string): string;
-var
-  Resolved: array[0..4095] of Char;
 begin
-  if realpath(PChar(Path), @Resolved[0]) = nil then
-    raise EScuError.CreateFmt('Could not resolve directory %s: %s', [Path, SysErrorMessage(cerrno)]);
-  Result := StrPas(@Resolved[0]);
+  Result := PlatformCanonicalDirectory(Path);
 end;
 
 function RegularFileExists(const Path: string): Boolean;
