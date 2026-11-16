@@ -238,14 +238,50 @@ command-file stack on Linux and Wine; UNC coverage checks path resolution and
 does not require a live network share. Native Windows/network-share validation
 remains necessary.
 
-The application still targets Linux. Other direct filesystem
-callers (including release cleanup and editor temporary-directory
-cleanup), native GUI setup, DLL loading and Windows
-export-filename validation still need porting. Existing Linux library filenames and source bytes
-are unchanged.
+Release candidate collection and editor temporary-directory cleanup now use
+`ScuCleanupFiles` platform backends. Linux retains its former directory listing,
+`lstat`, unlink, recursive editor cleanup and release-directory creation behavior.
+The shared release planner still checks patterns, selections and manifest ownership
+before journaling deletions, and still protects locally edited or untracked files
+unless the existing replacement rules explicitly permit removal.
+
+Windows release cleanup enumerates Unicode/long paths, including attribute-hidden
+entries, without recursing into directories or following reparse points. It protects
+selected names, library storage, foreign SQLite files and companions, the manifest
+and platform control files. Ordinal case-insensitive sorted indexes deduplicate
+aliases and selections; stale tracked names cannot contain path traversal or
+alternate streams. Missing tracked files can still have obsolete manifest records
+removed. Deletion opens and verifies a regular file without following links, then
+uses [SetFileInformationByHandle](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle)
+on the inspected handle. Blocked/read-only release files produce an error with
+the filename and leave the export journal available for recovery; cleanup does
+not force their permissions or attributes. Release-directory creation uses wide
+APIs and refuses a file or final reparse point as the release root. Relative,
+drive and UNC directory settings use the platform path resolver.
+
+Windows editor cleanup opens a current-user-owned real directory, then enumerates
+and opens children relative to directory handles using
+[NtQueryDirectoryFile](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntquerydirectoryfile)
+and `NtOpenFile`. This keeps child operations anchored to the inspected directory,
+including when names change concurrently. Root reparse points are refused; child
+links/junctions are only unlinked, and their targets are never traversed. Cleanup
+uses a depth limit of 128. It removes accessible backups, hidden entries and
+nested directories, but leaves blocked, inaccessible or otherwise unremovable
+entries for manual cleanup. A read-only attribute may be cleared by an already
+opened deletion handle for a private single-link object; hard-linked and reparse
+objects' attributes are never changed. In particular, Wine denies cleanup access
+to read-only backups and leaves them protected. Cleanup never consumes a pending
+interrupt or replaces the original editor failure/cancellation. Native Windows
+reparse/junction, ACL and filesystem validation remains pending; Wine skips cases
+where no observable reparse point can be created.
+
+The application still targets Linux. Native GUI setup, DLL loading and the full
+Windows export-filename policy still need porting. Existing Linux library filenames
+and source bytes are unchanged.
 
 `make test` includes `tests/platform.py`, `tests/files.py`, `tests/locks.py` and
-`tests/processes.py`, `tests/terminal.py`, `tests/sqlite.py` and `tests/scanning.py`,
+`tests/processes.py`, `tests/terminal.py`, `tests/sqlite.py`, `tests/scanning.py`
+and `tests/cleanup.py`,
 each with a standalone
 Pascal probe, alongside the full integration suite. The probes isolate platform
 services from the remaining Linux-only application units. The file probe can
@@ -256,7 +292,9 @@ isolated `WINEPREFIX`; use the same invocation with `tests/locks.py` and
 for process/build handoff tests. `tests/terminal.py` with `terminal_probe.exe`
 checks editing, history, keys and signals. Use `tests/sqlite.py` with
 `sqlite_probe.exe` for SQLite opens, transactions and crash recovery, or
-`tests/scanning.py` with `scan_probe.exe` for source scans and nested command files. These checks
+`tests/scanning.py` with `scan_probe.exe` for source scans and nested command files.
+`tests/cleanup.py` with `cleanup_probe.exe` covers release collection/deletion and
+editor cleanup. These checks
 supplement native Windows testing.
 
 ## Work with a library

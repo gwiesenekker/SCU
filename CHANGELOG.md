@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add release/editor cleanup platform backends, retaining the former Linux enumeration, no-follow checks, recursive editor deletion, release unlink errors and directory creation behavior. Share release candidate collection without changing journal authorization/recovery rules.
+- Add Windows Unicode/long-path release-directory creation, hidden-inclusive cleanup enumeration, case-insensitive selection/deduplication, protected storage/control-file filtering, stale manifest-name validation and no-follow regular-file deletion by handle. Keep read-only/blocked release outputs protected with contextual errors.
+- Add handle-relative Windows editor cleanup using native directory enumeration/opening and inspected-handle deletion. Refuse root reparse points, unlink child links without traversal, bound recursion and preserve original editor failures and cancellation. Leave inaccessible backups for manual cleanup and avoid changing hard-link/reparse attributes.
+- Correct sorted Windows filename indexes to override the Free Pascal comparison method used by binary lookup, including source ownership; add Unicode ownership coverage.
+- Add native/Wine cleanup probes for Unicode/long and large directories, hidden/read-only/blocked files, handle leaks, external link/hard-link protection, original errors/signals, release candidates, storage aliases, missing records and directory validation. Add CLI editor cleanup regressions after successful and failed edits; include the new suite in make test and document native Windows/Wine limits.
+
 - Add directory-scan platform backends, retaining Linux fnmatch, enumeration, no-follow checks and source byte handling. Add Windows Unicode/long-path enumeration, cancellable hidden-file filtering, selected reparse-point refusal and Unicode wildcard matching.
 - Preserve source-to-deck ownership through a case-insensitive sorted Windows index, reject ambiguous owners and Windows path/stream/device/filename aliases, and protect manifest/control filenames irrespective of case. Use the native Windows SHA-256 API for the existing fallback deck-name mapping.
 - Add platform command-file resolution for nested relative, drive, UNC, extended and rooted Windows paths, with a dedicated Windows ! filename parser that preserves backslashes and quoted spaces, and wide-character CLI startup arguments. Retain Linux literal backslash/colon handling, nesting/size bounds and line diagnostics; reject NUL filenames before reading.

@@ -38,7 +38,11 @@ build/sqlite_probe: tests/sqlite_probe.pas build/scu
 build/scan_probe: tests/scan_probe.pas build/scu
 	$(FPC) $(FPCFLAGS) -Fu./src -FU./build -FE./build tests/scan_probe.pas
 
-test: all build/executor_probe build/platform_probe build/files_probe build/locks_probe build/process_probe build/terminal_probe build/sqlite_probe build/scan_probe
+build/cleanup_probe: tests/cleanup_probe.pas build/scu
+	$(FPC) $(FPCFLAGS) -Fu./src -FU./build -FE./build tests/cleanup_probe.pas
+
+test: all build/executor_probe build/platform_probe build/files_probe build/locks_probe build/process_probe build/terminal_probe build/sqlite_probe build/scan_probe build/cleanup_probe
+	python3 tests/cleanup.py ./build/cleanup_probe
 	python3 tests/scanning.py ./build/scan_probe
 	python3 tests/sqlite.py ./build/sqlite_probe
 	python3 tests/platform.py ./build/platform_probe

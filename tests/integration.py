@@ -2036,6 +2036,33 @@ path.with_suffix('.bak').write_text('editor backup')
         self.assertEqual(self.read_library()["header"]["file_patterns"], [])
         self.run_scu("verify_audit")
 
+    def test_editor_cleanup_removes_backups_and_links_after_success_or_failure(self):
+        self.store("main", b"original\n")
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "sentinel").write_text("preserve")
+        editor = self.root / "cleanup-editor.py"
+        editor.write_text("""
+import pathlib, sys
+path = pathlib.Path(sys.argv[-1])
+root = path.parent
+pathlib.Path('working-path').write_text(str(path))
+(root / 'backup' / 'nested').mkdir(parents=True)
+(root / 'backup' / 'nested' / 'saved.c').write_text('backup')
+(root / '.swap').write_text('swap')
+(root / 'file-link').symlink_to(pathlib.Path(sys.argv[1]) / 'sentinel')
+(root / 'directory-link').symlink_to(sys.argv[1], target_is_directory=True)
+(root / 'dangling-link').symlink_to(root / 'absent')
+sys.exit(int(sys.argv[2]))
+""")
+        for status in (0, 7):
+            self.run_scu("conl", "editor=" + json.dumps([sys.executable, str(editor), str(outside), str(status)]))
+            self.run_scu("edid", "main", error="Editor failed with exit status 7" if status else None)
+            self.assertFalse(Path((self.root / "working-path").read_text()).parent.exists())
+            self.assertEqual((outside / "sentinel").read_text(), "preserve")
+            self.assertTrue(outside.is_dir())
+        self.run_scu("vera")
+
     def test_edit_file_patterns_rejects_invalid_entries_and_editor_failures_atomically(self):
         candidate = self.root / "candidate"
         editor = self.root / "editor.py"

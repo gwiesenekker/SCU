@@ -8,9 +8,9 @@ type
     FDirectory: string;
     FHandle: THandle;
     FData: TWin32FindDataW;
-    FFirst, FDone: Boolean;
+    FFirst, FDone, FIncludeHidden: Boolean;
   public
-    constructor Create(const Directory: string);
+    constructor Create(const Directory: string; IncludeHidden: Boolean = False);
     destructor Destroy; override;
     function Next(out Name: string): Boolean;
     function SelectedRegularFile(const Name: string): Boolean;
@@ -108,7 +108,7 @@ begin
   Result := PI > PL;
 end;
 
-constructor TPlatformDirectoryScan.Create(const Directory: string);
+constructor TPlatformDirectoryScan.Create(const Directory: string; IncludeHidden: Boolean);
 var Error: DWORD;
 begin
   inherited Create;
@@ -122,6 +122,7 @@ begin
     else RaiseSystemError('Could not scan directory "' + FDirectory + '"', Error);
   end;
   FFirst := True;
+  FIncludeHidden := IncludeHidden;
 end;
 destructor TPlatformDirectoryScan.Destroy;
 begin
@@ -144,7 +145,7 @@ begin
     FFirst := False;
     Name := UTF8Encode(UnicodeString(PWideChar(@FData.cFileName[0])));
     // Attribute-hidden files are not working sources, even under a broad glob.
-  until (FData.dwFileAttributes and FILE_ATTRIBUTE_HIDDEN) = 0;
+  until FIncludeHidden or ((FData.dwFileAttributes and FILE_ATTRIBUTE_HIDDEN) = 0);
   Result := True;
 end;
 function TPlatformDirectoryScan.SelectedRegularFile(const Name: string): Boolean;

@@ -14,33 +14,7 @@ function EditDeck(LibraryFile: TDeckLibrary; Database: TSQLiteLibrary; const Dec
 implementation
 
 uses
-  SysUtils, Classes, BaseUnix, Process, ScuErrors, ScuFiles, ScuCodec, ScuProcess, ScuSignals;
-
-procedure RemoveWorkingDirectory(const Path: string);
-var
-  Search: TSearchRec;
-  Item: string;
-  Info: Stat;
-begin
-  // On Unix the symlink flag includes dangling links in the listing.
-  {$push}{$warn SYMBOL_PLATFORM off}
-  if FindFirst(Path + '/*', faAnyFile or faSymLink, Search) = 0 then
-  {$pop}
-  try
-    repeat
-      if (Search.Name = '.') or (Search.Name = '..') then
-        Continue;
-      Item := Path + '/' + Search.Name;
-      if (fpLStat(Item, Info) = 0) and FPS_ISDIR(Info.st_mode) then
-        RemoveWorkingDirectory(Item)
-      else
-        fpUnlink(Item);
-    until FindNext(Search) <> 0;
-  finally
-    FindClose(Search);
-  end;
-  RemoveDir(Path);
-end;
+  SysUtils, Classes, Process, ScuErrors, ScuFiles, ScuCodec, ScuProcess, ScuSignals, ScuCleanupFiles;
 
 function EditTextFile(LibraryFile: TDeckLibrary; const Name: string;
   const Original: RawByteString; Limit: Int64): RawByteString;

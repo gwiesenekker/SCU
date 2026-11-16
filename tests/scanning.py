@@ -62,6 +62,8 @@ class ScanningTests(unittest.TestCase):
     def test_windows_owner_lookup_and_conflicts_ignore_case(self):
         self.touch('main.pas')
         self.assertEqual(self.scan('*.PAS', 'owner', 'MAIN.PAS'), ['tracked-deck|main.pas'])
+        self.touch('é.pas')
+        self.assertEqual(self.scan('é.PAS', 'owner', 'É.PAS'), ['tracked-deck|é.pas'])
         self.probe('owners', self.root, self.library, '*.pas', 'main.pas', 'MAIN.PAS',
                    error=b'Several decks track source')
 

@@ -53,7 +53,7 @@ implementation
 
 uses
   SysUtils, FPJSON, DateUtils, ScuClock, ScuCodec, ScuErrors, ScuFiles, ScuJSON,
-  ScuSignals, ScuLibraryNames, ScuLibraryModel, ScuVersions;
+  ScuSignals, ScuLibraryNames, ScuLibraryModel, ScuVersions, ScuCleanupFiles;
 
 type
   TExportItem = class
@@ -562,8 +562,7 @@ begin
       raise EScuError.Create('Output changed after the export was planned: "' + Path + '". No replacement was made for this file.');
     if Plan.DeleteOutput then
     begin
-      if (Actual <> '') and not DeleteFile(Path) then
-        RaiseSystemError('Could not remove obsolete release file "' + Path + '"', GetLastOSError);
+      if Actual <> '' then RemoveObsoleteReleaseFile(Path);
       SyncParent(Path);
       RemoveRecord(Plan.Data.FileName);
     end

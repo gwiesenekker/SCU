@@ -46,9 +46,9 @@ uses
 type
   TOwnerPaths = class(TStringList)
   protected
-    function CompareStrings(const Left, Right: string): Integer; override;
+    function DoCompareText(const Left, Right: string): PtrInt; override;
   end;
-function TOwnerPaths.CompareStrings(const Left, Right: string): Integer;
+function TOwnerPaths.DoCompareText(const Left, Right: string): PtrInt;
 begin
   Result := CompareFileNames(Left, Right);
 end;
