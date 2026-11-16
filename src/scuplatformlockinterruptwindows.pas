@@ -5,7 +5,7 @@ unit ScuPlatformLockInterruptWindows;
 interface
 
 type
-  // Catch console Ctrl+C/Break only while acquiring a lock. The console thread
+  // Scoped console Ctrl+C/Break during lock acquisition or child waits. The console thread
   // records a flag; Pascal exceptions are raised by the waiting thread.
   TLockInterruptScope = class
   private
@@ -14,6 +14,7 @@ type
     constructor Create;
     destructor Destroy; override;
     procedure Check;
+    function Consume: Boolean;
   end;
 
 implementation
@@ -40,7 +41,7 @@ begin
     begin
       System.InterlockedExchange(Interrupted, 0);
       if not SetConsoleCtrlHandler(@HandleControl, True) then
-        RaiseSystemError('Could not enable Ctrl+C during the lock wait', GetLastError);
+        RaiseSystemError('Could not enable Ctrl+C during the platform wait', GetLastError);
     end;
     Inc(Waiters);
     FActive := True;
@@ -53,6 +54,11 @@ procedure TLockInterruptScope.Check;
 begin
   if System.InterlockedCompareExchange(Interrupted, 0, 0) <> 0 then
     raise ECommandCancelled.Create('Command cancelled.');
+end;
+
+function TLockInterruptScope.Consume: Boolean;
+begin
+  Result := System.InterlockedExchange(Interrupted, 0) <> 0;
 end;
 
 destructor TLockInterruptScope.Destroy;

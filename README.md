@@ -94,26 +94,63 @@ The standalone lock suite tests real console Ctrl+C in a separate console on
 native Windows. Headless Wine skips that case; callback cancellation and process
 exclusion are exercised there. Native Windows console validation remains pending.
 
-A POSIX descriptor number in `SCU_BUILD_OUTPUT_LOCK_FD` is not proof of Windows
-lock ownership. Busy Windows nested-build calls fail immediately instead of
-trusting that marker or deadlocking; Windows build-lock handoff remains part of
-the later child-process port. Linux nested-build reuse is unchanged. Console
-handling outside lock acquisition also remains part of the broader Windows
-session/terminal port.
+`ScuProcess` and `ScuBuild` now dispatch to Linux and Windows process backends.
+Linux retains its shell, foreground process groups, terminal restoration,
+signal forwarding, editor interrupt handling and inherited-descriptor handoff.
+The Windows backend uses `CreateProcessW`, Unicode arguments/environment/cwd,
+explicit argument quoting and an inheritance whitelist containing only duplicated
+standard streams. Builds receive NUL standard input and stream stdout/stderr to
+the parent. Windows executable editors are resolved through the native search
+path; the synchronous `TProcess` adapter supports SCU's existing editor caller,
+not arbitrary `TProcess` pipe ownership.
+
+Windows children start suspended and join a private Job Object before user code
+runs. Ctrl+C during a child wait requests cancellation; SCU sends Ctrl+Break to
+the child group when a shared console permits, then terminates the entire job
+if needed after a 1.5-second grace period. Editor-style `cpHandlesInterrupt`
+waits let the editor handle console interrupts directly. Explicit cancellation
+callbacks still cancel the job. Windows background descendants are retired when
+the root exits, before the output lock is released; this also prevents stale
+build leases. Linux background-child behavior is unchanged. Killing the parent
+closes the job's last handle and kills its descendants. Nested Job Object support
+requires Windows 8/Server 2012 or newer.
+
+Windows builds use `COMSPEC` (normally `cmd.exe`) with `/D /S /C`, rather than
+`/bin/sh`. Configure a Windows command using cmd syntax. `SCU_BUILD_OUTPUT` and
+`SCU_BUILD_LIBRARY` contain the output target and library path; quote their
+expansions, for example `tool.exe "%SCU_BUILD_OUTPUT%"`. Linux retains its `$1`
+output argument and shell behavior. Build commands are platform-specific.
+
+Windows build-lock handoff uses a private local named-pipe broker advertised by
+`SCU_BUILD_OUTPUT_LEASE`. The broker authenticates the requesting process with
+`GetNamedPipeClientProcessId`, verifies membership in the active build job, and
+matches the exact output sidecar's volume/file identity. Only
+`CreateWithBuildLockReuse` may borrow that lock. Stolen/stale endpoints, unrelated
+processes and different busy directories are rejected. Requests have bounded,
+cancellable I/O; a POSIX number in `SCU_BUILD_OUTPUT_LOCK_FD` never authorizes
+Windows reuse. Nested builds remain disabled; nested exports should use
+`build=no`. No library/output/job handle is inherited into the build.
+
+Windows native-console Ctrl+C validation remains pending: headless Wine tests
+callback cancellation and process-tree cleanup but skips the private-console
+case. The broader session/terminal integration is still a later portability step.
 
 The application still targets Linux. Other direct filesystem
-callers (including scanning and history ownership checks), child processes,
+callers (including scanning, editor temporary-directory cleanup and history
+ownership checks),
 terminal/signals, native GUI setup, DLL loading and Windows export-filename
 validation still need porting. Existing Linux library filenames and source bytes
 are unchanged.
 
-`make test` includes `tests/platform.py`, `tests/files.py` and `tests/locks.py`, each with a standalone
+`make test` includes `tests/platform.py`, `tests/files.py`, `tests/locks.py` and
+`tests/processes.py`, each with a standalone
 Pascal probe, alongside the full integration suite. The probes isolate platform
 services from the remaining Linux-only application units. The file probe can
 also be compiled with a Windows Free Pascal toolchain and run natively. For Wine
 on Linux, use `python3 tests/files.py /path/to/files_probe.exe --wine` with an
 isolated `WINEPREFIX`; use the same invocation with `tests/locks.py` and
-`locks_probe.exe` for lock tests. These checks supplement native Windows testing.
+`locks_probe.exe` for lock tests, or `tests/processes.py` and `process_probe.exe`
+for process/build handoff tests. These checks supplement native Windows testing.
 
 ## Work with a library
 

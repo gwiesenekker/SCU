@@ -26,7 +26,8 @@ type
 implementation
 
 uses Windows, SysUtils, ScuErrors, ScuPlatformPaths,
-  ScuPlatformLockHandlesWindows, ScuPlatformLockInterruptWindows;
+  ScuPlatformLockHandlesWindows, ScuPlatformLockInterruptWindows,
+  ScuPlatformBuildLeaseWindows, ScuPlatformProcessStringsWindows;
 
 constructor TPlatformOutputDirectoryLock.Create(const Directory: string;
   StopWaiting: TStopLockWait; CheckInterrupt: TCheckLockInterrupt);
@@ -64,18 +65,21 @@ begin
     FOwnsLock := TryLockHandle(FHandle, Path);
     if not FOwnsLock then
     begin
-      // POSIX descriptor numbers are not Windows lock-ownership capabilities.
-      // Reject nested waits rather than trusting an arbitrary/stale handle or
-      // deadlocking the parent. Windows build handoff needs the process port.
-      if GetEnvironmentVariable(BuildOutputLockVariable) <> '' then
-        raise EScuError.CreateFmt('An expansion is already using output directory %s. Windows build-lock reuse is not available.', [Directory]);
-      repeat
-        if Assigned(StopWaiting) and StopWaiting() then
-          raise EScuError.CreateFmt('Output directory %s is busy during shutdown.', [Directory]);
-        Sleep(20);
-        Check;
-        FOwnsLock := TryLockHandle(FHandle, Path);
-      until FOwnsLock;
+      if (WindowsEnvironmentValue(WindowsBuildLeaseVariable) <> '') or
+        (GetEnvironmentVariable(BuildOutputLockVariable) <> '') or
+        (WindowsEnvironmentValue('SCU_BUILD_ACTIVE') = '1') then
+      begin
+        if not AllowBuildReuse or not RequestBuildLease(FHandle, Interrupt, CheckInterrupt) then
+          raise EScuError.CreateFmt('An expansion is already using output directory %s. No valid Windows build lease.', [Directory]);
+      end
+      else
+        repeat
+          if Assigned(StopWaiting) and StopWaiting() then
+            raise EScuError.CreateFmt('Output directory %s is busy during shutdown.', [Directory]);
+          Sleep(20);
+          Check;
+          FOwnsLock := TryLockHandle(FHandle, Path);
+        until FOwnsLock;
     end;
     Check;
   finally

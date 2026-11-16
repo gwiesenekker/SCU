@@ -16,42 +16,6 @@ implementation
 uses
   SysUtils, Classes, BaseUnix, Process, ScuErrors, ScuFiles, ScuCodec, ScuProcess, ScuSignals;
 
-function EditorPath(const Name: string): string;
-var
-  Paths: TStringList;
-  Directory, Candidate: string;
-
-  function Executable(const Path: string): Boolean;
-  var
-    Info: Stat;
-  begin
-    Result := (fpStat(Path, Info) = 0) and FPS_ISREG(Info.st_mode) and (fpAccess(Path, X_OK) = 0);
-  end;
-
-begin
-  if Pos('/', Name) > 0 then
-  begin
-    if Executable(Name) then
-      Exit(ExpandFileName(Name));
-  end
-  else
-  begin
-    Paths := TStringList.Create;
-    try
-      ExtractStrings([':'], [], PChar(GetEnvironmentVariable('PATH')), Paths);
-      for Directory in Paths do
-      begin
-        Candidate := IncludeTrailingPathDelimiter(Directory) + Name;
-        if Executable(Candidate) then
-          Exit(ExpandFileName(Candidate));
-      end;
-    finally
-      Paths.Free;
-    end;
-  end;
-  raise EScuError.CreateFmt('Could not find executable editor "%s".', [Name]);
-end;
-
 procedure RemoveWorkingDirectory(const Path: string);
 var
   Search: TSearchRec;
@@ -91,7 +55,7 @@ begin
     AtomicWrite(Path, Original);
     Editor := TProcess.Create(nil);
     try
-      Editor.Executable := EditorPath(LibraryFile.EditorArguments[0]);
+      Editor.Executable := ResolveEditorExecutable(LibraryFile.EditorArguments[0]);
       for Index := 1 to LibraryFile.EditorCount - 1 do
         Editor.Parameters.Add(LibraryFile.EditorArguments[Index]);
       Editor.Parameters.Add(Path);

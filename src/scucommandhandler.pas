@@ -5,12 +5,10 @@ unit ScuCommandHandler;
 interface
 
 uses
-  ScuCommandSnapshots, ScuCommand, ScuLibrary, ScuOutput, ScuSQLite;
+  ScuBuildTypes, ScuCommandSnapshots, ScuCommand, ScuLibrary, ScuOutput, ScuSQLite;
 
 type
-  TBuildRequest = record
-    Command, OutputPath, WorkingDirectory, LibraryPath: string;
-  end;
+  TBuildRequest = ScuBuildTypes.TBuildRequest;
 
   TCommandContext = record
     // The executor owns the command's locks, database and library lifetime.

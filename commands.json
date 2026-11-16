@@ -35,7 +35,7 @@
           "type": "string",
           "aliases": ["bc"],
           "value": "scu$optional",
-          "description": "Shell command run after extraction, from the library directory. The extracted file or directory is available as $1."
+          "description": "Shell command run after extraction, from the library directory. The output target is $1 on Linux or %SCU_BUILD_OUTPUT% on Windows."
         },
         {
           "name": "comment-prefix",

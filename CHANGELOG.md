@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Introduce process/build platform backends and shared request types while retaining Linux shell, signal forwarding, terminal/job control, editor lookup and descriptor handoff behavior.
+- Add Windows Unicode CreateProcessW execution, argument quoting, environment overrides, cwd, streamed standard output/error, NUL build input and explicit standard-handle inheritance whitelisting. Contain suspended children in kill-on-close jobs before execution and cancel entire child trees with graceful Ctrl+Break then termination.
+- Implement authenticated Windows build-lock handoff using a private local named-pipe broker, verified process Job Object membership and output-file identity. Reject stolen/stale endpoints and different busy directories; retire background descendants and leases before unlocking output.
+- Add Windows cmd.exe build support with SCU_BUILD_OUTPUT/SCU_BUILD_LIBRARY, retaining Linux /bin/sh and $1. Document native-console and remaining application portability work.
+- Add cross-platform process/build regressions for quoting, Unicode, cwd, stdin/stdout/stderr, status/errors, cancellation, descendant cleanup, handle inheritance and valid/forged build leases; include them in make test.
+
 - Introduce library/output lock platform backends, preserving Linux flock, signal cancellation and validated nested-build descriptor reuse. Keep existing public lock classes and add optional output-wait callbacks.
 - Add Windows private, noninheritable sidecar handles with no-follow regular-file checks, byte-zero LockFileEx locks, cancellable polling and a scoped console Ctrl+C/Break handler. Release handles/locks after cancellation, failed construction and process termination.
 - Serialize Windows output directories through persistent .scu-output.lock files and protect that name from imports, exports and cleanup. Fail fast on busy Windows build markers until the process backend can implement a Windows ownership handoff.
