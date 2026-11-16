@@ -16,13 +16,14 @@ type
   TLibraryFileScan = class
   private
     FDirectory, FLibraryPath: string;
-    FPatterns, FFiles: TStringList;
+    FPatterns, FFiles, FOwnerPaths: TStringList;
     FOwners: TFPHashObjectList; // Borrowed only while constructing the scan.
     function GetCount: Integer;
     function GetDeck(Index: Integer): string;
     function GetRelativePath(Index: Integer): string;
     procedure ScanDirectory;
     procedure AddFile(const RelativePath: string);
+    function FindOwner(const RelativePath: string): TDeckFileBinding;
   public
     constructor Create(const Directory, LibraryPath: string; Patterns: TStrings;
       Owners: TFPHashObjectList = nil);
@@ -39,23 +40,30 @@ function MatchesFilePattern(const Pattern, Name: string): Boolean;
 implementation
 
 uses
-  SysUtils, BaseUnix, ScuCodec, ScuErrors, ScuFiles, ScuLibraryModel, ScuLibraryNames, ScuLockTypes, ScuLibraryPaths, ScuSignals;
+  SysUtils, ScuDirectoryScan, ScuErrors, ScuFiles, ScuLibraryNames, ScuLockTypes, ScuLibraryPaths, ScuSignals, ScuPlatformPaths{$IFDEF WINDOWS}, ScuPlatformScanWindows{$ENDIF};
 
-function fnmatch(Pattern, Name: PChar; Flags: LongInt): LongInt; cdecl; external 'c';
-
-const
-  MatchNoEscape = 2;
-  MatchPeriod = 4;
+{$IFDEF WINDOWS}
+type
+  TOwnerPaths = class(TStringList)
+  protected
+    function CompareStrings(const Left, Right: string): Integer; override;
+  end;
+function TOwnerPaths.CompareStrings(const Left, Right: string): Integer;
+begin
+  Result := CompareFileNames(Left, Right);
+end;
+{$ENDIF}
 
 function MatchesFilePattern(const Pattern, Name: string): Boolean;
 begin
-  Result := fnmatch(PChar(Pattern), PChar(Name), MatchNoEscape or MatchPeriod) = 0;
+  Result := ScuDirectoryScan.MatchesFilePattern(Pattern, Name);
 end;
 
 constructor TLibraryFileScan.Create(const Directory, LibraryPath: string; Patterns: TStrings;
   Owners: TFPHashObjectList);
 var
   Pattern: string;
+  {$IFDEF WINDOWS}Index: Integer;{$ENDIF}
 begin
   inherited Create;
   FDirectory := IncludeTrailingPathDelimiter(CanonicalDirectory(Directory));
@@ -68,12 +76,28 @@ begin
   FFiles := TStringList.Create;
   FFiles.CaseSensitive := True;
   FFiles.Sorted := True;
+  {$IFDEF WINDOWS}
+  if Assigned(FOwners) then
+  begin
+    FOwnerPaths := TOwnerPaths.Create;
+    for Index := 0 to FOwners.Count - 1 do
+      FOwnerPaths.AddObject(FOwners.NameOfIndex(Index), FOwners.Items[Index]);
+    FOwnerPaths.Sorted := True;
+    for Index := 1 to FOwnerPaths.Count - 1 do
+      if CompareFileNames(FOwnerPaths[Index - 1], FOwnerPaths[Index]) = 0 then
+      begin
+        FOwnerPaths.Objects[Index - 1] := nil;
+        FOwnerPaths.Objects[Index] := nil;
+      end;
+  end;
+  {$ENDIF}
   ScanDirectory;
   FOwners := nil;
 end;
 
 destructor TLibraryFileScan.Destroy;
 begin
+  FOwnerPaths.Free;
   FFiles.Free;
   FPatterns.Free;
   inherited Destroy;
@@ -81,44 +105,45 @@ end;
 
 procedure TLibraryFileScan.ScanDirectory;
 var
-  Directory: pDir;
-  Entry: pDirent;
+  Directory: TDirectoryScan;
   Name, Path: string;
-  Info: Stat;
 begin
-  Directory := fpOpenDir(PChar(FDirectory));
-  if Directory = nil then
-    RaiseSystemError('Could not scan directory "' + FDirectory + '"', fpGetErrNo);
+  Directory := TDirectoryScan.Create(FDirectory);
   try
     repeat
       CheckSessionInterrupt;
-      fpSetErrNo(0);
-      Entry := fpReadDir(Directory^);
-      if Entry = nil then
-      begin
-        if fpGetErrNo <> 0 then
-          RaiseSystemError('Could not read directory "' + FDirectory + '"', fpGetErrNo);
-        Break;
-      end;
-      Name := StrPas(@Entry^.d_name[0]);
-      if (Name = '.') or (Name = '..') or not Includes(Name) then
-        Continue;
+      if not Directory.Next(Name) then Break;
+      if (Name = '.') or (Name = '..') or not Includes(Name) then Continue;
       Path := FDirectory + Name;
-      if fpLStat(Path, Info) <> 0 then
-        RaiseSystemError('Could not inspect selected file "' + Path + '"', fpGetErrNo);
-      if FPS_ISLNK(Info.st_mode) then
-        raise EScuError.Create('Cannot snapshot a symbolic link: "' + Path + '".');
-      if not FPS_ISDIR(Info.st_mode) then
+      if Directory.SelectedRegularFile(Name) then
       begin
-        if not FPS_ISREG(Info.st_mode) then
-          raise EScuError.Create('Expected a regular file: "' + Path + '".');
         if IsSQLiteFile(Path) or IsSQLiteCompanion(Path) then Continue;
         AddFile(Name);
       end;
     until False;
   finally
-    fpCloseDir(Directory^);
+    Directory.Free;
   end;
+end;
+
+function TLibraryFileScan.FindOwner(const RelativePath: string): TDeckFileBinding;
+{$IFDEF WINDOWS}
+var Index: Integer;
+{$ENDIF}
+begin
+  Result := nil;
+  if not Assigned(FOwners) then Exit;
+  {$IFDEF WINDOWS}
+  Index := FOwnerPaths.IndexOf(RelativePath);
+  if Index >= 0 then
+  begin
+    Result := TDeckFileBinding(FOwnerPaths.Objects[Index]);
+    if Result = nil then
+      raise EScuError.Create('Several decks track source "' + RelativePath + '". Import them individually.');
+  end;
+  {$ELSE}
+  Result := TDeckFileBinding(FOwners.Find(RelativePath));
+  {$ENDIF}
 end;
 
 procedure TLibraryFileScan.AddFile(const RelativePath: string);
@@ -128,9 +153,7 @@ var
   Owner: TDeckFileBinding;
 begin
   ValidateSourceFileName(RelativePath);
-  Owner := nil;
-  if Assigned(FOwners) then
-    Owner := TDeckFileBinding(FOwners.Find(RelativePath));
+  Owner := FindOwner(RelativePath);
   if Assigned(Owner) then
   begin
     if Owner.Deck = '' then
@@ -142,7 +165,7 @@ begin
     try
       Deck := DeckName(ExtractFileName(RelativePath));
     except
-      on E: EScuError do Deck := 'file-' + AuditSHA256(RelativePath);
+      on E: EScuError do Deck := 'file-' + FileNameDigest(RelativePath);
     end;
   end;
   Index := Find(Deck);
@@ -180,11 +203,12 @@ function TLibraryFileScan.Includes(const RelativePath: string): Boolean;
 var
   Pattern: string;
 begin
-  if Pos('/', RelativePath) > 0 then
+  if (Pos('/', RelativePath) > 0)
+    {$IFDEF WINDOWS}or (Pos('\', RelativePath) > 0){$ENDIF} then
     Exit(False);
   if IsPlatformOutputLockName(ExtractFileName(RelativePath)) then Exit(False);
   if IsLibraryStoragePath(FDirectory + RelativePath, FLibraryPath) or
-    (ExtractFileName(RelativePath) = '.scu-exports.json') then
+    SameStoragePath(ExtractFileName(RelativePath), '.scu-exports.json') then
     Exit(False);
   for Pattern in FPatterns do
     if MatchesFilePattern(Pattern, RelativePath) then

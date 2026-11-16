@@ -373,10 +373,7 @@ begin
   begin
     if not BatchLine then
       FHistory.Remember(Line);
-    TokenizeCommand(Copy(Line, 2, MaxInt), Tokens);
-    if Tokens.Count <> 1 then
-      raise EScuError.Create('Expected one command filename after !. Quote filenames containing spaces.');
-    Files.Push(Tokens[0]);
+    Files.Push(ParseCommandFileName(Copy(Line, 2, MaxInt)));
     Exit;
   end;
   Spec := nil;
@@ -509,15 +506,14 @@ end;
 procedure TScuCLI.Run;
 var
   Tokens: TStringList;
-  Index, CommandIndex: Integer;
+  CommandIndex: Integer;
   Command: TScuCommand;
   Previous: TSessionSignalHandlers;
 begin
   StartSessionSignals(Previous);
   Tokens := TStringList.Create;
   try
-    for Index := 1 to ParamCount do
-      Tokens.Add(ParamStr(Index));
+    ReadInvocationArguments(Tokens);
     if Assigned(FCatalog.BatchArgument) and FCatalog.BatchArgument.HasDefault then
       TryParseYesNo(FCatalog.BatchArgument.DefaultValue, FContinueOnError);
     SelectBatchArguments(Tokens, 0);

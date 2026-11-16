@@ -4,8 +4,11 @@ unit ScuPlatformPaths;
 
 interface
 
+uses Classes;
+
 // Paths use native filesystem bytes on Linux, UTF-8 on Windows. Resolution of
 // a file canonicalizes its existing parent only, preserving the final name.
+procedure ReadInvocationArguments(Arguments: TStrings);
 procedure InitializePlatformPaths;
 function PlatformCanonicalFile(const Path: string): string;
 function PlatformCanonicalDirectory(const Path: string): string;
@@ -14,6 +17,7 @@ function InvocationExecutablePath: string;
 function ExecutableName(const BaseName: string): string;
 function HistoryStateRoot: string;
 function GuiPreferencesPath: string;
+function ResolveCommandFilePath(const FileName, ParentFile: string): string;
 function PathEndsInSeparator(const Path: string): Boolean;
 // Compare already-resolved storage paths, not arbitrary relative paths.
 function SameStoragePath(const Left, Right: string): Boolean;
@@ -26,6 +30,11 @@ uses SysUtils, ScuErrors,
     {$FATAL No SCU path backend for this platform}
   {$ENDIF}{$ENDIF};
 
+procedure ReadInvocationArguments(Arguments: TStrings);
+begin
+  LoadInvocationArguments(Arguments);
+end;
+
 procedure InitializePlatformPaths;
 begin
   {$IFDEF WINDOWS}
@@ -35,6 +44,11 @@ begin
   {$ELSE}
   AllowDirectorySeparators := ['/'];
   {$ENDIF}
+end;
+
+function ResolveCommandFilePath(const FileName, ParentFile: string): string;
+begin
+  Result := CommandFilePath(FileName, ParentFile);
 end;
 
 function PathEndsInSeparator(const Path: string): Boolean;

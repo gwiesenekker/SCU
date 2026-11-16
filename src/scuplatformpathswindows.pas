@@ -4,8 +4,13 @@ unit ScuPlatformPathsWindows;
 
 interface
 
+uses Classes;
+
+procedure LoadInvocationArguments(Arguments: TStrings);
+
 function NativeFilePath(const Path: string): UnicodeString;
 function ResolveDirectory(const Path: string): string;
+function CommandFilePath(const FileName, ParentFile: string): string;
 function AbsolutePath(const Path: string): string;
 function RunningExecutable: string;
 function InvocationExecutable: string;
@@ -16,6 +21,26 @@ function PathsEqual(const Left, Right: string): Boolean;
 implementation
 
 uses Windows, SysUtils, ScuErrors;
+
+type
+  TWideArgumentArray = array[0..65535] of PWideChar;
+  PWideArgumentArray = ^TWideArgumentArray;
+function WideArguments(CommandLine: PWideChar; out Count: Integer): PWideArgumentArray;
+  stdcall; external 'shell32.dll' name 'CommandLineToArgvW';
+
+procedure LoadInvocationArguments(Arguments: TStrings);
+var Values: PWideArgumentArray; Count, Index: Integer;
+begin
+  Values := WideArguments(GetCommandLineW, Count);
+  if Values = nil then RaiseSystemError('Could not read command-line arguments', GetLastError);
+  try
+    Arguments.Clear;
+    for Index := 1 to Count - 1 do
+      Arguments.Add(UTF8Encode(UnicodeString(Values^[Index])));
+  finally
+    LocalFree(HLOCAL(Values));
+  end;
+end;
 
 const
   MaxPathBuffer = 32768;
@@ -47,6 +72,22 @@ begin
     Capacity := Count + 1;
   until Capacity > MaxPathBuffer;
   raise EScuError.Create('Path is too long: "' + Path + '".');
+end;
+
+function CommandFilePath(const FileName, ParentFile: string): string;
+var Value, Parent: string;
+begin
+  Value := StringReplace(FileName, '/', '\', [rfReplaceAll]);
+  Parent := StringReplace(ParentFile, '/', '\', [rfReplaceAll]);
+  // An explicit drive (including C:relative) or UNC/extended path belongs to
+  // Win32 resolution, never to the including script's directory.
+  if (Parent <> '') and (Value <> '') and
+    not ((Length(Value) >= 2) and ((Value[2] = ':') or (Copy(Value, 1, 2) = '\\'))) then
+  begin
+    if Value[1] = '\' then Value := ExtractFileDrive(Parent) + Value
+    else Value := IncludeTrailingPathDelimiter(ExtractFileDir(Parent)) + Value;
+  end;
+  Result := AbsolutePath(Value);
 end;
 
 function AbsolutePath(const Path: string): string;

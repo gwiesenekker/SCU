@@ -4,7 +4,12 @@ unit ScuPlatformPathsLinux;
 
 interface
 
+uses Classes;
+
+procedure LoadInvocationArguments(Arguments: TStrings);
+
 function ResolveDirectory(const Path: string): string;
+function CommandFilePath(const FileName, ParentFile: string): string;
 function AbsolutePath(const Path: string): string;
 function RunningExecutable: string;
 function InvocationExecutable: string;
@@ -16,6 +21,13 @@ implementation
 
 uses SysUtils, BaseUnix, InitC, ScuErrors;
 
+procedure LoadInvocationArguments(Arguments: TStrings);
+var Index: Integer;
+begin
+  Arguments.Clear;
+  for Index := 1 to ParamCount do Arguments.Add(ParamStr(Index));
+end;
+
 function realpath(Path, Resolved: PChar): PChar; cdecl; external 'c';
 
 function ResolveDirectory(const Path: string): string;
@@ -25,6 +37,15 @@ begin
   if realpath(PChar(Path), @Resolved[0]) = nil then
     raise EScuError.CreateFmt('Could not resolve directory %s: %s', [Path, SysErrorMessage(cerrno)]);
   Result := StrPas(@Resolved[0]);
+end;
+
+function CommandFilePath(const FileName, ParentFile: string): string;
+var Path: string;
+begin
+  Path := FileName;
+  if (ParentFile <> '') and (Path <> '') and (Path[1] <> DirectorySeparator) then
+    Path := ExtractFileDir(ParentFile) + DirectorySeparator + Path;
+  Result := ExpandFileName(Path);
 end;
 
 function AbsolutePath(const Path: string): string;

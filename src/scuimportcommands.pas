@@ -15,7 +15,7 @@ implementation
 
 uses
   ScuArchiveCompatibility, ScuWorkingExports, ScuExportTypes, ScuLibraryNames, Classes, Contnrs, SysUtils, ScuCodec, ScuErrors, ScuFiles, ScuFileScan, ScuLibrary,
-  ScuExportManifest, ScuSignals, ScuTable, ScuTerminal;
+  ScuExportManifest, ScuSignals, ScuTable, ScuTerminal, ScuPlatformPaths;
 
 type
   TDeckImporter = class
@@ -170,7 +170,7 @@ begin
       if Context.LibraryFile.TryDeckSnapshot(Scan.Decks[Index], Context.LibraryFile.Revision, Snapshot) then
       begin
         PreviousPath := Context.LibraryFile.DeckSourcePath(Context.Database, Scan.Decks[Index]);
-        if (PreviousPath <> Scan.RelativePaths[Index]) and
+        if (not SameStoragePath(PreviousPath, Scan.RelativePaths[Index])) and
           RegularFileExists(Directory + PreviousPath) then
           raise EScuError.CreateFmt('Deck "%s" already has source "%s"; cannot also import "%s".',
             [Scan.Decks[Index], PreviousPath, Scan.RelativePaths[Index]]);

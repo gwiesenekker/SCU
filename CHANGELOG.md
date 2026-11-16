@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add directory-scan platform backends, retaining Linux fnmatch, enumeration, no-follow checks and source byte handling. Add Windows Unicode/long-path enumeration, cancellable hidden-file filtering, selected reparse-point refusal and Unicode wildcard matching.
+- Preserve source-to-deck ownership through a case-insensitive sorted Windows index, reject ambiguous owners and Windows path/stream/device/filename aliases, and protect manifest/control filenames irrespective of case. Use the native Windows SHA-256 API for the existing fallback deck-name mapping.
+- Add platform command-file resolution for nested relative, drive, UNC, extended and rooted Windows paths, with a dedicated Windows ! filename parser that preserves backslashes and quoted spaces, and wide-character CLI startup arguments. Retain Linux literal backslash/colon handling, nesting/size bounds and line diagnostics; reject NUL filenames before reading.
+- Add native/Wine regressions for real working-file scans, glob behavior, Unicode names and hashes, long paths, ownership, cancellation, storage exclusion, hidden attributes, links, nested command stacks and Windows path forms. Include them in make test and document platform semantics and remaining Windows validation.
+
 - Add SQLite open platform backends, preserving Linux private creation, write-access checks, flags and recovery behavior. Add Windows exclusive private database creation, ACL-aware recovery access checks and UTF-8 extended filenames.
 - Keep recovery in SQLite and reuse the shared read/write/initialization factories, query-only protection, schemas and transactional audit storage on Windows. Avoid a Unix-only wide-string dependency in shared JSON parsing.
 - Add standalone native/Wine SQLite regressions for hot-journal recovery after process death, atomic metadata/audit rollback, live-writer reads, committed/abandoned transactions, clean read-only files, query-only enforcement, Unicode/long paths and open failures; run them in make test. Document DLL requirements and native Windows crash-testing limits.

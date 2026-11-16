@@ -200,14 +200,53 @@ rollback, live-writer reads, read-only enforcement, Unicode and long paths.
 These pass on Linux and under Wine; native Windows power-loss/filesystem testing
 remains necessary, and the complete Windows CLI is not yet available.
 
+Working-source scans now use separate Linux and Windows directory backends.
+Linux retains libc `fnmatch` (including its character classes), case-sensitive
+matching and the existing `opendir`/`readdir`/`lstat` checks. Windows enumerates
+Unicode/long paths with `FindFirstFileW`/`FindNextFileW`, skips attribute-hidden
+files, and refuses selected symbolic links and other reparse points without
+following them. Both scans remain nonrecursive and exclude library storage,
+SQLite companions, the export manifest and platform control files. Cancellation
+propagates through enumeration without being converted into a scan error.
+
+Windows patterns support `*`, `?`, bracket sets/ranges and `!`/`^` negation,
+with Windows case folding; `?` matches one Unicode scalar, including an emoji.
+A leading dot must be matched explicitly and `*.*` requires a literal dot.
+POSIX named character classes remain a Linux feature. Source ownership uses an
+ordinal case-insensitive sorted index on Windows and rejects ambiguous owners.
+Filenames that cannot be deck names retain the same `file-<SHA-256>` mapping of
+their UTF-8 bytes, using Windows' native hash API rather than the Unix codec
+loader. Windows source filenames reject directory components, alternate streams,
+reserved device names and trailing-dot/space aliases. Linux filename bytes and
+validation are unchanged.
+
+Nested `!` command files still resolve plain relative names against the including
+script's directory. Windows accepts drive-absolute, UNC, extended and forward-
+or backward-slash paths. The Windows `!` filename parser preserves literal
+backslashes, including bare `C:\scripts\build.scu` and UNC prefixes; enclose
+a filename containing spaces in single or double quotes. This filename syntax
+does not change the general command-argument tokenizer. CLI startup reads the
+Windows Unicode argument vector directly, including empty arguments and filenames
+outside the active ANSI code page. A root-relative name uses the including script's drive
+or UNC share; an explicit drive-relative name such as `C:script.scu` uses Win32's
+per-drive working directory, independently of the including script. File reads
+use the existing Unicode/long-path file service and retain the 16 MiB bound,
+16-level nesting limit and filename/line diagnostics. On Linux backslashes and
+colons remain literal filename bytes. Command filenames containing NUL are
+rejected before any file is read. Tests exercise the shared scanner and actual
+command-file stack on Linux and Wine; UNC coverage checks path resolution and
+does not require a live network share. Native Windows/network-share validation
+remains necessary.
+
 The application still targets Linux. Other direct filesystem
-callers (including scanning, command-file path handling and editor temporary-directory
+callers (including release cleanup and editor temporary-directory
 cleanup), native GUI setup, DLL loading and Windows
 export-filename validation still need porting. Existing Linux library filenames and source bytes
 are unchanged.
 
 `make test` includes `tests/platform.py`, `tests/files.py`, `tests/locks.py` and
-`tests/processes.py`, `tests/terminal.py` and `tests/sqlite.py`, each with a standalone
+`tests/processes.py`, `tests/terminal.py`, `tests/sqlite.py` and `tests/scanning.py`,
+each with a standalone
 Pascal probe, alongside the full integration suite. The probes isolate platform
 services from the remaining Linux-only application units. The file probe can
 also be compiled with a Windows Free Pascal toolchain and run natively. For Wine
@@ -216,7 +255,8 @@ isolated `WINEPREFIX`; use the same invocation with `tests/locks.py` and
 `locks_probe.exe` for lock tests, or `tests/processes.py` and `process_probe.exe`
 for process/build handoff tests. `tests/terminal.py` with `terminal_probe.exe`
 checks editing, history, keys and signals. Use `tests/sqlite.py` with
-`sqlite_probe.exe` for SQLite opens, transactions and crash recovery. These checks
+`sqlite_probe.exe` for SQLite opens, transactions and crash recovery, or
+`tests/scanning.py` with `scan_probe.exe` for source scans and nested command files. These checks
 supplement native Windows testing.
 
 ## Work with a library

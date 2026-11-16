@@ -13,7 +13,7 @@ procedure ValidateFilePattern(const Pattern: string);
 
 implementation
 
-uses Classes, SysUtils, ScuErrors, ScuLockTypes;
+uses Classes, SysUtils, ScuErrors, ScuLockTypes, ScuPlatformPaths;
 
 function DeckName(const Name: string): string;
 var
@@ -50,7 +50,24 @@ begin
 end;
 
 procedure ValidateSourceFileName(const Name: string);
+{$IFDEF WINDOWS}
+var Ch: Char; Base: string;
+{$ENDIF}
 begin
+  {$IFDEF WINDOWS}
+  for Ch in Name do
+    if Ch in [#0..#31, '<', '>', ':', '"', '/', '\', '|', '?', '*'] then
+      raise EScuError.Create('Invalid Windows source filename "' + Name + '".');
+  if (Name <> '') and (Name[Length(Name)] in [' ', '.']) then
+    raise EScuError.Create('Windows source filenames cannot end in a space or dot: "' + Name + '".');
+  Base := UpperCase(Copy(Name, 1, Pos('.', Name + '.') - 1));
+  if (Base = 'CON') or (Base = 'PRN') or (Base = 'AUX') or (Base = 'NUL') or
+    (((Copy(Base, 1, 3) = 'COM') or (Copy(Base, 1, 3) = 'LPT')) and
+      (((Length(Base) = 4) and (Base[4] in ['1'..'9'])) or
+      (Copy(Base, 4, MaxInt) = '¹') or (Copy(Base, 4, MaxInt) = '²') or
+      (Copy(Base, 4, MaxInt) = '³'))) then
+    raise EScuError.Create('Windows source filename is a reserved device name: "' + Name + '".');
+  {$ENDIF}
   // POSIX filenames are bytes. Backslash, colon and newline are ordinary bytes.
   if (Name = '') or (Name = '.') or (Name = '..') or
     (Pos('/', Name) > 0) or (Pos(#0, Name) > 0) then
@@ -58,7 +75,7 @@ begin
       [StringReplace(StringReplace(Name, #10, '\n', [rfReplaceAll]), #13, '\r', [rfReplaceAll])]);
   if IsPlatformOutputLockName(Name) then
     raise EScuError.Create('Source filename is reserved for the Windows output lock: "' + Name + '".');
-  if Name = '.scu-exports.json' then
+  if SameStoragePath(Name, '.scu-exports.json') then
     raise EScuError.CreateFmt('Source filename "%s" is reserved for the export manifest.', [Name]);
 end;
 
