@@ -29,11 +29,15 @@ build/locks_probe: tests/locks_probe.pas build/scu
 build/process_probe: tests/process_probe.pas build/scu
 	$(FPC) $(FPCFLAGS) -Fu./src -FU./build -FE./build tests/process_probe.pas
 
-test: all build/executor_probe build/platform_probe build/files_probe build/locks_probe build/process_probe
+build/terminal_probe: tests/terminal_probe.pas build/scu
+	$(FPC) $(FPCFLAGS) -Fu./src -FU./build -FE./build tests/terminal_probe.pas
+
+test: all build/executor_probe build/platform_probe build/files_probe build/locks_probe build/process_probe build/terminal_probe
 	python3 tests/platform.py ./build/platform_probe
 	python3 tests/files.py ./build/files_probe
 	python3 tests/locks.py ./build/locks_probe
 	python3 tests/processes.py ./build/process_probe
+	python3 tests/terminal.py ./build/terminal_probe
 	python3 tests/integration.py ./build/scu
 
 format-commands:

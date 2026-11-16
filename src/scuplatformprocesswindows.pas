@@ -6,7 +6,8 @@ function RunWindowsChild(Request: TChildProcessRequest; Options: TChildProcessOp
 implementation
 uses Windows, SysUtils, Classes, ScuErrors, ScuLockTypes, ScuPlatformPathsWindows,
   ScuPlatformProcessStringsWindows, ScuPlatformProcessHandlesWindows,
-  ScuPlatformProcessJobWindows, ScuPlatformBuildLeaseWindows, ScuPlatformLockInterruptWindows;
+  ScuPlatformProcessJobWindows, ScuPlatformBuildLeaseWindows, ScuPlatformLockInterruptWindows,
+  ScuPlatformSignalsWindows;
 function RunWindowsChild(Request: TChildProcessRequest; Options: TChildProcessOptions): Integer;
 var
   Job: TProcessJob;
@@ -33,6 +34,7 @@ begin
   Started := False; Contained := False; Cancelled := False; Deadline := 0;
   try
     Interrupt := TLockInterruptScope.Create;
+    SetChildHandlesInterrupt(cpHandlesInterrupt in Options);
     Check;
     Executable := ResolveWindowsExecutable(Request.Executable);
     Application := UTF8Decode(Executable);
@@ -109,7 +111,8 @@ begin
       Lease.Free;
       if Process.hThread <> 0 then CloseHandle(Process.hThread);
       if Process.hProcess <> 0 then CloseHandle(Process.hProcess);
-      Handles.Free; Overrides.Free; Job.Free; Interrupt.Free;
+      Handles.Free; Overrides.Free; Job.Free;
+      SetChildHandlesInterrupt(False); Interrupt.Free;
     end;
   end;
 end;

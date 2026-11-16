@@ -131,26 +131,69 @@ cancellable I/O; a POSIX number in `SCU_BUILD_OUTPUT_LOCK_FD` never authorizes
 Windows reuse. Nested builds remain disabled; nested exports should use
 `build=no`. No library/output/job handle is inherited into the build.
 
-Windows native-console Ctrl+C validation remains pending: headless Wine tests
-callback cancellation and process-tree cleanup but skips the private-console
-case. The broader session/terminal integration is still a later portability step.
+The terminal/session layer also has platform backends. Linux keeps its existing
+`signalfd` polling, termios settings, locale-based `wcwidth`, suspension/resume,
+resize handling and signal priorities. The shared line editor is unchanged in
+behavior: cursor/word editing, Up/Down history, Ctrl+R search, Tab completion and
+completion paging use the same code on both platforms.
+
+Windows reads Unicode `KEY_EVENT` records with
+[`ReadConsoleInputW`](https://learn.microsoft.com/en-us/windows/console/readconsoleinput), converts them
+to the editor's UTF-8 input/escape sequences, and handles resize records.
+Surrogate pairs, combining characters, repeated keys, AltGr and Ctrl shortcuts
+are supported. A generated Unicode 15.0 width table handles combining and wide
+characters; ambiguous-width characters use one cell. The raw session owns and
+restores console input/output modes and console code pages on normal return,
+EOF, errors and cancellation. It disables Quick Edit and console echo/line
+editing while active. Full editing requires a Windows console with VT output
+support (Windows 10+); `TERM=dumb`, redirected stderr or older non-VT consoles
+use plain line input. Windows has no Unix Ctrl+Z suspension; Ctrl+D is the
+shared raw editor's empty-line EOF shortcut.
+
+One reference-counted Windows console handler now serves session, terminal,
+lock and child waits. Ctrl+C/Break wake the waiting thread; exceptions are raised
+there, not from the OS callback. Termination takes priority over cancellation,
+and clearing Ctrl+C does not clear a pending shutdown. Close/logoff/shutdown
+notifications, when Windows delivers them, allow up to four seconds of best-effort
+main-thread cleanup before returning from the OS callback. Events remain valid
+through process teardown. Editor-owned interrupts retain their separate child
+notification state. This avoids competing handler-local cancellation flags.
+
+Windows history uses the same bounded JSON scanner, serializer, merge lock and
+atomic saves under `LOCALAPPDATA\scu\history.json` (`APPDATA` fallback). The
+state directory must be user-owned, non-reparse, and not writable by unrelated
+users. Private objects explicitly use the current user as owner and grant that
+user and SYSTEM access. Cancelled history saves propagate cancellation instead
+of disabling history. Windows output uses wide console writes and preserves raw
+bytes when redirected; machine-output newlines remain LF. UTF-8 setup is
+Windows-only and does not change Linux locale/filename behavior.
+
+The terminal probe replays physical Windows key records through the actual
+encoder and shared editor under Wine, including persistent history and paging.
+Native Windows tests additionally inject records into a private console and
+verify mode/code-page restoration after entry and Ctrl+C. Those console tests
+remain unverified here: headless Wine cannot create the required console. Wine
+host stdin pipes also lack `PeekNamedPipe`, so redirected-input tests skip that
+unsupported emulator path; they remain enabled on native Windows. The native
+reader polls real Windows pipes with signal-aware waits and preserves buffered
+CRLF/LF lines and a final line without a newline.
 
 The application still targets Linux. Other direct filesystem
-callers (including scanning, editor temporary-directory cleanup and history
-ownership checks),
-terminal/signals, native GUI setup, DLL loading and Windows export-filename
-validation still need porting. Existing Linux library filenames and source bytes
+callers (including scanning, command-file path handling and editor temporary-directory
+cleanup), SQLite open/recovery paths, native GUI setup, DLL loading and Windows
+export-filename validation still need porting. Existing Linux library filenames and source bytes
 are unchanged.
 
 `make test` includes `tests/platform.py`, `tests/files.py`, `tests/locks.py` and
-`tests/processes.py`, each with a standalone
+`tests/processes.py`, and `tests/terminal.py`, each with a standalone
 Pascal probe, alongside the full integration suite. The probes isolate platform
 services from the remaining Linux-only application units. The file probe can
 also be compiled with a Windows Free Pascal toolchain and run natively. For Wine
 on Linux, use `python3 tests/files.py /path/to/files_probe.exe --wine` with an
 isolated `WINEPREFIX`; use the same invocation with `tests/locks.py` and
 `locks_probe.exe` for lock tests, or `tests/processes.py` and `process_probe.exe`
-for process/build handoff tests. These checks supplement native Windows testing.
+for process/build handoff tests. `tests/terminal.py` with `terminal_probe.exe`
+checks editing, history, keys and signals. These checks supplement native Windows testing.
 
 ## Work with a library
 

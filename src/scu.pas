@@ -3,19 +3,21 @@ program Scu;
 {$mode objfpc}{$H+}
 
 uses
-  SysUtils, BaseUnix, ScuCLI, ScuOutput, ScuPlatformPaths;
+  SysUtils, {$IFDEF LINUX}BaseUnix,{$ENDIF} ScuCLI, ScuOutput, ScuPlatformPaths;
 
 var
   CLI: TScuCLI;
 
+{$IFDEF LINUX}
 procedure HandleBrokenPipe(Signal: cint); cdecl;
 begin
   // Let the failed write return to the command's audit error handler.
 end;
+{$ENDIF}
 
 begin
   InitializePlatformPaths;
-  fpSignal(SIGPIPE, @HandleBrokenPipe);
+  {$IFDEF LINUX}fpSignal(SIGPIPE, @HandleBrokenPipe);{$ENDIF}
   try
     CLI := TScuCLI.Create;
     try

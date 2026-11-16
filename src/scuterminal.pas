@@ -1,9 +1,10 @@
 unit ScuTerminal;
 
-{$mode objfpc}{$H+}
+{$mode objfpc}{$H+}{$macro on}
 
 interface
 
+function IsTerminalInput: Boolean;
 procedure UseTerminalLocale;
 procedure TerminalSize(Handle: THandle; out Columns, Rows: Integer);
 function TerminalColumns(Handle: THandle): Integer;
@@ -16,34 +17,16 @@ function FormatTerminalLines(const Text: string; Columns: SizeInt; Indentation: 
 
 implementation
 
-uses
-  Classes, SysUtils, BaseUnix, Termio;
-
-const
-  LC_CTYPE = 0;
-
-function setlocale(Category: cint; Locale: PChar): PChar; cdecl; external 'c';
-function wcwidth(Character: cuint): cint; cdecl; external 'c';
-
+uses Classes, SysUtils,
+  {$IFDEF WINDOWS}ScuPlatformTerminalWindows{$ELSE}ScuPlatformTerminalLinux{$ENDIF};
+{$IFDEF WINDOWS}{$DEFINE Backend := ScuPlatformTerminalWindows}
+{$ELSE}{$DEFINE Backend := ScuPlatformTerminalLinux}{$ENDIF}
+function IsTerminalInput: Boolean;
+begin Result := Backend.IsTerminalInput; end;
 procedure UseTerminalLocale;
-begin
-  setlocale(LC_CTYPE, '');
-  if wcwidth($754C) < 0 then
-    setlocale(LC_CTYPE, 'C.UTF-8');
-end;
-
+begin Backend.UseTerminalLocale; end;
 procedure TerminalSize(Handle: THandle; out Columns, Rows: Integer);
-var
-  Window: TWinSize;
-begin
-  Columns := 0;
-  Rows := 0;
-  if fpIoCtl(Handle, TIOCGWINSZ, @Window) = 0 then
-  begin
-    Columns := Window.ws_col;
-    Rows := Window.ws_row;
-  end;
-end;
+begin Backend.TerminalSize(Handle, Columns, Rows); end;
 
 function TerminalColumns(Handle: THandle): Integer;
 var
@@ -80,7 +63,7 @@ end;
 
 function CellWidth(const Text: string; Start, Ending: SizeInt): Integer;
 var
-  Code: cuint;
+  Code: Cardinal;
   Index: SizeInt;
 begin
   if Ending = Start + 1 then
@@ -88,7 +71,7 @@ begin
   Code := Ord(Text[Start + 1]) and ($7F shr (Ending - Start));
   for Index := Start + 2 to Ending do
     Code := (Code shl 6) or (Ord(Text[Index]) and $3F);
-  Result := wcwidth(Code);
+  Result := Backend.ScalarWidth(Code);
   if Result < 0 then
     Result := 1;
 end;

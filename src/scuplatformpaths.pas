@@ -30,6 +30,8 @@ procedure InitializePlatformPaths;
 begin
   {$IFDEF WINDOWS}
   AllowDirectorySeparators := ['/', '\'];
+  SetMultiByteConversionCodePage(CP_UTF8);
+  SetTextCodePage(Input, CP_UTF8); SetTextCodePage(Output, CP_UTF8); SetTextCodePage(StdErr, CP_UTF8);
   {$ELSE}
   AllowDirectorySeparators := ['/'];
   {$ENDIF}

@@ -1,22 +1,31 @@
 unit ScuSignals;
 
-{$mode objfpc}{$H+}
+{$mode objfpc}{$H+}{$macro on}
 
 interface
 
 uses
-  BaseUnix;
+  {$IFDEF WINDOWS}ScuPlatformSignalsWindows{$ELSE}BaseUnix, ScuPlatformSignalsLinux{$ENDIF};
 
 const
-  SessionSignals: array[0..3] of cint = (SIGINT, SIGHUP, SIGTERM, SIGQUIT);
-
+  SignalInterrupt = 2;
+  SignalHangup = 1;
+  SignalTerminate = 15;
+  SignalQuit = 3;
+  {$IFDEF WINDOWS}
+  SIGINT = SignalInterrupt;
+  SIGHUP = SignalHangup;
+  SIGTERM = SignalTerminate;
+  SIGQUIT = SignalQuit;
+  {$ENDIF}
+  SessionSignals: array[0..3] of Integer = (SignalInterrupt, SignalHangup, SignalTerminate, SignalQuit);
 type
-  TSessionSignalHandlers = array[Low(SessionSignals)..High(SessionSignals)] of SigActionRec;
+  TSessionSignalHandlers = {$IFDEF WINDOWS}ScuPlatformSignalsWindows{$ELSE}ScuPlatformSignalsLinux{$ENDIF}.TSessionSignalHandlers;
 
 procedure StartSessionSignals(out Previous: TSessionSignalHandlers);
 procedure RestoreSessionSignals(const Previous: TSessionSignalHandlers);
-procedure NoteSessionSignal(Signal: cint); cdecl;
-function PendingSignal: cint;
+procedure NoteSessionSignal(Signal: Integer); cdecl;
+function PendingSignal: Integer;
 function ClearInterrupt: Boolean;
 procedure CheckSessionInterrupt;
 function SessionEnding: Boolean;
@@ -25,102 +34,42 @@ procedure SetChildHandlesInterrupt(Value: Boolean);
 function ConsumeChildInterrupt: Boolean;
 
 implementation
-
-uses
-  SysUtils, ScuErrors;
-
-var
-  SessionSignal: cint;
-  ChildOwnsInterrupt: Boolean;
-  ChildInterrupted: Boolean;
-
-function ConsumeChildInterrupt: Boolean;
+{$IFDEF WINDOWS}{$DEFINE Backend := ScuPlatformSignalsWindows}
+{$ELSE}{$DEFINE Backend := ScuPlatformSignalsLinux}{$ENDIF}
+procedure StartSessionSignals(out Previous: TSessionSignalHandlers);
 begin
-  Result := ChildInterrupted;
-  ChildInterrupted := False;
+  Backend.StartSessionSignals(Previous);
 end;
-
-procedure SetChildHandlesInterrupt(Value: Boolean);
+procedure RestoreSessionSignals(const Previous: TSessionSignalHandlers);
 begin
-  ChildOwnsInterrupt := Value;
+  Backend.RestoreSessionSignals(Previous);
 end;
-
-procedure NoteSessionSignal(Signal: cint); cdecl;
+procedure NoteSessionSignal(Signal: Integer); cdecl;
 begin
-  if (SessionSignal = 0) or (Signal <> SIGINT) then
-    SessionSignal := Signal;
+  Backend.NoteSessionSignal(Signal);
 end;
-
-function PendingSignal: cint;
+function PendingSignal: Integer;
 begin
-  Result := SessionSignal;
+  Result := Backend.PendingSignal;
 end;
-
 function ClearInterrupt: Boolean;
-var
-  Signals, Previous: TSigSet;
-  Signal: cint;
 begin
-  // The handler can replace SIGINT with a termination signal. Block the
-  // session signals until the check and clear are both complete.
-  Result := False;
-  if SessionSignal <> SIGINT then
-    Exit;
-  fpSigEmptySet(Signals);
-  for Signal in SessionSignals do
-    fpSigAddSet(Signals, Signal);
-  if fpSigProcMask(SIG_BLOCK, @Signals, @Previous) <> 0 then
-    RaiseSystemError('Could not block session signals while clearing Ctrl+C', fpGetErrNo);
-  try
-    Result := SessionSignal = SIGINT;
-    if Result then
-      SessionSignal := 0;
-  finally
-    fpSigProcMask(SIG_SETMASK, @Previous, nil);
-  end;
+  Result := Backend.ClearInterrupt;
 end;
-
 procedure CheckSessionInterrupt;
 begin
-  if SessionSignal = SIGINT then
-    raise ECommandCancelled.Create('Command cancelled.');
+  Backend.CheckSessionInterrupt;
 end;
-
 function SessionEnding: Boolean;
 begin
-  Result := SessionSignal in [SIGHUP, SIGTERM, SIGQUIT];
+  Result := Backend.SessionEnding;
 end;
-
-procedure HandleSessionSignal(Signal: cint; Info: PSigInfo; Context: PSigContext); cdecl;
+procedure SetChildHandlesInterrupt(Value: Boolean);
 begin
-  if (Signal = SIGINT) and ChildOwnsInterrupt then
-    ChildInterrupted := True
-  else
-    NoteSessionSignal(Signal);
+  Backend.SetChildHandlesInterrupt(Value);
 end;
-
-procedure StartSessionSignals(out Previous: TSessionSignalHandlers);
-var
-  Action: SigActionRec;
-  Index: Integer;
+function ConsumeChildInterrupt: Boolean;
 begin
-  SessionSignal := 0;
-  FillChar(Action, SizeOf(Action), 0);
-  Action.sa_handler := @HandleSessionSignal;
-  Action.sa_flags := SA_SIGINFO;
-  for Index := Low(SessionSignals) to High(SessionSignals) do
-    fpSigAddSet(Action.sa_mask, SessionSignals[Index]);
-  for Index := Low(SessionSignals) to High(SessionSignals) do
-    if fpSigAction(SessionSignals[Index], @Action, @Previous[Index]) <> 0 then
-      RaiseSystemError(Format('Could not install the handler for signal %d', [SessionSignals[Index]]), fpGetErrNo);
+  Result := Backend.ConsumeChildInterrupt;
 end;
-
-procedure RestoreSessionSignals(const Previous: TSessionSignalHandlers);
-var
-  Index: Integer;
-begin
-  for Index := Low(SessionSignals) to High(SessionSignals) do
-    fpSigAction(SessionSignals[Index], @Previous[Index], nil);
-end;
-
 end.

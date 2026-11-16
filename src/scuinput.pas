@@ -15,14 +15,15 @@ function ReadCommandLine(const Prompt: string; out Line: string;
 
 implementation
 
-uses
-  Termio;
+uses ScuTerminal
+  {$IFDEF WINDOWS}, ScuPlatformTerminalSessionWindows{$ENDIF};
 
 function ReadCommandLine(const Prompt: string; out Line: string; Completion: TCommandCompletion;
   History: TCommandHistory): Boolean;
 begin
+  {$IFDEF WINDOWS}UseTerminalLocale;{$ENDIF}
   Line := '';
-  if IsATTY(Input) = 1 then
+  if IsTerminalInput then
   begin
     if not Assigned(History) then
       Exit(ReadTerminalLine(Prompt, nil, Completion, Line));
@@ -31,10 +32,14 @@ begin
   end;
   Write(StdErr, Prompt);
   Flush(StdErr);
+  {$IFDEF WINDOWS}
+  Exit(ReadRedirectedCommandLine(Line));
+  {$ELSE}
   if EOF(Input) then
     Exit(False);
   ReadLn(Input, Line);
   Result := True;
+  {$ENDIF}
 end;
 
 end.

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Introduce terminal/session-signal platform backends while retaining Linux signalfd, termios, locale widths, job control and signal behavior. Keep the shared editor for cursor/word editing, history, Ctrl+R, Tab completion and paging.
+- Add Windows Unicode console key/resize input, surrogate and modifier handling, VT editing with mode/code-page restoration, a generated Unicode 15.0 width table, plain fallback input and signal-aware redirected reads.
+- Unify Windows session, lock and child cancellation around one handler/event state, preserving shutdown priority and editor-owned interrupts and providing bounded best-effort console-close cleanup.
+- Add Windows private history-directory ownership/ACL validation, explicit private-object ownership, UTF-8 startup and wide console output with byte-preserving redirection. Preserve cancellation through history persistence.
+- Add shared-editor/Windows-key replay, restart history, completion paging, cancellation, signal-priority, unsafe-state and native-console restoration regressions; include them in make test. Document native Windows validation and Wine console/pipe limitations.
+
 - Introduce process/build platform backends and shared request types while retaining Linux shell, signal forwarding, terminal/job control, editor lookup and descriptor handoff behavior.
 - Add Windows Unicode CreateProcessW execution, argument quoting, environment overrides, cwd, streamed standard output/error, NUL build input and explicit standard-handle inheritance whitelisting. Contain suspended children in kill-on-close jobs before execution and cancel entire child trees with graceful Ctrl+Break then termination.
 - Implement authenticated Windows build-lock handoff using a private local named-pipe broker, verified process Job Object membership and output-file identity. Reject stolen/stale endpoints and different busy directories; retire background descendants and leases before unlocking output.

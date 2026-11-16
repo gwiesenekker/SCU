@@ -28,7 +28,7 @@ procedure WriteDiagnostic(const Message: string);
 implementation
 
 uses
-  SysUtils, BaseUnix, ScuErrors, ScuTerminal;
+  SysUtils, {$IFDEF LINUX}BaseUnix,{$ELSE}ScuPlatformOutputWindows,{$ENDIF} ScuErrors, ScuTerminal;
 
 function TScuOutput.GetColumns: SizeInt;
 begin
@@ -37,6 +37,10 @@ end;
 
 procedure WriteDiagnostic(const Message: string);
 begin
+  {$IFDEF WINDOWS}
+  try WriteWindowsOutput(StdErrorHandle, Message + #10);
+  except on E: EScuError do ; end;
+  {$ELSE}
   {$push}{$I-}
   WriteLn(StdErr, Message);
   if IOResult = 0 then
@@ -45,17 +49,21 @@ begin
     IOResult;
   end;
   {$pop}
+  {$ENDIF}
 end;
 
 procedure TScuOutput.WriteLine(const Text: string);
 begin
-  Write(Text + LineEnding);
+  Write(Text + {$IFDEF WINDOWS}#10{$ELSE}LineEnding{$ENDIF});
 end;
 
 procedure TTerminalOutput.Write(const Data: RawByteString);
 var
   Bytes: RawByteString;
 begin
+  {$IFDEF WINDOWS}
+  WriteWindowsOutput(StdOutputHandle, Data);
+  {$ELSE}
   Bytes := Data;
   SetCodePage(Bytes, TextRec(Output).CodePage, False);
   try
@@ -68,15 +76,18 @@ begin
       raise;
     end;
   end;
+  {$ENDIF}
 end;
 
 procedure TTerminalOutput.Report(const Text: string);
 begin
-  WriteLn(StdErr, Text);
+  {$IFDEF WINDOWS}WriteWindowsOutput(StdErrorHandle, Text + #10);{$ELSE}
+  WriteLn(StdErr, Text);{$ENDIF}
 end;
 
 procedure TTerminalOutput.Flush;
 begin
+  {$IFDEF LINUX}
   try
     System.Flush(Output);
   except
@@ -87,6 +98,7 @@ begin
       raise;
     end;
   end;
+  {$ENDIF}
 end;
 
 end.

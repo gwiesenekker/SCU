@@ -5,7 +5,7 @@ unit ScuLineEditor;
 interface
 
 uses
-  Classes;
+  Classes, ScuTerminalSession;
 
 type
   TCommandCompletion = procedure(const Before, Prefix, After: string; Candidates: TStrings;
@@ -13,11 +13,13 @@ type
 
 function ReadTerminalLine(const Prompt: string; History: TStrings; Completion: TCommandCompletion;
   out Line: string): Boolean;
+function ReadTerminalLineWithSession(const Prompt: string; History: TStrings; Completion: TCommandCompletion;
+  Session: TTerminalSession; out Line: string): Boolean;
 
 implementation
 
 uses
-  SysUtils, BaseUnix, Math, ScuErrors, ScuOutput, ScuTerminal, ScuTerminalSession, ScuTokenizer, ScuSignals;
+  SysUtils, Math, ScuErrors, ScuOutput, ScuTerminal, ScuTokenizer, ScuSignals;
 
 const
   CSI = #27'[';
@@ -35,7 +37,7 @@ type
     FPrompt, FLine, FDraft, FShown: string;
     FHistory: TStrings;
     FCompletion: TCommandCompletion;
-    FSession: TRawTerminalSession;
+    FSession: TTerminalSession;
     FCursor, FDraftCursor, FViewStart, FShownCursor, FShownWidth: SizeInt;
     FHistoryIndex: Integer;
     FPending: Char;
@@ -55,7 +57,7 @@ type
     procedure Complete;
   public
     constructor Create(const Prompt: string; History: TStrings; Completion: TCommandCompletion;
-      Session: TRawTerminalSession);
+      Session: TTerminalSession);
     function ReadLine(out Line: string): Boolean;
   end;
 
@@ -116,9 +118,11 @@ begin
     end;
 end;
 
-function EditorColumns: SizeInt;
+function EditorColumns(Session: TTerminalSession): SizeInt;
+var Columns, Rows: Integer;
 begin
-  Result := TerminalColumns(StdErrorHandle);
+  Session.GetSize(Columns, Rows);
+  Result := Columns;
   if Result = 0 then
     Result := 80;
 end;
@@ -226,7 +230,7 @@ var
   end;
 
 begin
-  TerminalSize(StdErrorHandle, Columns, Height);
+  FSession.GetSize(Columns, Height);
   if Columns = 0 then
     Columns := 80;
   PageRows := Max(1, Height - 1);
@@ -265,7 +269,7 @@ begin
 end;
 
 constructor TLineEditor.Create(const Prompt: string; History: TStrings; Completion: TCommandCompletion;
-  Session: TRawTerminalSession);
+  Session: TTerminalSession);
 begin
   inherited Create;
   FPrompt := Copy(Prompt, LastDelimiter(#10, Prompt) + 1, MaxInt);
@@ -278,7 +282,7 @@ end;
 
 function TLineEditor.ReadByte(out Key: Char; Timeout: Integer): Boolean;
 var
-  Count: ssize_t;
+  Count: SizeInt;
 begin
   if SessionEnding then
     Exit(False);
@@ -363,7 +367,7 @@ var
   Columns, Available, CursorColumn, Width, Ending, Next, Cells: SizeInt;
   Shown: string;
 begin
-  Columns := EditorColumns;
+  Columns := EditorColumns(FSession);
   Available := Max(1, Columns - TextWidth(FPrompt, 0, Length(FPrompt)) - 1);
   if FCursor < FViewStart then
     FViewStart := FCursor;
@@ -700,41 +704,37 @@ begin
   end;
 end;
 
-function ReadTerminalLine(const Prompt: string; History: TStrings; Completion: TCommandCompletion;
-  out Line: string): Boolean;
+function ReadTerminalLineWithSession(const Prompt: string; History: TStrings; Completion: TCommandCompletion;
+  Session: TTerminalSession; out Line: string): Boolean;
 var
-  Session: TRawTerminalSession;
   Editor: TLineEditor;
   Buffer: array[0..4095] of Char;
-  Count: ssize_t;
+  Count: SizeInt;
 begin
-  Session := TRawTerminalSession.Create;
-  try
-    if not Session.Ready then
-      Exit(False);
-    if not Session.RawMode then
-    begin
-      WritePrompt(Prompt);
-      Count := Session.ReadInput(Buffer, SizeOf(Buffer), -1);
-      if Count = 0 then
-        Exit(False);
-      if Buffer[Count - 1] = #10 then
-        Dec(Count);
-      SetString(Line, PChar(@Buffer[0]), Count);
-      Exit(True);
-    end;
-
-    UseTerminalLocale;
-    Editor := TLineEditor.Create(Prompt, History, Completion, Session);
-    try
-      WritePrompt(Prompt);
-      Result := Editor.ReadLine(Line);
-    finally
-      Editor.Free;
-    end;
-  finally
-    Session.Free;
+  if not Session.Ready then Exit(False);
+  if not Session.RawMode then
+  begin
+    WritePrompt(Prompt);
+    Count := Session.ReadInput(Buffer, SizeOf(Buffer), -1);
+    if Count = 0 then Exit(False);
+    if Buffer[Count - 1] = #10 then Dec(Count);
+    SetString(Line, PChar(@Buffer[0]), Count);
+    Exit(True);
   end;
+  UseTerminalLocale;
+  Editor := TLineEditor.Create(Prompt, History, Completion, Session);
+  try
+    WritePrompt(Prompt);
+    Result := Editor.ReadLine(Line);
+  finally Editor.Free; end;
 end;
 
+function ReadTerminalLine(const Prompt: string; History: TStrings; Completion: TCommandCompletion;
+  out Line: string): Boolean;
+var Session: TRawTerminalSession;
+begin
+  Session := TRawTerminalSession.Create;
+  try Result := ReadTerminalLineWithSession(Prompt, History, Completion, Session, Line);
+  finally Session.Free; end;
+end;
 end.

@@ -41,8 +41,8 @@ type
 implementation
 
 uses
-  SysUtils, BaseUnix, ScuBinder, ScuHelp, ScuInput, ScuErrors,
-  ScuCommandRegistry, ScuLibrary, ScuLibraryPaths, ScuSignals, ScuTerminal, ScuTokenizer, Termio, ScuPlatformPaths;
+  SysUtils, ScuBinder, ScuHelp, ScuInput, ScuErrors,
+  ScuCommandRegistry, ScuLibrary, ScuLibraryPaths, ScuSignals, ScuTerminal, ScuTokenizer, ScuPlatformPaths;
 
 const
   CLICommands: array[0..1] of string = ('display_command_list', 'display_command');
@@ -411,7 +411,7 @@ var
 
 begin
   Prompt := '';
-  if IsATTY(Input) = 1 then
+  if IsTerminalInput then
     Prompt := 'scu> ';
   OpeningLibrary := Prompt <> '';
   EndOfInput := False;
@@ -459,9 +459,9 @@ begin
           end
           else
           begin
-            if PendingSignal = SIGINT then
+            if PendingSignal = SignalInterrupt then
               Continue;
-            EndOfInput := (Prompt = '') or SessionEnding or (IsATTY(Input) <> 1);
+            EndOfInput := (Prompt = '') or SessionEnding or (not IsTerminalInput);
             if EndOfInput and (PendingSignal = 0) and not SawCommand and not FileExists(FLibraryPath) then
               raise EScuError.CreateFmt('Library "%s" does not exist. Use initialize_library to create it.',
                 [FLibraryPath]);
@@ -551,7 +551,7 @@ begin
     end;
   finally
     Tokens.Free;
-    if PendingSignal in [SIGTERM, SIGQUIT] then ExitCode := 128 + PendingSignal;
+    if PendingSignal in [SignalTerminate, SignalQuit] then ExitCode := 128 + PendingSignal;
     RestoreSessionSignals(Previous);
   end;
 end;
