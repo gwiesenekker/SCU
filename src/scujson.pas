@@ -17,7 +17,7 @@ function IntegerField(Obj: TJSONObject; const Name: string; const Source: string
 implementation
 
 uses
-  CWString, Classes, SysUtils, JSONParser, JSONScanner, ScuErrors;
+  {$IFDEF UNIX}CWString,{$ENDIF} Classes, SysUtils, JSONParser, JSONScanner, ScuErrors;
 
 function InSource(const Message, Source: string): string;
 begin

@@ -1,6 +1,6 @@
 unit ScuSQLiteDB;
 
-{$mode objfpc}{$H+}
+{$mode objfpc}{$H+}{$macro on}
 
 interface
 
@@ -54,32 +54,34 @@ type
 implementation
 
 uses
-  SysUtils, BaseUnix, Linux, ScuErrors, ScuFiles;
+  SysUtils, ScuErrors,
+  {$IFDEF WINDOWS}
+  ScuPlatformSQLiteWindows;
+  {$DEFINE SQLiteBackend := ScuPlatformSQLiteWindows}
+  {$ELSE}{$IFDEF LINUX}
+  ScuPlatformSQLiteLinux;
+  {$DEFINE SQLiteBackend := ScuPlatformSQLiteLinux}
+  {$ELSE}{$FATAL No SCU SQLite backend for this platform}{$ENDIF}{$ENDIF}
 
 procedure TSQLiteConnection.OpenConnection(const Path: string; OpenReadOnly, AllowCreate: Boolean;
   RecoverableRead: Boolean);
 var
-  Flags, Handle, OpenStatus: cint;
+  Flags, OpenStatus: cint;
+  Filename: RawByteString;
 begin
   FPath := Path;
   FReadOnly := OpenReadOnly;
-  if FReadOnly and (not RecoverableRead or (fpAccess(Path, W_OK) <> 0)) then
+  if FReadOnly and (not RecoverableRead or (not SQLiteBackend.CanRecoverSQLite(Path))) then
     Flags := SQLITE_OPEN_READONLY
   else
     Flags := SQLITE_OPEN_READWRITE;
   if AllowCreate then
   begin
-    if not RegularFileExists(Path) then
-    begin
-      Handle := fpOpen(Path, O_WRONLY or O_CREAT or O_EXCL or O_CLOEXEC, &600);
-      if Handle < 0 then
-        RaiseSystemError('Could not create SQLite library "' + Path + '"', fpGetErrNo);
-      fpClose(Handle);
-      SyncParent(Path);
-    end;
+    SQLiteBackend.CreateSQLiteFile(Path);
     Flags := Flags or SQLITE_OPEN_CREATE;
   end;
-  OpenStatus := sqlite3_open_v2(PAnsiChar(Path), @FHandle, Flags, nil);
+  Filename := SQLiteBackend.SQLiteFilename(Path);
+  OpenStatus := sqlite3_open_v2(PAnsiChar(Filename), @FHandle, Flags, nil);
   Check(OpenStatus, 'opening the database');
   Check(sqlite3_busy_timeout(FHandle, 5000), 'setting the busy timeout');
   if not FReadOnly then

@@ -32,7 +32,11 @@ build/process_probe: tests/process_probe.pas build/scu
 build/terminal_probe: tests/terminal_probe.pas build/scu
 	$(FPC) $(FPCFLAGS) -Fu./src -FU./build -FE./build tests/terminal_probe.pas
 
-test: all build/executor_probe build/platform_probe build/files_probe build/locks_probe build/process_probe build/terminal_probe
+build/sqlite_probe: tests/sqlite_probe.pas build/scu
+	$(FPC) $(FPCFLAGS) -Fu./src -FU./build -FE./build tests/sqlite_probe.pas
+
+test: all build/executor_probe build/platform_probe build/files_probe build/locks_probe build/process_probe build/terminal_probe build/sqlite_probe
+	python3 tests/sqlite.py ./build/sqlite_probe
 	python3 tests/platform.py ./build/platform_probe
 	python3 tests/files.py ./build/files_probe
 	python3 tests/locks.py ./build/locks_probe

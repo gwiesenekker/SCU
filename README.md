@@ -178,14 +178,36 @@ unsupported emulator path; they remain enabled on native Windows. The native
 reader polls real Windows pipes with signal-aware waits and preserves buffered
 CRLF/LF lines and a final line without a newline.
 
+SQLite opens now use platform services for exclusive private-file creation,
+recovery write-access checks and database filenames. Linux retains its existing
+`0600`, `access`, close-on-exec and parent-sync behavior. Windows creates the
+initial database with a protected current-user/SYSTEM DACL and uses UTF-8
+absolute extended paths with `sqlite3_open_v2`, including Unicode and long names.
+A compatible architecture-matched `sqlite3.dll` must be available to the executable;
+DLL deployment/search hardening is separate remaining work.
+
+The same SQLite factories, schemas and transactions run on both platforms. A
+logically read-only factory opens physically writable databases read/write when
+possible so SQLite can roll back a hot journal, then enables `query_only` before
+starting the read transaction. A clean read-only file remains readable; a hot
+journal requiring writes must be recovered with sufficient permissions. SCU does
+not delete journal/WAL files or replay them itself. SQLite handles recovery;
+metadata and audit records committed together are recovered together. Existing
+JSON recovery documents continue through the shared recovery code, unchanged.
+The standalone SQLite regressions exercise the actual library factories as well
+as lower-level opens, including process death after dirty-page spill, recovery,
+rollback, live-writer reads, read-only enforcement, Unicode and long paths.
+These pass on Linux and under Wine; native Windows power-loss/filesystem testing
+remains necessary, and the complete Windows CLI is not yet available.
+
 The application still targets Linux. Other direct filesystem
 callers (including scanning, command-file path handling and editor temporary-directory
-cleanup), SQLite open/recovery paths, native GUI setup, DLL loading and Windows
+cleanup), native GUI setup, DLL loading and Windows
 export-filename validation still need porting. Existing Linux library filenames and source bytes
 are unchanged.
 
 `make test` includes `tests/platform.py`, `tests/files.py`, `tests/locks.py` and
-`tests/processes.py`, and `tests/terminal.py`, each with a standalone
+`tests/processes.py`, `tests/terminal.py` and `tests/sqlite.py`, each with a standalone
 Pascal probe, alongside the full integration suite. The probes isolate platform
 services from the remaining Linux-only application units. The file probe can
 also be compiled with a Windows Free Pascal toolchain and run natively. For Wine
@@ -193,7 +215,9 @@ on Linux, use `python3 tests/files.py /path/to/files_probe.exe --wine` with an
 isolated `WINEPREFIX`; use the same invocation with `tests/locks.py` and
 `locks_probe.exe` for lock tests, or `tests/processes.py` and `process_probe.exe`
 for process/build handoff tests. `tests/terminal.py` with `terminal_probe.exe`
-checks editing, history, keys and signals. These checks supplement native Windows testing.
+checks editing, history, keys and signals. Use `tests/sqlite.py` with
+`sqlite_probe.exe` for SQLite opens, transactions and crash recovery. These checks
+supplement native Windows testing.
 
 ## Work with a library
 

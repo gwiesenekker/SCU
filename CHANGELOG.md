@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add SQLite open platform backends, preserving Linux private creation, write-access checks, flags and recovery behavior. Add Windows exclusive private database creation, ACL-aware recovery access checks and UTF-8 extended filenames.
+- Keep recovery in SQLite and reuse the shared read/write/initialization factories, query-only protection, schemas and transactional audit storage on Windows. Avoid a Unix-only wide-string dependency in shared JSON parsing.
+- Add standalone native/Wine SQLite regressions for hot-journal recovery after process death, atomic metadata/audit rollback, live-writer reads, committed/abandoned transactions, clean read-only files, query-only enforcement, Unicode/long paths and open failures; run them in make test. Document DLL requirements and native Windows crash-testing limits.
+
 - Introduce terminal/session-signal platform backends while retaining Linux signalfd, termios, locale widths, job control and signal behavior. Keep the shared editor for cursor/word editing, history, Ctrl+R, Tab completion and paging.
 - Add Windows Unicode console key/resize input, surrogate and modifier handling, VT editing with mode/code-page restoration, a generated Unicode 15.0 width table, plain fallback input and signal-aware redirected reads.
 - Unify Windows session, lock and child cancellation around one handler/event state, preserving shutdown priority and editor-owned interrupts and providing bounded best-effort console-close cleanup.
