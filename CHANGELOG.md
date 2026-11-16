@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Introduce library/output lock platform backends, preserving Linux flock, signal cancellation and validated nested-build descriptor reuse. Keep existing public lock classes and add optional output-wait callbacks.
+- Add Windows private, noninheritable sidecar handles with no-follow regular-file checks, byte-zero LockFileEx locks, cancellable polling and a scoped console Ctrl+C/Break handler. Release handles/locks after cancellation, failed construction and process termination.
+- Serialize Windows output directories through persistent .scu-output.lock files and protect that name from imports, exports and cleanup. Fail fast on busy Windows build markers until the process backend can implement a Windows ownership handoff.
+- Add cross-process regressions for exclusion, callback/console cancellation before effects, shutdown, process death, handle inheritance, path validation, Unicode paths and sidecar protection; include them in make test.
+
 - Move file I/O behind the ScuFiles facade and platform backends, preserving the existing Linux implementation, permissions, locks and fsync behavior.
 - Add Windows binary/limited regular-file reads, reparse-point refusal, Unicode/long paths, private temporary files/directories, DACL preservation for source outputs, flushed same-directory atomic replacement and race-safe no-replace writes.
 - Add bounded retries and clear errors for blocked Windows replacements, and ownership/lock-checked stale-file cleanup that refuses links and unknown stage contents. Document Windows durability and open-reader differences and the remaining portability work.

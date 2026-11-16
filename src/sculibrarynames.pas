@@ -13,7 +13,7 @@ procedure ValidateFilePattern(const Pattern: string);
 
 implementation
 
-uses Classes, SysUtils, ScuErrors;
+uses Classes, SysUtils, ScuErrors, ScuLockTypes;
 
 function DeckName(const Name: string): string;
 var
@@ -56,6 +56,8 @@ begin
     (Pos('/', Name) > 0) or (Pos(#0, Name) > 0) then
     raise EScuError.CreateFmt('Invalid source filename "%s": expected a nonempty filename without a directory component or NUL.',
       [StringReplace(StringReplace(Name, #10, '\n', [rfReplaceAll]), #13, '\r', [rfReplaceAll])]);
+  if IsPlatformOutputLockName(Name) then
+    raise EScuError.Create('Source filename is reserved for the Windows output lock: "' + Name + '".');
   if Name = '.scu-exports.json' then
     raise EScuError.CreateFmt('Source filename "%s" is reserved for the export manifest.', [Name]);
 end;

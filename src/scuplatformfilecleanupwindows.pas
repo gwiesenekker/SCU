@@ -136,7 +136,7 @@ begin
     Owner := OpenOwned(IncludeTrailingPathDelimiter(Path) + '.owner', False, GENERIC_READ or FileDeleteAccess);
     if Owner = INVALID_HANDLE_VALUE then Exit;
     try
-      // The future Windows lock backend must use byte zero on sidecar files.
+      // The Windows lock backend uses byte zero on sidecar files.
       // A stage without a valid ownership marker is never removed.
       FillChar(Lock, SizeOf(Lock), 0);
       if not LockFileEx(Owner, LOCKFILE_EXCLUSIVE_LOCK or LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, Lock) then Exit;

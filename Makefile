@@ -23,9 +23,13 @@ build/platform_probe: tests/platform_probe.pas build/scu
 build/files_probe: tests/files_probe.pas build/scu
 	$(FPC) $(FPCFLAGS) -Fu./src -FU./build -FE./build tests/files_probe.pas
 
-test: all build/executor_probe build/platform_probe build/files_probe
+build/locks_probe: tests/locks_probe.pas build/scu
+	$(FPC) $(FPCFLAGS) -Fu./src -FU./build -FE./build tests/locks_probe.pas
+
+test: all build/executor_probe build/platform_probe build/files_probe build/locks_probe
 	python3 tests/platform.py ./build/platform_probe
 	python3 tests/files.py ./build/files_probe
+	python3 tests/locks.py ./build/locks_probe
 	python3 tests/integration.py ./build/scu
 
 format-commands:

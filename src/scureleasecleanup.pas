@@ -12,7 +12,7 @@ function PlanReleaseCleanup(const Context: TCommandContext; const Directory, Ver
 implementation
 
 uses
-  SysUtils, BaseUnix, ScuFiles, ScuFileScan, ScuLibraryPaths, ScuErrors, ScuSignals;
+  SysUtils, BaseUnix, ScuFiles, ScuFileScan, ScuLibraryPaths, ScuErrors, ScuSignals, ScuLockTypes;
 
 
 function MatchesPatterns(const Context: TCommandContext; const Name: string): Boolean;
@@ -44,6 +44,7 @@ begin
     try
       repeat
         Name := Search.Name;
+        if IsPlatformOutputLockName(Name) then Continue;
         if (Name = '.') or (Name = '..') or (Name = ExportManifestName) or
           (Selected.IndexOf(Name) >= 0) or not MatchesPatterns(Context, Name) then Continue;
         Path := IncludeTrailingPathDelimiter(Directory) + Name;
@@ -60,6 +61,7 @@ begin
     for Index := 0 to Manifest.Count - 1 do
     begin
       Entry := Manifest[Index];
+      if IsPlatformOutputLockName(Entry.FileName) then Continue;
       if (Entry.LibraryPath = CanonicalFile(Context.LibraryPath)) and
         (Selected.IndexOf(Entry.FileName) < 0) and MatchesPatterns(Context, Entry.FileName) then
       begin

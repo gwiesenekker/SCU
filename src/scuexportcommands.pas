@@ -17,7 +17,7 @@ implementation
 
 uses
   ScuArchiveCompatibility, ScuWorkingExports, FPJSON, ScuClock, ScuReleaseCleanup, ScuExportManifest, ScuExportPaths, ScuExportTypes, ScuDeckExport, ScuLibraryDisplay, ScuTable, Classes, SysUtils, ScuCommands, ScuErrors, ScuFiles, ScuLibrary,
-  ScuLibraryPaths, ScuSignals, ScuVersions;
+  ScuLibraryPaths, ScuSignals, ScuVersions, ScuLockTypes;
 
 const
   LibraryDirectorySelector = 'scu$library_directory';
@@ -38,6 +38,8 @@ begin
     raise EScuError.Create('The output path would overwrite another SQLite library: "' + Result + '".');
   if IsLibraryStoragePath(Result, Context.LibraryPath) then
     raise EScuError.Create('The output path would overwrite a library or audit file.');
+  if IsPlatformOutputLockName(ExtractFileName(Result)) then
+    raise EScuError.Create('The output path is reserved for the Windows output lock.');
   if ExtractFileName(Result) = ExportManifestName then
     raise EScuError.Create('The output path is reserved for the SCU export manifest.');
   if (Context.Command.Name <> 'extract_deck') and

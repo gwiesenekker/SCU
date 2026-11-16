@@ -39,7 +39,7 @@ function MatchesFilePattern(const Pattern, Name: string): Boolean;
 implementation
 
 uses
-  SysUtils, BaseUnix, ScuCodec, ScuErrors, ScuFiles, ScuLibraryModel, ScuLibraryNames, ScuLibraryPaths, ScuSignals;
+  SysUtils, BaseUnix, ScuCodec, ScuErrors, ScuFiles, ScuLibraryModel, ScuLibraryNames, ScuLockTypes, ScuLibraryPaths, ScuSignals;
 
 function fnmatch(Pattern, Name: PChar; Flags: LongInt): LongInt; cdecl; external 'c';
 
@@ -182,6 +182,7 @@ var
 begin
   if Pos('/', RelativePath) > 0 then
     Exit(False);
+  if IsPlatformOutputLockName(ExtractFileName(RelativePath)) then Exit(False);
   if IsLibraryStoragePath(FDirectory + RelativePath, FLibraryPath) or
     (ExtractFileName(RelativePath) = '.scu-exports.json') then
     Exit(False);

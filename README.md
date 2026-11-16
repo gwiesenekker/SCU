@@ -65,26 +65,55 @@ new and retain an existing regular file's DACL and inheritance protection when
 replaced. Windows temporary files use a reserved byte-range cleanup lock beyond
 the source data, kept open across the rename. Stale-file cleanup checks ownership,
 refuses reparse points, leaves active files and unmarked stages alone, and never
-recurses into unknown stage children. The future Windows library-lock backend
-must lock byte zero of stage `.owner` sidecars to use the same cleanup protocol.
+recurses into unknown stage children. The Windows library-lock backend locks byte zero of stage `.owner` sidecars
+to use the same cleanup protocol.
 
 Windows has no supported directory `fsync` equivalent: `SyncParent` validates the
 parent, while atomic writes use file flushing and write-through rename. These
 operations do not promise identical power-loss durability to Linux on every
 filesystem. Native Windows filesystem and crash testing remain necessary.
 
-The application still targets Linux. Library/output locks, other direct filesystem
+`ScuLocks` and `ScuOutputLock` select platform backends. Linux retains its
+`flock` behavior, signal-based cancellation, directory locks and validated
+inherited-descriptor reuse for synchronous builds. Windows library/history/stage
+locks use `LockFileEx` on byte zero of persistent sidecars, leaving SQLite data
+files unlocked by this layer. Output directories use `.scu-output.lock` inside
+the canonical directory. Windows reserves that name for locking; imports,
+exports and release cleanup must not overwrite it. Sidecars remain after normal
+exit and are reused, rather than deleted and recreated while another process
+could still be waiting on the original file.
+
+Windows lock handles are not inheritable by default and refuse reparse points,
+directories and other nonregular targets. Open sidecars deny deletion/replacement
+while in use. Waits poll every 20 ms, preserving interrupt/shutdown callbacks and
+checking cancellation once more after acquiring the lock, before command effects.
+A scoped Windows console handler records Ctrl+C/Break for waiting threads without
+throwing from the console callback; handlers are removed when acquisition ends.
+Constructor failures and cancellation close handles and release acquired locks.
+The standalone lock suite tests real console Ctrl+C in a separate console on
+native Windows. Headless Wine skips that case; callback cancellation and process
+exclusion are exercised there. Native Windows console validation remains pending.
+
+A POSIX descriptor number in `SCU_BUILD_OUTPUT_LOCK_FD` is not proof of Windows
+lock ownership. Busy Windows nested-build calls fail immediately instead of
+trusting that marker or deadlocking; Windows build-lock handoff remains part of
+the later child-process port. Linux nested-build reuse is unchanged. Console
+handling outside lock acquisition also remains part of the broader Windows
+session/terminal port.
+
+The application still targets Linux. Other direct filesystem
 callers (including scanning and history ownership checks), child processes,
 terminal/signals, native GUI setup, DLL loading and Windows export-filename
 validation still need porting. Existing Linux library filenames and source bytes
 are unchanged.
 
-`make test` includes `tests/platform.py` and `tests/files.py`, each with a standalone
+`make test` includes `tests/platform.py`, `tests/files.py` and `tests/locks.py`, each with a standalone
 Pascal probe, alongside the full integration suite. The probes isolate platform
 services from the remaining Linux-only application units. The file probe can
 also be compiled with a Windows Free Pascal toolchain and run natively. For Wine
 on Linux, use `python3 tests/files.py /path/to/files_probe.exe --wine` with an
-isolated `WINEPREFIX`; these checks supplement native Windows testing.
+isolated `WINEPREFIX`; use the same invocation with `tests/locks.py` and
+`locks_probe.exe` for lock tests. These checks supplement native Windows testing.
 
 ## Work with a library
 
