@@ -4443,7 +4443,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
 
     def test_display_command_list_wraps_at_the_terminal_width(self):
         names = "configure_library, conl"
-        description = "Set library configuration, editor, build command, or release directory."
+        description = "Set library configuration, editor, build command, release directory, or file patterns."
         for columns in (72, 36, 12):
             with self.subTest(columns=columns), self.terminal_session(TERM="dumb", columns=columns) as (
                 process, terminal, read_until
@@ -6619,6 +6619,27 @@ int mkstemp(char *pattern) {
         self.assertIn('Kept untracked release file "source\\nname.pas"', result)
         self.assertNotIn("source\nname.pas", result)
 
+
+    def test_configure_library_file_patterns_json_and_atomic_validation(self):
+        self.run_scu("conl", 'file_patterns=["*.pas","Makefile"]', "build_command=original")
+        header = json.loads(self.run_scu("shol"))
+        self.assertEqual(header["file_patterns"], ["*.pas", "Makefile"])
+        for value, error in (('{}', 'JSON array'), ('[1]', 'only strings'),
+                             ('["../bad"]', 'parent-directory')):
+            with self.subTest(value=value):
+                self.run_scu("conl", "file_patterns=" + value, "build_command=changed", error=error)
+                self.assertEqual(json.loads(self.run_scu("shol")), header)
+        self.run_scu("conl", "fp=[]")
+        self.assertEqual(json.loads(self.run_scu("shol"))["file_patterns"], [])
+        self.run_scu("vera")
+
+    def test_configure_library_file_patterns_can_change_while_version_locked(self):
+        self.store("main.pas", b"source")
+        self.run_scu("locv", "Lock before configuring monitoring")
+        self.run_scu("conl", 'file_patterns=["*.pas"]')
+        self.assertEqual(json.loads(self.run_scu("shol"))["file_patterns"], ["*.pas"])
+        self.assertEqual(len(self.read_library()["revisions"]), 1)
+        self.run_scu("vera")
 
 
 if __name__ == "__main__":

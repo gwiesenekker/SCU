@@ -33,6 +33,7 @@ type
     function Configure(const Settings: TLibrarySettingsChange; RevisionCount: Integer): Boolean;
     function SetFilePatterns(Patterns: TStrings): Boolean;
     procedure SetLastModifiedDeck(const Deck: string);
+    function SuggestedNextVersion: string;
     procedure CreateVersion(const Name: string; RevisionCount: Integer);
     function CloneJSON: TJSONObject;
     // The caller owns the configuration copy; version history is excluded.
@@ -239,13 +240,16 @@ begin
   FLastModifiedDeck := Deck;
 end;
 
+function TLibraryHeader.SuggestedNextVersion: string;
+begin Result := Versions.NextVersion(FVersionStep); end;
+
 procedure TLibraryHeader.CreateVersion(const Name: string; RevisionCount: Integer);
 var
   Next: string;
 begin
   Next := Name;
   if Next = '' then
-    Next := Versions.NextVersion(FVersionStep);
+    Next := SuggestedNextVersion;
   Versions.Start(Next, Versions.CommentPrefix(Versions.Current), RevisionCount);
   FSerialized.Strings['current_version'] := Versions.Current;
 end;

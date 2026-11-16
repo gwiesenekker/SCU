@@ -1,7 +1,8 @@
 FPC ?= fpc
 FPCFLAGS ?= -O2
+LAZBUILD ?= lazbuild
 
-.PHONY: all test format-commands clean
+.PHONY: all test gui test-gui format-commands clean
 all: build/scu build/commands.json
 
 build/scu: $(wildcard src/*.pas) | build
@@ -24,3 +25,11 @@ format-commands:
 
 clean:
 	rm -rf build
+
+# Optional native frontend; the CLI build has no Lazarus dependency.
+gui: all
+	$(LAZBUILD) --widgetset=gtk2 gui/scu_gui.lpi
+
+test-gui: gui
+	$(LAZBUILD) --widgetset=gtk2 tests/gui_check.lpi
+	python3 tests/gui_integration.py

@@ -105,6 +105,7 @@ type
     function TryPreviousSnapshot(out Snapshot: TLibrarySnapshot): Boolean;
     function PreviousDeckSnapshot(const Name: string; AtRevision: Integer): TLibrarySnapshot;
     procedure LockVersion(const Description: string);
+    function SuggestedNextVersion: string;
     procedure CreateVersion(const Name: string);
     function CurrentVersion: string;
     function VersionAt(Revision: Integer): string;
@@ -511,6 +512,9 @@ begin
   Versions.Lock(Description);
   MarkModified;
 end;
+
+function TDeckLibrary.SuggestedNextVersion: string;
+begin Result := FStore.Header.SuggestedNextVersion; end;
 
 procedure TDeckLibrary.CreateVersion(const Name: string);
 begin

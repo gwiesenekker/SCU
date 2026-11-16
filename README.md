@@ -725,6 +725,105 @@ command object to the audit logger. The executor owns locking and transaction
 boundaries. Handlers resolve snapshot selectors and supply the resolved values
 for the executor to record in the audit outcome.
 
+## Native GUI
+
+The optional Lazarus frontend uses LCL/GTK2 and SynEdit. Build it with Lazarus,
+its LCL GTK2 units, and the SynEdit package installed:
+
+```sh
+make gui
+build/scu-gui
+build/scu-gui project.sqlite
+```
+
+Keep `scu-gui`, `scu` and `commands.json` together in the build directory. The GUI
+opens existing `.sqlite` libraries; create a new library with the CLI first.
+The normal `make` and `make test` targets still need only the CLI dependencies.
+On Ubuntu, `Failed to load module "canberra-gtk-module"` means GTK2's optional
+sound module is missing; it does not prevent SCU from running. Installing
+`libcanberra-gtk-module` removes the message. A GTK3 module alone does not satisfy
+the GTK2 build.
+
+- **File:** Open library, Close library, Create new version, Publish version, and Quit.
+  Create new version prefills the next version using `version_increment`; the
+  current version must be locked first. Unsaved buffers remain in the editor
+  until explicitly saved into the new version.
+- **Toolbar:** Save deck (also Ctrl+S), Extract deck, Extract version, and Close tab.
+- **Left:** live decks in the current library snapshot; select a deck to open it.
+- **Middle:** one SynEdit tab per deck, marked with `*` while its buffer differs
+  from the stored source. Existing working text is opened when present. UTF-8
+  text decks are editable; binary and other encodings are rejected by the editor.
+- **Right:** a unified, exact-whitespace diff. Both selectors offer
+  `scu$current_deck_version` (latest stored revision),
+  `scu$previous_deck_version` (the revision immediately before it),
+  `scu$live_deck_version` (the current editor buffer), and actual stored versions.
+  The defaults are From=`scu$current_deck_version` and
+  To=`scu$live_deck_version`, showing unsaved additions as you type. Either side
+  can be changed to compare the buffer with another stored version. The preview
+  refreshes after a short typing pause and follows undo. A first revision can
+  compare current with live even though it has no previous revision.
+- **Bottom:** canonical commands, results, errors, and streamed build output.
+  Right-click for Copy and Select All. User-command failures also open a dialog
+  containing the backend error; saving into a locked version keeps the buffer
+  modified and explains how to create a new version.
+  Commands run asynchronously; controls that could conflict with them are
+  disabled while they run. Read-only comparisons keep the deck list, editor tabs
+  and version selectors enabled without rebuilding the deck list. Rapid changes
+  use the latest selection and discard outdated comparison results. Closing is
+  refused until the command completes.
+
+`scu$live_deck_version` is GUI-only. Live comparisons reuse SCU's diff engine
+in a background worker on immutable buffer snapshots. They create no revision,
+write no working file, and add no audit command. The log labels them as previews.
+Stored-to-stored comparisons still submit `display_deck_diff` to the CLI.
+Selecting live on both sides compares the same buffer. Save deck remains the
+explicit operation that stores editor changes; saving keeps the selected preview.
+
+Editor tabs have a highlighted active tab and a close button on each tab.
+Click a tab to switch decks; Ctrl+Tab / Ctrl+Shift+Tab cycle tabs, and Ctrl+W
+closes the current tab. Overflow arrows and the mouse wheel scroll long tab
+strips; hovering shows the full name. Closing an inactive tab acts on that
+specific deck and retains the same Save/Discard/Cancel protection for edits.
+
+Drag the three splitters to resize panes. Window resizing preserves pane
+proportions; layout minimums follow the UI font and DPI. **Edit → Preferences…**
+opens a preferences dialog with **Editor** and **Library** panes. The Editor pane
+has a native font picker; family, size and style apply to open and future tabs
+and persist in `$XDG_CONFIG_HOME/scu/gui.json` (normally `~/.config/scu/gui.json`).
+Log/diff fonts remain independent. The Library pane edits the default comment
+string, external-editor argument array, build command, release directory,
+version/revision increments and monitored file patterns. Only changed values are
+submitted using `configure_library`. The comment string is editable only before
+the first revision of an open version and applies to new decks; existing decks
+retain their own prefix. Monitored patterns use one line per root filename or
+wildcard. Applying them changes selection rules without importing source files.
+
+The CLI also accepts `configure_library file_patterns='["*.pas","Makefile"]'`;
+`file_patterns='[]'` clears the list. Settings and patterns save transactionally,
+including when applied together. Invalid settings leave the library unchanged.
+
+Save deck writes the working source beside the library and submits the canonical
+`import_deck` command through the same `scu` executable as CLI use. Extract deck
+saves its dirty tab before `extract_deck`; Extract version and Publish version
+save all dirty tabs before `extract_version` and `release_version`. The backend
+retains responsibility for library changes, locking, transactions, audit records,
+export manifests and build execution. The GUI reads views through read-only
+library/model APIs. It never issues library SQL writes. A working file changed
+outside the GUI is preserved and the save stops with an explanation.
+
+Closing a modified tab or library prompts to save, discard the **editor buffer**,
+or cancel. Earlier committed library revisions remain saved. Source files are
+UTF-8 and preserve LF/CRLF and final-newline state; mixed line endings normalize
+when edited. Native checks cover editing, audit commands, streamed builds,
+publication, font persistence, resizing, larger fonts and DPI changes:
+
+```sh
+make test-gui
+```
+
+This target requires a display; it leaves a test screenshot at
+`build/gui-check.png` and uses a temporary library and temporary preferences.
+
 ## License
 
 SCU is licensed under the GNU General Public License, version 3 only
@@ -779,7 +878,7 @@ Rebuild such an archive into a **new** library with the current importer
 
 ```sh
 python3 tools/import_versions.py ARCHIVE build/rebuilt.sqlite
-build/scu build/rebuilt.sqlite verify_audit_trail
+build/scu build/rebuilt.sqlite verify_audit
 build/scu build/rebuilt.sqlite release_version
 ```
 

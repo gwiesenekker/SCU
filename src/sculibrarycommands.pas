@@ -81,7 +81,9 @@ end;
 function ConfigureLibrary(var Context: TCommandContext): string;
 var
   Settings: TLibrarySettingsChange;
-  Editor: TJSONData;
+  Editor, Patterns: TJSONData;
+  PatternList: TStringList;
+  Index: Integer;
 begin
   Settings.ChangePrefix := Context.Command.HasArgument('comment-prefix');
   Settings.ChangeBuild := Context.Command.HasArgument('build_command');
@@ -94,8 +96,19 @@ begin
   if (Context.Command.HasArgument('version_increment') and (Settings.VersionIncrement = '')) or
     (Context.Command.HasArgument('revision_increment') and (Settings.RevisionIncrement = '')) then
     raise EScuError.Create('Expected a positive increment.');
-  Editor := nil;
+  Editor := nil; Patterns := nil; PatternList := nil;
   try
+    if Context.Command.HasArgument('file_patterns') then
+    begin
+      Patterns := ParseJSON(Context.Command['file_patterns'], 'Invalid JSON for file_patterns');
+      if not (Patterns is TJSONArray) then raise EScuError.Create('file_patterns must be a JSON array of strings.');
+      PatternList := TStringList.Create;
+      for Index := 0 to TJSONArray(Patterns).Count - 1 do
+      begin
+        if Patterns.Items[Index].JSONType <> jtString then raise EScuError.Create('file_patterns must contain only strings.');
+        PatternList.Add(TJSONArray(Patterns).Strings[Index]);
+      end;
+    end;
     if Context.Command.HasArgument('editor') then
     begin
       Editor := ParseJSON(Context.Command.Argument('editor'), 'Invalid JSON for --editor');
@@ -103,15 +116,18 @@ begin
         raise EScuError.Create('Invalid value for --editor: The editor must be a JSON array of strings.');
     end;
     if not Settings.ChangePrefix and not Settings.ChangeBuild and not Settings.ChangeReleaseDirectory and (Editor = nil) and
-      (Settings.VersionIncrement = '') and (Settings.RevisionIncrement = '') then
+      (Settings.VersionIncrement = '') and (Settings.RevisionIncrement = '') and not Assigned(PatternList) then
       raise EScuError.Create('Specify at least one library setting.');
     Settings.Prefix := PrefixArgument(Context.Command);
     Settings.Editor := TJSONArray(Editor);
     Settings.BuildCommand := Context.Command.Argument('build_command');
-    Context.LibraryFile.Configure(Settings);
+    if Settings.ChangePrefix or Settings.ChangeBuild or Settings.ChangeReleaseDirectory or Assigned(Editor) or
+      (Settings.VersionIncrement <> '') or (Settings.RevisionIncrement <> '') then
+      Context.LibraryFile.Configure(Settings);
+    if Assigned(PatternList) then Context.LibraryFile.SetFilePatterns(PatternList);
     Result := 'Updated library header';
   finally
-    Editor.Free;
+    Editor.Free; Patterns.Free; PatternList.Free;
   end;
 end;
 

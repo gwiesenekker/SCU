@@ -28,7 +28,7 @@
     {
       "name": "configure_library",
       "aliases": ["conl"],
-      "summary": "Set library configuration, editor, build command, or release directory.",
+      "summary": "Set library configuration, editor, build command, release directory, or file patterns.",
       "arguments": [
         {
           "name": "build_command",
@@ -72,9 +72,16 @@
           "value": "scu$optional",
           "description": "Directory for release publication, relative to the library directory. Default release; must be separate from working sources.",
           "completion": "directory"
+        },
+        {
+          "name": "file_patterns",
+          "type": "string",
+          "aliases": ["fp"],
+          "value": "scu$optional",
+          "description": "Monitored root filenames and wildcards as a JSON array of strings. An empty array clears the list."
         }
       ],
-      "help": "Specify at least one argument. Set the default prefix before the current version receives its first revision. Supply editor arguments as a JSON array and quote the build command as one string."
+      "help": "Specify at least one argument. Set the default prefix before the current version receives its first revision. Supply editor arguments as a JSON array and quote the build command as one string. Supply file_patterns as a JSON array to update monitored files without opening an external editor. Library settings and patterns are saved transactionally."
     },
     {
       "name": "create_deck",

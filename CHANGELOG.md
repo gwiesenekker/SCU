@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- Add Copy and Select All to the GUI log context menu while preserving right-click selection. Show user-command failures in dialogs with actual backend details, retaining modified buffers after a failed save.
+- Add File → Create new version, prefilled from the backend's version_increment calculation; preserve pending edits so locked-version save failures can be recovered into the new version.
+- Expand Preferences into Editor and Library panes for fonts, default comment string, external editor, build command, release directory, increments and file patterns. Submit only changed values via configure_library and respect comment-prefix version rules.
+- Add the configure_library file_patterns JSON-array argument with transactional validation, and regression checks for locked saves/error dialogs, version defaults, library options, log actions and preferences layout.
+
+- Default the GUI diff pane to From=scu$current_deck_version and To=scu$live_deck_version, so unsaved edits are previewed automatically when opening or switching editor tabs.
+
+- Add GUI-only scu$live_deck_version to both diff selectors for comparing the active editor buffer with a stored deck version in either direction.
+- Refresh live comparisons after typing/undo using debounced immutable snapshots and the shared diff engine in a background worker; discard stale results and retain selections after saving.
+- Keep live previews out of CLI selectors and audit records, with no source/library writes. Add native checks for both directions, explicit revisions, undo, no-write/audit guarantees, first revisions and batch saving with a live comparison selected.
+
+- Use scu$current_deck_version consistently in both GUI diff dropdowns, removing the ambiguous GUI-only scu$version label. Keep the separate SCU$VERSION release macro unchanged.
+
+- Replace the theme-dependent editor tab labels with a distinct tab strip: bordered tabs, an active highlight, per-tab close buttons, full-name hints and overflow scrolling.
+- Add Ctrl+Tab/Ctrl+Shift+Tab navigation and Ctrl+W closing; route close buttons to the clicked deck, including inactive dirty tabs, with Save/Discard/Cancel and safe deferred closing during comparisons.
+- Add native checks for tab clicks, navigation/overflow, inactive closing, dirty-tab close decisions and font/DPI layout.
+
+- Keep the deck list, editor tabs and version selectors stable and enabled during read-only GUI comparisons. Version changes update only the diff; rapid choices and deck switches discard stale results instead of redrawing or rebuilding the deck list.
+- Add native regression checks for unchanged list contents/selection, browsing during comparisons and latest-result handling.
+
+- Add an optional Lazarus/SynEdit GUI with deck list, multiple dirty-marked editor tabs, stored-version diff selectors, and a streamed command/build log.
+- Add File actions for opening/closing a library, publishing a version and quitting; Save deck/Ctrl+S, Extract deck, Extract version and Close tab actions use canonical catalog-bound CLI commands.
+- Save working text through import_deck, protect externally changed source files, preserve CRLF/final-newline state, and keep library mutations, audit/locking and builds in the existing backend.
+- Add draggable split panes, font/DPI-aware minimum sizes and proportional resizing, plus Edit → Preferences for a persistent editor font applied to open and new tabs.
+- Add make gui and make test-gui targets, native GUI/editor/layout integration checks, and launch/workflow documentation.
+
 - Keep the old-importer guard active after the provenance deck is deleted or replaced by checking its complete revision history. Explain rebuilding for named imports that rely on a recorded temporary filename; explicit-file rescue remains available.
 - Clean read-only stale atomic temporaries and stage ownership markers without requiring write access to their contents.
 - Escape line breaks in the delete_deck working-file notice; release cleanup notices already escape filename bytes.
