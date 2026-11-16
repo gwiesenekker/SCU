@@ -4,6 +4,7 @@ unit ScuPlatformPathsWindows;
 
 interface
 
+function NativeFilePath(const Path: string): UnicodeString;
 function ResolveDirectory(const Path: string): string;
 function AbsolutePath(const Path: string): string;
 function RunningExecutable: string;
@@ -61,6 +62,11 @@ begin
   Result := '\\?\' + Path;
 end;
 
+function NativeFilePath(const Path: string): UnicodeString;
+begin
+  Result := NativePath(WideAbsolutePath(Path));
+end;
+
 function DisplayPath(const Path: UnicodeString): string;
 var Value: UnicodeString;
 begin
@@ -77,7 +83,7 @@ var
   FullPath, Buffer: UnicodeString;
   Count, Capacity: DWORD;
 begin
-  FullPath := NativePath(WideAbsolutePath(Path));
+  FullPath := NativeFilePath(Path);
   Handle := CreateFileW(PWideChar(FullPath), 0,
     FILE_SHARE_READ or FILE_SHARE_WRITE or FILE_SHARE_DELETE, nil, OPEN_EXISTING,
     FILE_FLAG_BACKUP_SEMANTICS, 0);

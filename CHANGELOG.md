@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Move file I/O behind the ScuFiles facade and platform backends, preserving the existing Linux implementation, permissions, locks and fsync behavior.
+- Add Windows binary/limited regular-file reads, reparse-point refusal, Unicode/long paths, private temporary files/directories, DACL preservation for source outputs, flushed same-directory atomic replacement and race-safe no-replace writes.
+- Add bounded retries and clear errors for blocked Windows replacements, and ownership/lock-checked stale-file cleanup that refuses links and unknown stage contents. Document Windows durability and open-reader differences and the remaining portability work.
+- Add standalone Linux/Windows file-service regressions covering failure/cancellation cleanup, competing writers, reader visibility, interruption recovery, permissions, staging, binary bytes and Windows-specific sharing/Unicode behavior; include them in make test.
+
 - Introduce platform clock and path interfaces with separate Linux and Windows backends; retain Linux UTC timestamps, canonical-path/symlink semantics, native filenames and XDG locations.
 - Add Windows UTC FILETIME, UTF-8/wide-character path resolution, executable discovery, application-data locations and case-insensitive storage-path comparison. Route CLI, GUI and library path helpers through the interfaces; the remaining application services still require porting.
 - Add standalone platform regression checks for UTC/timezones, path errors, symlinks, executable discovery, storage paths and configuration locations, run with the full integration suite.

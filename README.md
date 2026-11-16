@@ -42,16 +42,49 @@ case sensitivity. Windows history and preferences locations use `LOCALAPPDATA`,
 falling back to `APPDATA`; the GUI locates its sibling CLI as `scu.exe`.
 Choosing a state/configuration path does not create directories.
 
-This is the first portability step: the application still targets Linux.
-Filesystem writes, locks, child processes, terminal/signals, native GUI setup,
-DLL loading and Windows export-filename validation still need porting. Existing
-Linux library filenames and source bytes are unchanged. Windows runtime behavior
-requires testing on Windows; compiling the isolated platform probe does not
-establish support for the complete application.
+`ScuFiles` is now the public file-service facade, selecting
+`ScuPlatformFilesLinux` or `ScuPlatformFilesWindows`. Linux retains the existing
+nonblocking regular-file reads, no-follow checks, `mkstemp`/`mkdtemp`, temporary
+file locks, `rename`/no-replace hard links, permission/group preservation and
+file/parent-directory `fsync` behavior.
 
-`make test` includes `tests/platform.py` and its standalone Pascal probe, alongside
-the full integration suite. The probe isolates clock/path services from the
-remaining Linux-only filesystem and terminal units.
+The Windows file backend uses wide-character APIs (including extended paths),
+checks opened handles for regular files and reparse points, and keeps binary
+source bytes unchanged. Atomic writes create a unique file in the destination
+directory, flush it with `FlushFileBuffers`, then use a write-through
+[`MoveFileExW`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw)
+rename. No-replace writes never overwrite an existing destination, and failed
+writes remove their temporary file without deleting the destination. Sharing or
+access failures receive a short bounded retry and a contextual error. Open
+readers may prevent replacement on Windows, even with delete sharing; close the
+reader and retry rather than expecting Linux open-file replacement semantics.
+
+Windows control files and temporary directories have protected access rules for
+the current user and SYSTEM. Source outputs inherit directory permissions when
+new and retain an existing regular file's DACL and inheritance protection when
+replaced. Windows temporary files use a reserved byte-range cleanup lock beyond
+the source data, kept open across the rename. Stale-file cleanup checks ownership,
+refuses reparse points, leaves active files and unmarked stages alone, and never
+recurses into unknown stage children. The future Windows library-lock backend
+must lock byte zero of stage `.owner` sidecars to use the same cleanup protocol.
+
+Windows has no supported directory `fsync` equivalent: `SyncParent` validates the
+parent, while atomic writes use file flushing and write-through rename. These
+operations do not promise identical power-loss durability to Linux on every
+filesystem. Native Windows filesystem and crash testing remain necessary.
+
+The application still targets Linux. Library/output locks, other direct filesystem
+callers (including scanning and history ownership checks), child processes,
+terminal/signals, native GUI setup, DLL loading and Windows export-filename
+validation still need porting. Existing Linux library filenames and source bytes
+are unchanged.
+
+`make test` includes `tests/platform.py` and `tests/files.py`, each with a standalone
+Pascal probe, alongside the full integration suite. The probes isolate platform
+services from the remaining Linux-only application units. The file probe can
+also be compiled with a Windows Free Pascal toolchain and run natively. For Wine
+on Linux, use `python3 tests/files.py /path/to/files_probe.exe --wine` with an
+isolated `WINEPREFIX`; these checks supplement native Windows testing.
 
 ## Work with a library
 
