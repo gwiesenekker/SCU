@@ -52,7 +52,7 @@ function FormatAuditCommand(const Payload: RawByteString): string;
 implementation
 
 uses
-  SysUtils, BaseUnix, ScuCodec, ScuClock, ScuErrors, ScuJSON;
+  SysUtils, ScuAuditActor, ScuCodec, ScuClock, ScuErrors, ScuJSON;
 
 const
   HashLength = 64;
@@ -312,7 +312,7 @@ begin
   try
     Event.Add('phase', 'begin');
     Event.Add('command', Command.Name);
-    Event.Add('uid', Int64(fpGetEUID));
+    AddAuditActor(Event);
     Args := TJSONArray.Create;
     Event.Add('arguments', Args);
     Parameters := TJSONObject.Create;
@@ -393,7 +393,7 @@ begin
     Event.Add('expansion', Expansion);
     Event.Add('build_command', Command);
     Event.Add('output_path', OutputPath);
-    Event.Add('uid', Int64(fpGetEUID));
+    AddAuditActor(Event);
     Event.Add('success', Success);
     if Detail <> '' then
       Event.Add('detail', Detail);

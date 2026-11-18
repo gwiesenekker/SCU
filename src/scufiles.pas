@@ -23,6 +23,7 @@ function RegularFileExists(const Path: string): Boolean;
 function IsSQLiteFile(const Path: string): Boolean;
 function IsSQLiteCompanion(const Path: string): Boolean;
 procedure CleanupStaleAtomicFiles(const Directory: string);
+function OpenReadFile(const Path: string): TStream;
 function ReadBytes(const Path: string; Limit: Int64; Options: TReadBytesOptions = []): RawByteString;
 procedure AtomicWrite(const Path: string; const Data: RawByteString; Options: TAtomicWriteOptions = []); overload;
 procedure AtomicWrite(const Path: string; Data: TStream; Options: TAtomicWriteOptions = []); overload;
@@ -63,6 +64,11 @@ end;
 function IsSQLiteFile(const Path: string): Boolean;
 begin
   Result := FileBackend.IsSQLiteFile(Path);
+end;
+
+function OpenReadFile(const Path: string): TStream;
+begin
+  Result := FileBackend.OpenReadFile(Path);
 end;
 
 function ReadBytes(const Path: string; Limit: Int64; Options: TReadBytesOptions): RawByteString;

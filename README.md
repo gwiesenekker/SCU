@@ -325,15 +325,59 @@ Native Windows validation remains pending. The long application-directory test
 runs natively; Wine skips it only after confirming that even the no-DLL startup
 probe cannot be launched from that path by its ShellExecute launcher.
 
-The application still targets Linux. Audit actor identification and remaining
-executor Unix references, native GUI setup, and the full Windows export-filename
-policy still need porting. Existing Linux library filenames and source bytes are
-unchanged.
+Audit actor metadata now has platform backends. New Linux command-begin and build
+records retain the historical integer `uid` from `geteuid`, in the same JSON field
+position. Windows records use this object instead of a fabricated Unix UID:
+
+```json
+{
+  "actor": {
+    "platform": "windows",
+    "sid": "S-1-5-21-111111111-222222222-333333333-1001",
+    "token_source": "process"
+  }
+}
+```
+
+The SID identifies the effective token's user. SCU first queries the current
+thread's impersonation token (`token_source=thread`), using
+[OpenThreadToken](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openthreadtoken)
+with `OpenAsSelf=TRUE` for the access check. It falls back to the process token
+only when there is no thread token. An existing but unqueryable token, including
+an anonymous impersonation token, causes an audit error before appending the
+record; it is never silently attributed to the process user. Token handles and
+SID buffers are released after each query. Identities are not cached across
+commands/threads, inferred from environment variables, or resolved through a
+network account-name lookup. Build records identify the parent SCU caller, as
+Linux build records already do. End records retain their hash reference to the
+begin record rather than duplicating actor metadata.
+
+The audit domain, record format and verification of existing bytes are unchanged.
+Mixed histories containing legacy `uid` records and Windows `actor` records are
+accepted without rewriting old JSON or its hashes. Actor metadata is covered by
+the same record digest as every other payload field.
+
+The executor now uses the shared hangup constant and a typed invalid-handle
+sentinel, with no direct Unix-unit dependency. Its locking, savepoints, command
+and build auditing, and commit rules are unchanged. Recovery reads the staged
+SQLite file through an owning platform stream: the Linux backend retains the
+former `TFileStream` open, while Windows uses a Unicode/extended-path regular-file
+handle and closes it on stream destruction. Windows recovery cleanup uses the
+existing private-directory cleanup backend without masking the original result.
+Tests cover successful/failed cleanup and streaming binary files with long paths.
+
+The Win64 CLI and backend now cross-compile and run headless command/executor
+regressions under Wine, including real transactions, build outcomes, identity
+errors and recovery. Native Windows validation is still pending; Wine's long
+recovery-directory test skips only after an independent directory-normalization
+probe fails before recovery/actor lookup. The ordinary recovery cleanup checks
+run under Wine on both success and validation failure. Native GUI setup, packaging
+and the full Windows export-filename policy remain unfinished. Existing Linux
+library filenames and source bytes are unchanged.
 
 `make test` includes `tests/platform.py`, `tests/files.py`, `tests/locks.py` and
-`tests/processes.py`, `tests/terminal.py`, `tests/sqlite.py`, `tests/scanning.py`
-`tests/cleanup.py` and `tests/dlls.py`,
-each with a standalone
+`tests/processes.py`, `tests/terminal.py`, `tests/sqlite.py`, `tests/scanning.py`,
+`tests/cleanup.py`, `tests/dlls.py` and `tests/actors.py`, each with a standalone
 Pascal probe, alongside the full integration suite. The probes isolate platform
 services from the remaining Linux-only application units. The file probe can
 also be compiled with a Windows Free Pascal toolchain and run natively. For Wine
@@ -346,8 +390,10 @@ checks editing, history, keys and signals. Use `tests/sqlite.py` with
 `tests/scanning.py` with `scan_probe.exe` for source scans and nested command files.
 `tests/cleanup.py` with `cleanup_probe.exe` covers release collection/deletion and
 editor cleanup. `tests/dlls.py` with `dll_probe.exe` checks runtime loading and
-codec/storage compatibility. These checks
-supplement native Windows testing.
+codec/storage compatibility. `tests/actors.py` with `actor_probe.exe` tests
+effective identities and the executor, and expects the matching `scu`/`scu.exe`
+and `commands.json` alongside the probe. These checks supplement native Windows
+testing.
 
 ## Work with a library
 

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add audit actor platform backends: preserve Linux effective UID fields, types and insertion order; record Windows effective token-user SIDs and thread/process token sources. Prefer impersonation tokens, fall back only when no thread token exists, and fail rather than misattribute an unqueryable actor. Avoid environment usernames, domain lookups and identity caching.
+- Preserve legacy audit payload bytes, hash domain, chain verification and mixed-platform histories. Add actor metadata only to the existing command-begin/build phases; end records continue referencing their begin digest.
+- Remove the executor's direct Unix dependency, use the shared hangup constant and a typed invalid handle, and stream recovery files through an owning platform reader. Retain Linux open/cleanup behavior and use native Unicode/long-path reads and private-directory cleanup on Windows.
+- Add native/Wine identity and full CLI/backend executor regressions for impersonation, per-thread refresh, anonymous-token rejection, token/stream handle lifetime, canonical commands, actor-bound digests, atomic failures, legacy byte preservation, builds and recovery. Win64 CLI/backend cross-compilation now succeeds; document native Windows and Wine long-directory validation limits.
+
 - Add lazy Windows SQLite, zstd and OpenSSL 3 bindings backed by a shared app-local Unicode DLL loader. Limit dependency search to the DLL directory/System32, reject primary reparse points, and report missing files, exports, incompatible versions and image/dependency errors without CWD/PATH fallback.
 - Publish complete bindings under per-component initialization locks, retain successful modules until process teardown, and permit retry after a failed load. Validate SQLite thread safety/version before creating database files; initialize Windows OpenSSL without external configuration/providers for built-in SHA-1/SHA-256 checksums.
 - Preserve Linux SQLite/zstd imports and lazy libcrypto.so.3 behavior, source/audit digests, zstd/base64 storage and deck validation. Document DLL names, architecture/runtime requirements and remaining Windows work.

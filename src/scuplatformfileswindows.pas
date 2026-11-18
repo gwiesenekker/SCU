@@ -9,6 +9,7 @@ uses Classes, SysUtils, ScuFileTypes;
 function RegularFileExists(const Path: string): Boolean;
 function IsSQLiteFile(const Path: string): Boolean;
 procedure CleanupStaleAtomicFiles(const Directory: string);
+function OpenReadFile(const Path: string): TStream;
 function ReadBytes(const Path: string; Limit: Int64; Options: TReadBytesOptions): RawByteString;
 procedure AtomicWrite(const Path: string; Data: TStream; Options: TAtomicWriteOptions);
 function MakeTempDirectory(const Prefix: string): string;
@@ -45,6 +46,30 @@ begin
   if NoFollow then Flags := Flags or OpenReparsePoint;
   Result := CreateFileW(PWideChar(NativeFilePath(Path)), GENERIC_READ, ShareAll,
     nil, OPEN_EXISTING, Flags, 0);
+end;
+
+type
+  TOwnedReadStream = class(THandleStream)
+    destructor Destroy; override;
+  end;
+destructor TOwnedReadStream.Destroy;
+begin
+  CloseHandle(Handle);
+  inherited Destroy;
+end;
+function OpenReadFile(const Path: string): TStream;
+var Handle: THandle;
+begin
+  Handle := OpenRead(Path, True);
+  if Handle = INVALID_HANDLE_VALUE then
+    RaiseSystemError('Could not open ' + Path, GetLastError);
+  try
+    InspectFile(Handle, Path, True);
+    Result := TOwnedReadStream.Create(Handle);
+    Handle := INVALID_HANDLE_VALUE;
+  finally
+    if Handle <> INVALID_HANDLE_VALUE then CloseHandle(Handle);
+  end;
 end;
 
 function RegularFileExists(const Path: string): Boolean;

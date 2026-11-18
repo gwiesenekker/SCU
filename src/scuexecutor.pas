@@ -16,7 +16,7 @@ type
     FInteractive: Boolean;
     FOutput: TScuOutput;
     procedure RunCommand(var Context: TCommandContext; const Handler: TCommandHandler;
-      OutputLock: THandle = -1);
+      OutputLock: THandle = THandle(-1));
     procedure RaiseMissingLibrary;
     function OpenCommandDatabase(var Context: TCommandContext; const Handler: TCommandHandler): Boolean;
     procedure VerifyLibrary(var Context: TCommandContext; Audit: TAuditLog; LibraryExists: Boolean);
@@ -38,8 +38,8 @@ type
 implementation
 
 uses
-  Classes, BaseUnix, FPJSON, ScuBuild, ScuCodec, ScuCommandRegistry,
-  ScuErrors, ScuFiles, ScuLibraryPaths, ScuLocks, ScuOutputLock, ScuRecovery, ScuSignals, ScuSQLite;
+  Classes, FPJSON, ScuBuild, ScuCodec, ScuCommandRegistry,
+  ScuErrors, ScuFiles, ScuLibraryPaths, ScuLocks, ScuOutputLock, ScuRecovery, ScuSignals, ScuSQLite{$IFDEF WINDOWS}, ScuCleanupFiles{$ENDIF};
 
 constructor TScuExecutor.Create(const LibraryPath: string; Interactive: Boolean; Output: TScuOutput);
 begin
@@ -131,7 +131,7 @@ var
   TempDir, TempFile, Detail: string;
   Document: TJSONObject;
   Audit: TAuditLog;
-  Stream: TFileStream;
+  Stream: TStream;
 begin
   Context.LibraryPath := CanonicalFile(Context.LibraryPath);
   Lock := TFileLock.Create(LibraryLockPath(Context.LibraryPath), @SessionEnding, @CheckSessionInterrupt);
@@ -167,15 +167,19 @@ begin
           Context.Database.Free;
         end;
         CheckSessionInterrupt;
-        Stream := TFileStream.Create(TempFile, fmOpenRead);
+        Stream := OpenReadFile(TempFile);
         try
           AtomicWrite(Context.LibraryPath, Stream, [awNoReplace]);
         finally
           Stream.Free;
         end;
       finally
+        {$IFDEF WINDOWS}
+        RemoveWorkingDirectory(TempDir);
+        {$ELSE}
         DeleteFile(TempFile);
         RemoveDir(TempDir);
+        {$ENDIF}
       end;
     finally
       Document.Free;
@@ -402,7 +406,7 @@ begin
     Committed := True;
     if Context.Build.Command <> '' then
       Expansion := Audit.Head;
-    if (Detail <> '') and (PendingSignal <> SIGHUP) then
+    if (Detail <> '') and (PendingSignal <> SignalHangup) then
       FOutput.WriteLine(Detail);
     if Assigned(Handler.ReportCommitted) then
       Handler.ReportCommitted(Context);

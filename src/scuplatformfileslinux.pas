@@ -9,6 +9,7 @@ uses Classes, SysUtils, ScuFileTypes;
 function RegularFileExists(const Path: string): Boolean;
 function IsSQLiteFile(const Path: string): Boolean;
 procedure CleanupStaleAtomicFiles(const Directory: string);
+function OpenReadFile(const Path: string): TStream;
 function ReadBytes(const Path: string; Limit: Int64; Options: TReadBytesOptions): RawByteString;
 procedure AtomicWrite(const Path: string; Data: TStream; Options: TAtomicWriteOptions);
 function MakeTempDirectory(const Prefix: string): string;
@@ -57,6 +58,11 @@ begin
   if Error <> ESysENOENT then
     RaiseSystemError('Could not inspect "' + Path + '"', Error);
   Result := False;
+end;
+
+function OpenReadFile(const Path: string): TStream;
+begin
+  Result := TFileStream.Create(Path, fmOpenRead);
 end;
 
 function ReadBytes(const Path: string; Limit: Int64; Options: TReadBytesOptions): RawByteString;
