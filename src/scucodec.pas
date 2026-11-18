@@ -19,8 +19,10 @@ function DecodeDeck(const Encoded, Digest: string; Size: Int64): RawByteString;
 implementation
 
 uses
-  SysUtils, CTypes, Base64, Dynlibs, ScuErrors;
+  SysUtils, CTypes, Base64, Dynlibs, ScuErrors
+  {$IFDEF WINDOWS}, ScuZstdWindows, ScuOpenSSLWindows{$ENDIF};
 
+{$IFNDEF WINDOWS}
 function ZSTD_compressBound(SourceSize: csize_t): csize_t; cdecl; external 'zstd';
 function ZSTD_compress(Dest: Pointer; Capacity: csize_t; Source: Pointer;
   Size: csize_t; Level: cint): csize_t; cdecl; external 'zstd';
@@ -68,6 +70,8 @@ begin
   end;
 end;
 
+{$ENDIF}
+
 function EncodeBytesHex(const Data: RawByteString): string;
 const Digits = '0123456789abcdef';
 var Index: SizeInt;
@@ -96,12 +100,14 @@ end;
 
 function DeckSHA1(const Data: RawByteString): string;
 begin
-  Result := CryptoDigest(Data, 'SHA1', CryptoSHA1, 20);
+  {$IFDEF WINDOWS}Result := WindowsDigest(Data, False);{$ELSE}
+  Result := CryptoDigest(Data, 'SHA1', CryptoSHA1, 20);{$ENDIF}
 end;
 
 function AuditSHA256(const Data: RawByteString): string;
 begin
-  Result := CryptoDigest(Data, 'SHA256', CryptoSHA256, 32);
+  {$IFDEF WINDOWS}Result := WindowsDigest(Data, True);{$ELSE}
+  Result := CryptoDigest(Data, 'SHA256', CryptoSHA256, 32);{$ENDIF}
 end;
 
 function IsHexDigest(const Digest: string; Size: SizeInt): Boolean;
@@ -228,7 +234,9 @@ initialization
   InitializeBase64;
 
 finalization
+  {$IFNDEF WINDOWS}
   if CryptoLibrary <> NilHandle then
     UnloadLibrary(CryptoLibrary);
+  {$ENDIF}
 
 end.

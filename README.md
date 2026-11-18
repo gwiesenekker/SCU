@@ -183,8 +183,8 @@ recovery write-access checks and database filenames. Linux retains its existing
 `0600`, `access`, close-on-exec and parent-sync behavior. Windows creates the
 initial database with a protected current-user/SYSTEM DACL and uses UTF-8
 absolute extended paths with `sqlite3_open_v2`, including Unicode and long names.
-A compatible architecture-matched `sqlite3.dll` must be available to the executable;
-DLL deployment/search hardening is separate remaining work.
+An architecture-matched `sqlite3.dll` must be placed beside the executable,
+using the Windows DLL loading policy below.
 
 The same SQLite factories, schemas and transactions run on both platforms. A
 logically read-only factory opens physically writable databases read/write when
@@ -275,13 +275,64 @@ interrupt or replaces the original editor failure/cancellation. Native Windows
 reparse/junction, ACL and filesystem validation remains pending; Wine skips cases
 where no observable reparse point can be created.
 
-The application still targets Linux. Native GUI setup, DLL loading and the full
-Windows export-filename policy still need porting. Existing Linux library filenames
-and source bytes are unchanged.
+Windows SQLite, zstd and OpenSSL now load on demand through a shared DLL loader,
+independently of one another. The executable can start without these optional
+libraries; a command reports a contextual error when a required library is absent.
+A failed SQLite DLL load happens before a new database file is created. Supply
+architecture-matched libraries beside the executable, with their compiler/runtime
+dependencies either there or installed in System32:
+
+| Component | App-local DLL names, in preference order | Required build |
+| --- | --- | --- |
+| SQLite | `sqlite3.dll` | SQLite 3.38+, thread safety enabled, JSON support enabled, standard cdecl exports |
+| zstd | `libzstd.dll`, `zstd.dll` | zstd 1.3+ with the required compression/frame APIs |
+| OpenSSL | `libcrypto-3-x64.dll`, `libcrypto-3.dll` on x64; `libcrypto-3.dll` on other architectures | OpenSSL major version 3, built-in default provider, SHA-1/SHA-256 exports |
+
+Primary DLLs are opened as regular files without reparse points and loaded by
+absolute Unicode/extended path with
+[LoadLibraryExW](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibraryexw).
+Dependency search uses `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR` and
+`LOAD_LIBRARY_SEARCH_SYSTEM32`, in addition to Windows' loaded-module/KnownDLL
+resolution. SCU never falls back to CWD or `PATH`, nor changes process-wide DLL
+search settings. A missing preferred filename permits the next listed alias;
+an installed but invalid preferred DLL stops loading with its path and an
+architecture/dependency hint. Missing required exports and incompatible versions
+are reported explicitly. The application directory is the trust boundary;
+place DLLs from your chosen trusted builds there. SCU does not download runtimes.
+
+Bindings are published only after every required export is resolved, under
+per-component initialization locks. Concurrent first use is supported; a failed
+binding can be retried after replacing its DLL. Successful modules remain loaded
+until process teardown so their callbacks and function addresses stay valid.
+Windows initializes OpenSSL with `OPENSSL_INIT_NO_LOAD_CONFIG`: SCU checksums use
+the [built-in default provider](https://docs.openssl.org/3.0/man7/crypto/), without
+loading `openssl.cnf`, `OPENSSL_CONF` or external provider modules. No `libssl` DLL
+is needed. Linux retains the existing SQLite/zstd imports and lazy
+`libcrypto.so.3` loading, including its existing configuration behavior. Source
+checksums, compression format, base64 and audit bytes are unchanged.
+
+DLL regressions use real SQLite/zstd/OpenSSL libraries for binary/empty deck
+round trips, hashes, concurrency and database persistence, plus deliberately
+incomplete DLLs for failure cases. They check CWD/PATH rejection, transitive
+dependencies, wrong images, missing exports, version/thread-safety checks,
+retry state, Unicode application directories and component independence.
+For native Windows or Wine, set `SCU_TEST_DLL_DIRECTORY` to the fixture directory
+(default: probe directory), including any app-local compiler runtimes. Set
+`SCU_TEST_WINDOWS_FPC` to a Windows compiler command when cross-compiling the mock
+DLLs, then run `tests/dlls.py /path/to/dll_probe.exe --wine` (omit `--wine` on
+Windows). No external DLLs or downloaded packages are bundled in this repository.
+Native Windows validation remains pending. The long application-directory test
+runs natively; Wine skips it only after confirming that even the no-DLL startup
+probe cannot be launched from that path by its ShellExecute launcher.
+
+The application still targets Linux. Audit actor identification and remaining
+executor Unix references, native GUI setup, and the full Windows export-filename
+policy still need porting. Existing Linux library filenames and source bytes are
+unchanged.
 
 `make test` includes `tests/platform.py`, `tests/files.py`, `tests/locks.py` and
 `tests/processes.py`, `tests/terminal.py`, `tests/sqlite.py`, `tests/scanning.py`
-and `tests/cleanup.py`,
+`tests/cleanup.py` and `tests/dlls.py`,
 each with a standalone
 Pascal probe, alongside the full integration suite. The probes isolate platform
 services from the remaining Linux-only application units. The file probe can
@@ -294,7 +345,8 @@ checks editing, history, keys and signals. Use `tests/sqlite.py` with
 `sqlite_probe.exe` for SQLite opens, transactions and crash recovery, or
 `tests/scanning.py` with `scan_probe.exe` for source scans and nested command files.
 `tests/cleanup.py` with `cleanup_probe.exe` covers release collection/deletion and
-editor cleanup. These checks
+editor cleanup. `tests/dlls.py` with `dll_probe.exe` checks runtime loading and
+codec/storage compatibility. These checks
 supplement native Windows testing.
 
 ## Work with a library

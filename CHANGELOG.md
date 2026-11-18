@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add lazy Windows SQLite, zstd and OpenSSL 3 bindings backed by a shared app-local Unicode DLL loader. Limit dependency search to the DLL directory/System32, reject primary reparse points, and report missing files, exports, incompatible versions and image/dependency errors without CWD/PATH fallback.
+- Publish complete bindings under per-component initialization locks, retain successful modules until process teardown, and permit retry after a failed load. Validate SQLite thread safety/version before creating database files; initialize Windows OpenSSL without external configuration/providers for built-in SHA-1/SHA-256 checksums.
+- Preserve Linux SQLite/zstd imports and lazy libcrypto.so.3 behavior, source/audit digests, zstd/base64 storage and deck validation. Document DLL names, architecture/runtime requirements and remaining Windows work.
+- Add real-library codec, hash, SQLite and concurrent-first-use regressions plus Windows fixture DLLs for search isolation, missing dependencies/exports, compatibility checks, failed-load retries and Unicode/long application paths. Include the suite in make test, rerun SQLite crash-recovery tests under Wine, and document the Wine long-executable launch limitation.
+
 - Add release/editor cleanup platform backends, retaining the former Linux enumeration, no-follow checks, recursive editor deletion, release unlink errors and directory creation behavior. Share release candidate collection without changing journal authorization/recovery rules.
 - Add Windows Unicode/long-path release-directory creation, hidden-inclusive cleanup enumeration, case-insensitive selection/deduplication, protected storage/control-file filtering, stale manifest-name validation and no-follow regular-file deletion by handle. Keep read-only/blocked release outputs protected with contextual errors.
 - Add handle-relative Windows editor cleanup using native directory enumeration/opening and inspected-handle deletion. Refuse root reparse points, unlink child links without traversal, bound recursion and preserve original editor failures and cancellation. Leave inaccessible backups for manual cleanup and avoid changing hard-link/reparse attributes.

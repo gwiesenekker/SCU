@@ -5,7 +5,7 @@ unit ScuSQLiteDB;
 interface
 
 uses
-  SQLite3, CTypes;
+  {$IFDEF WINDOWS}ScuSQLiteAPIWindows{$ELSE}SQLite3{$ENDIF}, CTypes;
 
 type
   TSQLiteStatement = class;
@@ -69,6 +69,7 @@ var
   Flags, OpenStatus: cint;
   Filename: RawByteString;
 begin
+  {$IFDEF WINDOWS}EnsureSQLiteLoaded;{$ENDIF}
   FPath := Path;
   FReadOnly := OpenReadOnly;
   if FReadOnly and (not RecoverableRead or (not SQLiteBackend.CanRecoverSQLite(Path))) then
