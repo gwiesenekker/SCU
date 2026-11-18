@@ -17,7 +17,7 @@ implementation
 
 uses
   ScuArchiveCompatibility, ScuWorkingExports, FPJSON, ScuClock, ScuReleaseCleanup, ScuExportManifest, ScuExportPaths, ScuExportTypes, ScuDeckExport, ScuLibraryDisplay, ScuTable, Classes, SysUtils, ScuCommands, ScuErrors, ScuFiles, ScuLibrary,
-  ScuLibraryPaths, ScuSignals, ScuVersions, ScuLockTypes;
+  ScuLibraryPaths, ScuSignals, ScuVersions, ScuLockTypes, ScuExportNames, Contnrs, ScuPlatformPaths;
 
 const
   LibraryDirectorySelector = 'scu$library_directory';
@@ -33,18 +33,25 @@ end;
 
 function OutputPath(const Context: TCommandContext; const Path: string): string;
 begin
+  ValidateExportPath(Path);
+  CheckExportTarget(Path);
   Result := CanonicalFile(Path);
+  CheckExportTarget(Result);
   if RegularFileExists(Result) and IsSQLiteFile(Result) then
     raise EScuError.Create('The output path would overwrite another SQLite library: "' + Result + '".');
+  {$IFDEF WINDOWS}
+  if IsSQLiteCompanion(Result) then
+    raise EScuError.Create('The output path would overwrite SQLite companion storage.');
+  {$ENDIF}
   if IsLibraryStoragePath(Result, Context.LibraryPath) then
     raise EScuError.Create('The output path would overwrite a library or audit file.');
   if IsPlatformOutputLockName(ExtractFileName(Result)) then
     raise EScuError.Create('The output path is reserved for the Windows output lock.');
-  if ExtractFileName(Result) = ExportManifestName then
+  if SameExportLibrary(ExtractFileName(Result), ExportManifestName) then
     raise EScuError.Create('The output path is reserved for the SCU export manifest.');
   if (Context.Command.Name <> 'extract_deck') and
     (Context.Command.Name <> 'extract_version') and Assigned(Context.LibraryFile) and
-    (ExtractFileDir(Result) = ExtractFileDir(CanonicalFile(Context.LibraryPath))) then
+    SameExportLibrary(ExtractFileDir(Result), ExtractFileDir(CanonicalFile(Context.LibraryPath))) then
   begin
       if Context.LibraryFile.IsWorkingSourceFile(Context.Database, ExtractFileName(Result)) then
         raise EScuError.Create('The output path is a working source file: "' + Result + '". Select a separate output directory.');
@@ -61,7 +68,10 @@ begin
   if (Path = '') or SameText(Path, DeckNameSelector) or SameText(Path, LastModifiedDeckSelector) then
     Result := GetCurrentDir
   else
+  begin
+    ValidateExportPath(Path);
     Result := ExtractFileDir(ExpandFileName(Path));
+  end;
 end;
 
 function VersionOutputDirectory(const Context: TCommandContext): string;
@@ -71,6 +81,7 @@ begin
     Exit(EnsureExportDirectory(Context.LibraryPath));
   if SameText(Result, LibraryDirectorySelector) then
     Result := ExtractFileDir(CanonicalFile(Context.LibraryPath));
+  ValidateExportDirectory(Result);
 end;
 
 procedure ScheduleBuild(var Context: TCommandContext; const Target: string);
@@ -123,7 +134,7 @@ begin
   Bytes := Rendered.Bytes;
   ResolvedDeckVersion := Rendered.DeckVersion;
   CheckSessionInterrupt;
-  if ExtractFileDir(Path) = ExtractFileDir(CanonicalFile(Context.LibraryPath)) then
+  if SameExportLibrary(ExtractFileDir(Path), ExtractFileDir(CanonicalFile(Context.LibraryPath))) then
     RefreshWorkingExports(Context.Database, Context.LibraryPath);
   Manifest := TExportManifest.Create(ExtractFileDir(Path));
   try
@@ -139,6 +150,31 @@ begin
   ReportSnapshot(Context, ResolvedDeckVersion, Deck);
   Result := '';
 end;
+
+{$IFDEF WINDOWS}
+procedure PreflightVersionNames(const Context: TCommandContext; Names: TStrings;
+  const Directory: string);
+var Keys: TExportFileKeys; Seen: TFPHashList; Name, Key: string; Source: TDeckSource;
+begin
+  Keys := TExportFileKeys.Create;
+  Seen := TFPHashList.Create;
+  try
+    for Name in Names do
+    begin
+      CheckSessionInterrupt;
+      Source := Context.LibraryFile.ReadDeckMetadata(Context.Database, Name,
+        Context.Snapshots.Selected.LibraryRevision, Context.Snapshots.Selected.Version);
+      ValidateExportFileName(Source.SourcePath);
+      Key := Keys.Key(Source.SourcePath);
+      if Seen.Find(Key) <> nil then
+        raise EScuError.Create('Several decks export to source filename "' + Source.SourcePath +
+          '" (Windows case-insensitive collision). Choose unique source associations before exporting.');
+      Seen.Add(Key, Pointer(1));
+      OutputPath(Context, IncludeTrailingPathDelimiter(Directory) + Source.SourcePath);
+    end;
+  finally Seen.Free; Keys.Free; end;
+end;
+{$ENDIF}
 
 function TransferVersion(var Context: TCommandContext; Mode: TExportMode): string;
 var
@@ -161,7 +197,7 @@ begin
   RequireArchiveSourceNames(Context.LibraryFile, Context.Database);
   Context.LibraryFile.VersionBounds(Version, Base, Revision);
   Directory := CanonicalDirectory(Context.OutputDirectory);
-  if Expand and (Directory = ExtractFileDir(CanonicalFile(Context.LibraryPath))) then
+  if Expand and SameExportLibrary(Directory, ExtractFileDir(CanonicalFile(Context.LibraryPath))) then
     raise EScuError.Create('Release output must be separate from the library working-source directory.');
   Context.Snapshots.OutputDirectory := Directory;
   Context.Snapshots.Selected := Snapshot;
@@ -180,7 +216,8 @@ begin
     for Index := Names.Count - 1 downto 0 do
       if not Context.LibraryFile.TryDeckSnapshot(Names[Index], Revision, Snapshot) then
         Names.Delete(Index);
-    if Directory = ExtractFileDir(CanonicalFile(Context.LibraryPath)) then
+    {$IFDEF WINDOWS}PreflightVersionNames(Context, Names, Directory);{$ENDIF}
+    if SameExportLibrary(Directory, ExtractFileDir(CanonicalFile(Context.LibraryPath))) then
       RefreshWorkingExports(Context.Database, Context.LibraryPath);
     Manifest := TExportManifest.Create(Directory);
     Manifest.Recover;

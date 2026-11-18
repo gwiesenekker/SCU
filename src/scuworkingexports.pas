@@ -17,12 +17,14 @@ implementation
 
 
 uses
-  SysUtils, ScuCodec, ScuFiles, ScuSQLiteDB, ScuExportManifest;
+  SysUtils, ScuCodec, ScuFiles, ScuSQLiteDB, ScuExportManifest, ScuExportNames
+  {$IFDEF WINDOWS}, Contnrs, ScuErrors, ScuSignals{$ENDIF};
 
 procedure QueueWorkingExport(Database: TSQLiteLibrary; const Entry: TExportRecord; Removed: Boolean);
 var
   Statement: TSQLiteStatement;
 begin
+  ValidateExportFileName(Entry.FileName);
   Statement := Database.Prepare('INSERT OR REPLACE INTO pending_working_exports ' +
     '(file_key, file_name, deck_name, library_version, deck_version, sha256, removed) VALUES (?, ?, ?, ?, ?, ?, ?)');
   try
@@ -39,6 +41,39 @@ begin
   end;
 end;
 
+{$IFDEF WINDOWS}
+type TQueuedOwner = class
+  Deck: string;
+end;
+procedure PreflightWorkingNames(Database: TSQLiteLibrary);
+var Statement: TSQLiteStatement; Keys: TExportFileKeys; Owners: TFPHashObjectList;
+  Name, Key: RawByteString; Owner: TQueuedOwner;
+begin
+  Keys := TExportFileKeys.Create;
+  Owners := TFPHashObjectList.Create(True);
+  Statement := nil;
+  try
+    Statement := Database.Prepare('SELECT file_name, deck_name FROM pending_working_exports');
+    while Statement.Step do
+    begin
+      CheckSessionInterrupt;
+      Name := Statement.Text[0];
+      ValidateExportFileName(Name);
+      Key := Keys.Key(Name);
+      Owner := TQueuedOwner(Owners.Find(Key));
+      if Assigned(Owner) and (Owner.Deck <> Statement.Text[1]) then
+        raise EScuError.Create('Several decks have pending exports for the same Windows filename.');
+      if not Assigned(Owner) then
+      begin
+        Owner := TQueuedOwner.Create;
+        Owner.Deck := Statement.Text[1];
+        Owners.Add(Key, Owner);
+      end;
+    end;
+  finally Statement.Free; Owners.Free; Keys.Free; end;
+end;
+{$ENDIF}
+
 procedure RefreshWorkingExports(Database: TSQLiteLibrary; const LibraryPath: string);
 var
   Manifest: TExportManifest;
@@ -47,6 +82,7 @@ var
   Name: RawByteString;
   Started: Boolean;
 begin
+  {$IFDEF WINDOWS}PreflightWorkingNames(Database);{$ENDIF}
   Statement := Database.Prepare('SELECT file_name, deck_name, library_version, deck_version, sha256, removed ' +
     'FROM pending_working_exports ORDER BY file_key');
   Manifest := nil;

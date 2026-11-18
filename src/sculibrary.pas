@@ -5,7 +5,7 @@ unit ScuLibrary;
 interface
 
 uses
-  Classes, Contnrs, FPJSON, ScuLibraryTypes, ScuLibraryQueries, ScuLibraryModel, ScuLibraryStore, ScuVersions, ScuSQLite;
+  Classes, Contnrs, FPJSON, ScuLibraryTypes, ScuLibraryQueries, ScuLibraryModel, ScuLibraryStore, ScuVersions, ScuSQLite{$IFDEF WINDOWS}, ScuExportNames{$ENDIF};
 
 const
   CurrentDeckVersionSelector = ScuLibraryTypes.CurrentDeckVersionSelector;
@@ -39,6 +39,7 @@ type
   TDeckLibrary = class
   strict private
     FWorkingSources: TFPHashList;
+    {$IFDEF WINDOWS}FWorkingSourceKeys: TExportFileKeys;{$ENDIF}
     FStore: TLibraryStore;
     FQueries: TLibraryQueries;
     FModified: Boolean;
@@ -168,6 +169,7 @@ end;
 destructor TDeckLibrary.Destroy;
 begin
   FWorkingSources.Free;
+  {$IFDEF WINDOWS}FWorkingSourceKeys.Free;{$ENDIF}
   FQueries.Free;
   FStore.Free;
   inherited Destroy;
@@ -176,6 +178,7 @@ end;
 procedure TDeckLibrary.MarkModified;
 begin
   FreeAndNil(FWorkingSources);
+  {$IFDEF WINDOWS}FreeAndNil(FWorkingSourceKeys);{$ENDIF}
   FModified := True;
   Inc(FChangeCount);
 end;
@@ -316,15 +319,27 @@ begin
   if not Assigned(FWorkingSources) then
   begin
     FWorkingSources := TFPHashList.Create;
+    {$IFDEF WINDOWS}
+    try
+      FWorkingSourceKeys := TExportFileKeys.Create;
+    {$ENDIF}
     Entries := DeckList(Revision);
     for Entry in Entries do
       if DeckFileBacked(Database, Entry.Name) then
       begin
         Path := DeckSourcePath(Database, Entry.Name);
+        {$IFDEF WINDOWS}Path := FWorkingSourceKeys.Key(Path);{$ENDIF}
         if FWorkingSources.Find(Path) = nil then FWorkingSources.Add(Path, Pointer(1));
       end;
+    {$IFDEF WINDOWS}
+    except
+      FreeAndNil(FWorkingSources);
+      FreeAndNil(FWorkingSourceKeys);
+      raise;
+    end;
+    {$ENDIF}
   end;
-  Result := FWorkingSources.Find(FileName) <> nil;
+  Result := FWorkingSources.Find({$IFDEF WINDOWS}FWorkingSourceKeys.Key(FileName){$ELSE}FileName{$ENDIF}) <> nil;
 end;
 
 function TDeckLibrary.NextDeckNumber(const Name: string; PreviousRevision: Integer): Integer;

@@ -5,7 +5,7 @@ unit ScuExportManifest;
 interface
 
 uses
-  Classes, Contnrs, ScuExportTypes, ScuLocks;
+  Classes, Contnrs, ScuExportTypes, ScuLocks, ScuExportNames;
 
 const
   ExportManifestName = '.scu-exports.json';
@@ -22,6 +22,9 @@ type
     FRemovedCount: Integer;
     FPending, FPlanned: TObjectList;
     FPlanNames: TFPHashList;
+    FFileKeys: TExportFileKeys;
+    function FileKey(const Value: RawByteString): string;
+    procedure ValidatePlanPath(const LibraryPath, OutputPath: string);
     function GetCount: Integer;
     function GetEntry(Index: Integer): TExportRecord;
     procedure Install(const Entry: TExportRecord);
@@ -53,7 +56,8 @@ implementation
 
 uses
   SysUtils, FPJSON, DateUtils, ScuClock, ScuCodec, ScuErrors, ScuFiles, ScuJSON,
-  ScuSignals, ScuLibraryNames, ScuLibraryModel, ScuVersions, ScuCleanupFiles;
+  ScuSignals, ScuLibraryNames, ScuLibraryModel, ScuVersions, ScuCleanupFiles, ScuLibraryPaths
+  {$IFDEF WINDOWS}, Windows, ScuPlatformPathsWindows{$ENDIF};
 
 type
   TExportItem = class
@@ -79,9 +83,36 @@ begin
   end;
 end;
 
-function FileKey(const Value: RawByteString): string;
+// Cleanup must retain the original failure/cancellation and must handle the
+// same Unicode/extended paths as the owning export operation.
+procedure DeleteStageFile(const Path: string);
 begin
-  Result := AuditSHA256(Value);
+  {$IFDEF WINDOWS}DeleteFileW(PWideChar(NativeFilePath(Path)));
+  {$ELSE}DeleteFile(Path);{$ENDIF}
+end;
+procedure DeleteStageDirectory(const Path: string);
+begin
+  {$IFDEF WINDOWS}RemoveDirectoryW(PWideChar(NativeFilePath(Path)));
+  {$ELSE}RemoveDir(Path);{$ENDIF}
+end;
+
+function TExportManifest.FileKey(const Value: RawByteString): string;
+begin
+  Result := FFileKeys.Key(Value);
+end;
+
+procedure TExportManifest.ValidatePlanPath(const LibraryPath, OutputPath: string);
+{$IFDEF WINDOWS}var Canonical: string;{$ENDIF}
+begin
+  {$IFDEF WINDOWS}
+  ValidateExportPath(OutputPath);
+  Canonical := CanonicalFile(OutputPath);
+  if not SameExportLibrary(ExtractFileDir(Canonical), ExtractFileDir(FPath)) then
+    raise EScuError.Create('Export target is outside its manifest directory.');
+  if IsLibraryStoragePath(Canonical, CanonicalFile(LibraryPath)) or
+    IsSQLiteFile(Canonical) or IsSQLiteCompanion(Canonical) then
+    raise EScuError.Create('Export target is protected SQLite storage.');
+  {$ENDIF}
 end;
 
 function DecodeKey(const Value, Context: string): RawByteString;
@@ -117,6 +148,8 @@ begin
   else
     Result.FileName := RawField(Entry, 'file', Context);
   Name := Result.FileName;
+  try ValidateExportFileName(Name);
+  except on E: EScuError do raise EScuError.Create(Context + ': ' + E.Message); end;
   if (Name = '') or (Name = '.') or (Name = '..') or (Pos(#0, Name) > 0) or
     (ExtractFileName(Name) <> Name) or (Name = ExportManifestName) then
     raise EScuError.Create(Context + ': invalid or duplicate file name.');
@@ -180,6 +213,7 @@ begin
   FPending := TObjectList.Create(True);
   FPlanned := TObjectList.Create(True);
   FPlanNames := TFPHashList.Create;
+  FFileKeys := TExportFileKeys.Create;
   Load;
 end;
 
@@ -190,17 +224,19 @@ begin
   if Assigned(FPlanned) then
     for Index := 0 to FPlanned.Count - 1 do
       if TExportPlan(FPlanned[Index]).StageFile <> '' then
-        DeleteFile(TExportPlan(FPlanned[Index]).StageFile);
+        DeleteStageFile(TExportPlan(FPlanned[Index]).StageFile);
   if FStageDirectory <> '' then
   begin
-    DeleteFile(FStageDirectory + '/.owner');
+    {$IFDEF WINDOWS}FreeAndNil(FStageLock);{$ENDIF}
+    DeleteStageFile(FStageDirectory + '/.owner');
     FreeAndNil(FStageLock);
-    RemoveDir(FStageDirectory);
+    DeleteStageDirectory(FStageDirectory);
   end;
   FPlanNames.Free;
   FPlanned.Free;
   FPending.Free;
   FFiles.Free;
+  FFileKeys.Free;
   inherited Destroy;
 end;
 
@@ -377,6 +413,7 @@ begin
     CheckSessionInterrupt;
     Plan := TExportPlan(FPending[Index]);
     Path := IncludeTrailingPathDelimiter(ExtractFileDir(FPath)) + Plan.Data.FileName;
+    CheckExportTarget(Path);
     Actual := '';
     if RegularFileExists(Path) then Actual := AuditSHA256(ReadBytes(Path, MaxDeckSize));
     if Plan.DeleteOutput and (Actual = '') then
@@ -400,7 +437,7 @@ function TExportManifest.TracksFile(const LibraryPath, FileName: string): Boolea
 var Item: TExportItem;
 begin
   Item := TExportItem(FFiles.Find(FileKey(FileName)));
-  Result := Assigned(Item) and (Item.Data.LibraryPath = CanonicalFile(LibraryPath));
+  Result := Assigned(Item) and SameExportLibrary(Item.Data.LibraryPath, CanonicalFile(LibraryPath));
 end;
 
 function TExportManifest.IsGeneratedFile(const FileName: RawByteString): Boolean;
@@ -417,6 +454,7 @@ var Path: string; Existing: TExportItem;
 begin
   ValidateSourceFileName(Entry.FileName);
   Path := IncludeTrailingPathDelimiter(ExtractFileDir(FPath)) + Entry.FileName;
+  CheckExportTarget(Path);
   // Observations are hints. A changed, unreadable, non-regular or oversized
   // working file must not block other observations or later commands.
   try
@@ -424,7 +462,7 @@ begin
     begin
       Existing := TExportItem(FFiles.Find(FileKey(Entry.FileName)));
       if not RegularFileExists(Path) and Assigned(Existing) and
-        (Existing.Data.LibraryPath = Entry.LibraryPath) and (Existing.Data.Mode = emExtract) then
+        SameExportLibrary(Existing.Data.LibraryPath, Entry.LibraryPath) and (Existing.Data.Mode = emExtract) then
         RemoveRecord(Entry.FileName);
     end
     else if RegularFileExists(Path) and (AuditSHA256(ReadBytes(Path, MaxDeckSize, [rbNoFollow])) = Entry.SHA256) then
@@ -451,14 +489,17 @@ var
 begin
   if FPending.Count <> 0 then
     raise EScuError.Create('Recover pending exports before planning another export.');
+  ValidatePlanPath(LibraryPath, OutputPath);
   Name := ExtractFileName(OutputPath);
+  ValidateExportFileName(Name);
+  CheckExportTarget(OutputPath);
   Previous := '';
   if RegularFileExists(OutputPath) then Previous := AuditSHA256(ReadBytes(OutputPath, MaxDeckSize));
   CanonicalLibrary := CanonicalFile(LibraryPath);
   Existing := TExportItem(FFiles.Find(FileKey(Name)));
   if (Previous <> '') and (Previous <> AuditSHA256(Bytes)) and not ReplaceExisting and
     (not Assigned(Existing) or (Existing.Data.SHA256 <> Previous) or Existing.Data.Interrupted or
-      (Existing.Data.LibraryPath <> CanonicalLibrary)) then
+      (not SameExportLibrary(Existing.Data.LibraryPath, CanonicalLibrary))) then
     raise EScuError.Create('Refusing to overwrite untracked or edited output "' + OutputPath + '". Use replace=yes to replace it explicitly.');
   if FPlanNames.Find(FileKey(Name)) <> nil then
     raise EScuError.Create('Duplicate output path in export batch: "' + OutputPath + '".');
@@ -499,7 +540,10 @@ var
   Name, Previous: string;
 begin
   if FPending.Count <> 0 then raise EScuError.Create('Recover pending exports before planning cleanup.');
+  ValidatePlanPath(LibraryPath, OutputPath);
   Name := ExtractFileName(OutputPath);
+  ValidateExportFileName(Name);
+  CheckExportTarget(OutputPath);
   if (Name = '') or (Name = ExportManifestName) or (Pos(#0, Name) > 0) then
     raise EScuError.Create('Invalid release cleanup filename.');
   if FPlanNames.Find(FileKey(Name)) <> nil then
@@ -508,10 +552,10 @@ begin
   if RegularFileExists(OutputPath) then Previous := AuditSHA256(ReadBytes(OutputPath, MaxDeckSize));
   Existing := TExportItem(FFiles.Find(FileKey(Name)));
   if (Previous <> '') and not ReplaceExisting and
-    (not Assigned(Existing) or (Existing.Data.LibraryPath <> CanonicalFile(LibraryPath))) then
+    (not Assigned(Existing) or (not SameExportLibrary(Existing.Data.LibraryPath, CanonicalFile(LibraryPath)))) then
     raise EScuError.Create('Refusing to remove untracked release file "' + OutputPath + '". Use replace=yes to remove it explicitly.');
   if Assigned(Existing) and not ReplaceExisting and (Previous <> '') and
-    ((Existing.Data.SHA256 <> Previous) or (Existing.Data.LibraryPath <> CanonicalFile(LibraryPath))) then
+    ((Existing.Data.SHA256 <> Previous) or (not SameExportLibrary(Existing.Data.LibraryPath, CanonicalFile(LibraryPath)))) then
     raise EScuError.Create('Refusing to remove edited release output "' + OutputPath + '". Use replace=yes to remove it explicitly.');
   Plan := TExportPlan.Create;
   FPlanned.Add(Plan);
@@ -556,6 +600,7 @@ begin
     CheckSessionInterrupt;
     Plan := TExportPlan(FPlanned[Index]);
     Path := IncludeTrailingPathDelimiter(ExtractFileDir(FPath)) + Plan.Data.FileName;
+    CheckExportTarget(Path);
     Actual := '';
     if RegularFileExists(Path) then Actual := AuditSHA256(ReadBytes(Path, MaxDeckSize));
     if not Plan.ReplaceExisting and (Actual <> Plan.PreviousHash) then
@@ -576,7 +621,7 @@ begin
   CompactRecords;
   Save;
   for Index := 0 to FPlanned.Count - 1 do
-    if TExportPlan(FPlanned[Index]).StageFile <> '' then DeleteFile(TExportPlan(FPlanned[Index]).StageFile);
+    if TExportPlan(FPlanned[Index]).StageFile <> '' then DeleteStageFile(TExportPlan(FPlanned[Index]).StageFile);
   FPending.Clear;
   FPlanNames.Clear;
   FPlanned.Clear;

@@ -371,14 +371,32 @@ regressions under Wine, including real transactions, build outcomes, identity
 errors and recovery. Native Windows validation is still pending; Wine's long
 recovery-directory test skips only after an independent directory-normalization
 probe fails before recovery/actor lookup. The ordinary recovery cleanup checks
-run under Wine on both success and validation failure. Native GUI setup, packaging
-and the full Windows export-filename policy remain unfinished. Existing Linux
-library filenames and source bytes are unchanged.
+run under Wine on both success and validation failure. Native GUI setup and
+packaging remain unfinished. Existing Linux library filenames and source bytes
+are unchanged.
+
+Windows export filenames must be valid UTF-8 single components of at most 255
+UTF-16 code units. SCU rejects controls, Windows forbidden characters (including
+stream colons and directory separators), DOS device names (also with extensions),
+leading ASCII spaces and trailing ASCII spaces/dots. Manifest, lock and staging
+control names are reserved regardless of case. Explicit output paths are checked
+before Windows can normalize them; DOS, UNC and their extended forms are
+supported, while device namespaces are refused. Existing directory/reparse
+outputs and DOS short-name aliases are refused; use the full filename instead.
+
+Manifest records, recovery intents and queued working-file observations use the
+same Windows checks. Case-insensitive ordinal filename comparisons prevent two
+spellings of the same Windows output from creating separate manifest identities;
+a version containing colliding source names is rejected before exporting any
+of its decks. Unicode normalization is not performed. Unsupported source names
+in libraries created elsewhere are rejected on export, rather than renamed or
+rewritten in audited revision payloads. Linux retains its original raw-byte
+filename identity and validation rules.
 
 `make test` includes `tests/platform.py`, `tests/files.py`, `tests/locks.py` and
 `tests/processes.py`, `tests/terminal.py`, `tests/sqlite.py`, `tests/scanning.py`,
-`tests/cleanup.py`, `tests/dlls.py` and `tests/actors.py`, each with a standalone
-Pascal probe, alongside the full integration suite. The probes isolate platform
+`tests/cleanup.py`, `tests/dlls.py`, `tests/actors.py` and `tests/export_names.py`,
+each with a standalone Pascal probe, alongside the full integration suite. The probes isolate platform
 services from the remaining Linux-only application units. The file probe can
 also be compiled with a Windows Free Pascal toolchain and run natively. For Wine
 on Linux, use `python3 tests/files.py /path/to/files_probe.exe --wine` with an
@@ -392,8 +410,11 @@ checks editing, history, keys and signals. Use `tests/sqlite.py` with
 editor cleanup. `tests/dlls.py` with `dll_probe.exe` checks runtime loading and
 codec/storage compatibility. `tests/actors.py` with `actor_probe.exe` tests
 effective identities and the executor, and expects the matching `scu`/`scu.exe`
-and `commands.json` alongside the probe. These checks supplement native Windows
-testing.
+and `commands.json` alongside the probe. `tests/export_names.py` with
+`export_names_probe.exe` and the matching CLI tests filename validation, manifest
+aliases/recovery, portable libraries and unchanged Linux byte names. An existing
+8.3-alias test skips when the filesystem does not generate an alias. These checks
+supplement native Windows testing; native Windows validation remains pending.
 
 ## Work with a library
 

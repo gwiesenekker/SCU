@@ -11,7 +11,7 @@ function EnsureExportDirectory(const LibraryPath: string): string;
 implementation
 
 uses
-  SysUtils, FPJSON, ScuJSON, ScuSQLite, ScuErrors, ScuFiles, ScuPlatformPaths, ScuCleanupFiles;
+  SysUtils, FPJSON, ScuJSON, ScuSQLite, ScuErrors, ScuFiles, ScuPlatformPaths, ScuCleanupFiles, ScuExportNames;
 
 function DefaultExportDirectory(const LibraryPath: string): string;
 var
@@ -49,6 +49,7 @@ begin
   if (Trim(Value) = '') or (Pos(#0, Value) > 0) then
     raise EScuError.Create('Expected a nonempty release_directory.');
   {$IFDEF WINDOWS}
+  ValidateExportDirectory(Value);
   Result := ResolveCommandFilePath(Value, Path);
   {$ELSE}
   if Value[1] <> DirectorySeparator then

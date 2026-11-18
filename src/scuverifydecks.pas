@@ -7,7 +7,7 @@ function VerifyDecks(var Context: TCommandContext): string;
 implementation
 uses
   ScuArchiveCompatibility, ScuWorkingExports, Classes, SysUtils, FPJSON, ScuCodec, ScuErrors, ScuDeckExport, ScuExportTypes, ScuExportManifest,
-  ScuFiles, ScuExportPaths, ScuLibrary, ScuSignals, ScuTable, ScuTerminal;
+  ScuFiles, ScuExportPaths, ScuLibrary, ScuSignals, ScuTable, ScuTerminal, ScuExportNames;
 type
   TDeckFileIssue = (dfMissing, dfEdited, dfOutdated, dfDeleted, dfInterrupted, dfUntracked, dfUnavailable);
   TDeckFileIssues = set of TDeckFileIssue;
@@ -22,6 +22,7 @@ type
     FContext: TCommandContext; // Resources are borrowed for this command only.
     FTable: TScuTable;
     FSeen, FDetails, FAttention: TStringList;
+    FFileKeys: TExportFileKeys;
     FCount, FDifferences: Integer;
     FLegacyCopy: Boolean;
     function CurrentBytes(const Entry: TExportRecord; const Selection: TDeckSelection): TRenderedDeck;
@@ -95,6 +96,7 @@ begin
   FTable := TScuTable.Create(['File', 'Mode', 'Exported', 'Latest', 'Status']);
   FDetails := TStringList.Create;
   FAttention := TStringList.Create;
+  FFileKeys := TExportFileKeys.Create;
   FSeen := TStringList.Create;
   FSeen.Sorted := True;
   FSeen.CaseSensitive := True;
@@ -103,7 +105,7 @@ end;
 
 destructor TDeckVerifier.Destroy;
 begin
-  FAttention.Free; FDetails.Free; FSeen.Free; FTable.Free;
+  FAttention.Free; FDetails.Free; FSeen.Free; FFileKeys.Free; FTable.Free;
   inherited Destroy;
 end;
 
@@ -150,8 +152,8 @@ var
   Source: TDeckSource;
 begin
   CheckSessionInterrupt;
-  FSeen.Add(Entry.FileName);
-  if Entry.LibraryPath <> CanonicalFile(FContext.LibraryPath) then Exit;
+  FSeen.Add(FFileKeys.Key(Entry.FileName));
+  if not SameExportLibrary(Entry.LibraryPath, CanonicalFile(FContext.LibraryPath)) then Exit;
   Inc(FCount);
   Check := Default(TDeckFileCheck);
   Check.FileName := Entry.FileName;
@@ -163,6 +165,7 @@ begin
   Path := IncludeTrailingPathDelimiter(FContext.OutputDirectory) + Entry.FileName;
   ActualHash := '';
   try
+    CheckExportTarget(Path);
     if RegularFileExists(Path) then ActualHash := AuditSHA256(ReadBytes(Path, MaxDeckSize));
     if ActualHash = '' then Include(Check.Issues, dfMissing)
     else if ActualHash <> Entry.SHA256 then Include(Check.Issues, dfEdited);
@@ -215,15 +218,17 @@ begin
         try
           Source := FContext.LibraryFile.ReadDeckMetadata(FContext.Database, Name, Selection.Snapshot.LibraryRevision);
           Check.FileName := Source.SourcePath;
-          if FSeen.IndexOf(Check.FileName) >= 0 then Continue;
+          ValidateExportFileName(Check.FileName);
+          if FSeen.IndexOf(FFileKeys.Key(Check.FileName)) >= 0 then Continue;
           Path := IncludeTrailingPathDelimiter(FContext.OutputDirectory) + Check.FileName;
+          CheckExportTarget(Path);
           if not RegularFileExists(Path) then Continue;
           Include(Check.Issues, dfUntracked);
         except
           on E: ECommandCancelled do raise;
           on E: EScuError do begin Include(Check.Issues, dfUnavailable); Check.Error := E.Message; end;
         end;
-        FSeen.Add(Check.FileName);
+        FSeen.Add(FFileKeys.Key(Check.FileName));
         Inc(FCount);
         AddRow(Check);
       end;
@@ -240,7 +245,7 @@ var
   Detail: string;
 begin
   RequireArchiveSourceNames(FContext.LibraryFile, FContext.Database);
-  if FContext.OutputDirectory = ExtractFileDir(CanonicalFile(FContext.LibraryPath)) then
+  if SameExportLibrary(FContext.OutputDirectory, ExtractFileDir(CanonicalFile(FContext.LibraryPath))) then
     RefreshWorkingExports(FContext.Database, FContext.LibraryPath);
   Manifest := TExportManifest.Create(FContext.OutputDirectory);
   Files := nil;
