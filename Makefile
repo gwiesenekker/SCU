@@ -2,7 +2,7 @@ FPC ?= fpc
 FPCFLAGS ?= -O2
 LAZBUILD ?= lazbuild
 
-.PHONY: all test gui test-gui format-commands clean
+.PHONY: all test test-portable gui test-gui format-commands clean
 all: build/scu build/commands.json
 
 build/scu: $(wildcard src/*.pas) | build
@@ -51,6 +51,7 @@ build/export_names_probe: tests/export_names_probe.pas build/scu
 	$(FPC) $(FPCFLAGS) -Fu./src -FU./build -FE./build tests/export_names_probe.pas
 
 test: all build/executor_probe build/platform_probe build/files_probe build/locks_probe build/process_probe build/terminal_probe build/sqlite_probe build/scan_probe build/cleanup_probe build/dll_probe build/actor_probe build/export_names_probe
+	python3 tests/windows_build.py
 	python3 tests/export_names.py ./build/export_names_probe
 	python3 tests/actors.py ./build/actor_probe
 	python3 tests/dlls.py ./build/dll_probe
@@ -63,6 +64,9 @@ test: all build/executor_probe build/platform_probe build/files_probe build/lock
 	python3 tests/processes.py ./build/process_probe
 	python3 tests/terminal.py ./build/terminal_probe
 	python3 tests/integration.py ./build/scu
+
+test-portable: all
+	python3 tests/portable_cli.py ./build/scu
 
 format-commands:
 	python3 tools/format_commands.py commands.json

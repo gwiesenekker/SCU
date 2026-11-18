@@ -1,0 +1,6 @@
+# Keep source, scripts and documentation stable across Windows autocrlf settings.
+* text=auto eol=lf
+*.sqlite -text
+*.dll -text
+*.exe -text
+*.zst -text

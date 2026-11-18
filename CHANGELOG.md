@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add a Python Win64 CLI build driver with isolated compiler outputs, configurable compiler/search flags, explicit app-local runtime staging and optional native/Wine integration testing. Propagate compiler/test failures without downloading dependencies or changing Linux build targets.
+- Extract shared command, version, revision, deletion, diff, release, manifest, audit/rollback, argument and batch/command-file assertions into a portable CLI suite inherited by the Linux integration runner. Add Unicode/binary and platform-shell build-outcome coverage plus build-driver regressions.
+- Add make test-portable, retain the complete Linux suite, and document native Windows prerequisites, runtime distribution and cross-testing. Use a file-backed Wine batch-input adapter for its host-pipe limitation while native Windows tests retain real subprocess pipes. Keep repository text checkouts at LF without converting binary fixtures.
+
 - Validate Windows export/source filenames and explicit output paths before normalization or file access: strict UTF-8, UTF-16 component limits, forbidden characters, device names, ambiguous whitespace/dots, SCU control names and device namespaces. Refuse existing reparse/directory targets and DOS short-name aliases.
 - Use Windows ordinal case-insensitive filename identities for manifests, batch preflight and working-source protection. Reject colliding version exports and queued observations before modifying outputs; validate raw manifest filename bytes and recovery intents without rewriting audited deck payloads. Preserve Linux raw-byte names, identity and behavior.
 - Correct Unicode staging cleanup on Windows, closing the owner lock before removing its file. Add native/Wine filename, path, Unicode, alias, manifest/recovery, portable-library, output-protection and Linux byte-preservation regression checks to make test. Document Windows policy and native validation limits.

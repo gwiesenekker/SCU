@@ -7,3 +7,5 @@
 /library.sqlite-journal
 /library.sqlite-wal
 /library.sqlite-shm
+
+__pycache__/

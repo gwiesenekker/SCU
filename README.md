@@ -7,7 +7,9 @@ with version and modification-time macros expanded.
 
 ## Build
 
-SCU currently targets Linux. It uses Free Pascal 3.2.2 with the FCL, hash,
+Linux is the fully tested native platform. The CLI also has a Win64 build and
+a shared integration suite; native Windows qualification and the Windows GUI
+remain pending. Linux uses Free Pascal 3.2.2 with the FCL, hash,
 and SQLite units, the zstd and SQLite development libraries, and the OpenSSL 3
 runtime (`libcrypto.so.3`). On Debian-based systems, install
 `make fpc fp-units-db fp-units-fcl fp-units-misc libsqlite3-dev libzstd-dev libssl3t64`.
@@ -24,6 +26,85 @@ The integration tests use Python 3 with SQLite JSON functions. Keep
 `commands.json` beside the executable when copying it elsewhere. SCU reads
 it at startup for command names, ordered arguments, aliases, and
 help text.
+
+### Windows CLI build
+
+Install Python 3.10 or newer (including SQLite with JSON functions) and a Win64
+Free Pascal 3.2.2 toolchain with its RTL/FCL packages. Put `fpc.exe` on PATH or
+supply `--fpc "C:\path with spaces\fpc.exe"`. Supply trusted **64-bit** runtime
+DLLs in a local directory: `sqlite3.dll`, `libzstd.dll` (or `zstd.dll`), and
+`libcrypto-3-x64.dll` (or `libcrypto-3.dll`). The driver follows the runtime
+loader’s filename preference without renaming vendor DLLs.
+Include any dependencies required by those particular DLL builds, such as the
+matching Visual C++ runtime. SCU does not download compilers or runtime binaries.
+
+From the repository root, in Command Prompt or PowerShell:
+
+```text
+py -3 tools/build_windows.py --dll-directory C:\scu-runtime --test
+build\windows\scu.exe help
+py -3 tests/portable_cli.py build/windows/scu.exe
+```
+
+The driver rebuilds the Win64 CLI, uses `build/windows/units` for compiler outputs,
+and places `scu.exe`, the exact repository `commands.json`, and the supplied DLLs
+in `build/windows`. It leaves the Linux build alone. Use `--output PATH` for a
+different destination and repeated `--runtime-dll PATH` arguments for additional
+app-local dependencies. For example, append
+`--runtime-dll C:\scu-runtime\vcruntime140.dll` when that DLL is required.
+Without `--dll-directory`, compilation is still possible; `--test` requires the
+three runtime DLLs already in the output directory or supplied for copying.
+Compiler failures and test failures produce a nonzero exit status. A conflicting
+DLL alias left by an earlier build is rejected; use a clean output directory
+when changing runtime distributions.
+
+Distribute the executable, `commands.json`, and all its required app-local DLLs
+from that directory together; the `units` subdirectory is only a build artifact.
+The GUI is not built by this driver. DLL redistribution licenses remain those
+of their respective projects; include their required notices when packaging.
+
+A Linux-to-Win64 cross compiler can use the same driver. Pass its executable
+with `--fpc` and its target-unit/search configuration with repeated
+`--fpc-option=FLAG` arguments (or `--fpc-option=@PATH_TO_FPC_CONFIG`). A working
+cross toolchain needs the Win64 RTL and FCL packages, not only the Linux units.
+Add `--test --wine` to run the resulting CLI through an installed Wine, preferably
+with an isolated `WINEPREFIX`. Use an ASCII executable/temporary-directory path
+for Wine batch checks: its command-file bridge cannot reliably decode Unicode
+launcher paths. The suite still tests Unicode library and source paths directly.
+The driver does not install or configure Wine.
+
+### Shared CLI integration tests
+
+`tests/portable_cli.py` runs the same command assertions on Linux and Windows:
+versions and per-deck revisions, deletion/recreation, binary source round trips,
+normal/unified diffs, release macros, manifest verification, audit tampering and
+transaction rollback, argument binding, batch input and nested command files.
+It also tests Unicode library/source paths and successful/failed builds using
+the platform shell. Temporary libraries are isolated for every test.
+
+```sh
+make test-portable
+python3 tests/portable_cli.py build/scu
+python3 tests/portable_cli.py /path/to/scu.exe --wine
+```
+
+The Linux integration runner inherits these tests and retains all its existing
+terminal, signal, permissions and filesystem coverage; `make test` still runs
+that complete suite, including portable assertions and build-driver regressions.
+The portable suite has no Unix-only imports and requires no Lazarus or probes.
+To select individual tests, append unittest names or options such as `-v`.
+Build-driver failure/copying checks can also run separately with
+`py -3 tests/windows_build.py` on Windows or `python3 tests/windows_build.py`
+on Linux.
+
+Native Windows tests use real redirected subprocess pipes for batch input.
+Wine's Unix pipe bridge cannot reliably support the Windows pipe inspection
+used by SCU, so Wine batch tests feed the same command bytes through a
+Windows-opened temporary input file. That checks batch execution without claiming
+to validate native Windows pipe behavior. Native console, NTFS/ACL, network-share
+and crash/power-loss qualification is still required. Repository text files use
+LF checkout endings through `.gitattributes`; binary library/source round trips
+continue to compare bytes explicitly.
 
 ## Platform layer
 
@@ -198,7 +279,7 @@ The standalone SQLite regressions exercise the actual library factories as well
 as lower-level opens, including process death after dirty-page spill, recovery,
 rollback, live-writer reads, read-only enforcement, Unicode and long paths.
 These pass on Linux and under Wine; native Windows power-loss/filesystem testing
-remains necessary, and the complete Windows CLI is not yet available.
+remains necessary; the Win64 CLI build is described above.
 
 Working-source scans now use separate Linux and Windows directory backends.
 Linux retains libc `fnmatch` (including its character classes), case-sensitive
@@ -397,7 +478,7 @@ filename identity and validation rules.
 `tests/processes.py`, `tests/terminal.py`, `tests/sqlite.py`, `tests/scanning.py`,
 `tests/cleanup.py`, `tests/dlls.py`, `tests/actors.py` and `tests/export_names.py`,
 each with a standalone Pascal probe, alongside the full integration suite. The probes isolate platform
-services from the remaining Linux-only application units. The file probe can
+services from the full CLI and its integration fixtures. The file probe can
 also be compiled with a Windows Free Pascal toolchain and run natively. For Wine
 on Linux, use `python3 tests/files.py /path/to/files_probe.exe --wine` with an
 isolated `WINEPREFIX`; use the same invocation with `tests/locks.py` and
