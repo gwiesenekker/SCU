@@ -6,6 +6,7 @@ import io
 from pathlib import Path
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -27,7 +28,7 @@ class WindowsBuildTests(unittest.TestCase):
         self.dlls.mkdir(parents=True)
         for name in builder.DLL_NAMES:
             (self.dlls / name).write_bytes(name.encode())
-        self.args = argparse.Namespace(output=self.root / 'output', dll_directory=self.dlls,
+        self.args = argparse.Namespace(gui=False, gui_test=False, lazbuild='lazarus builder', output=self.root / 'output', dll_directory=self.dlls,
             runtime_dll=[], fpc='compiler with spaces', fpc_option=['-Xi', '-Fuunit path'],
             test=False, wine=False)
 
@@ -130,6 +131,50 @@ class WindowsBuildTests(unittest.TestCase):
                     with patch.object(builder, 'build', side_effect=error):
                         self.assertEqual(builder.main(), code)
                 self.assertIn(message, report.getvalue())
+
+    def test_gui_build_uses_native_widgetset_local_projects_and_checks_after_build(self):
+        self.args.gui = self.args.gui_test = True
+        calls = []
+        templates = {name: (builder.ROOT / name).read_bytes() for name in ['gui/scu_gui.lpi', 'tests/gui_check.lpi']}
+        def run(command, **kwargs):
+            calls.append(command)
+            if command[0] == self.args.fpc:
+                self.compile(command)
+            elif command[0] == self.args.lazbuild:
+                self.assertIn('--widgetset=win32', command)
+                self.assertIn('--os=win64', command)
+                project = ET.parse(command[-1]).getroot()
+                target = Path(project.find('CompilerOptions/Target/Filename').get('Value'))
+                self.assertEqual(target.parent, self.args.output)
+                unit = Path(project.find('ProjectOptions/Units/Unit0/Filename').get('Value'))
+                self.assertTrue(unit.is_file())
+                target.write_bytes(b'GUI executable')
+        with patch.object(builder.subprocess, 'run', side_effect=run):
+            builder.build(self.args)
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(Path(calls[-1][1]), builder.ROOT / 'tests/gui_integration.py')
+        self.assertIn('--gui-check', calls[-1])
+        for name, content in templates.items():
+            self.assertEqual((builder.ROOT / name).read_bytes(), content)
+
+    def test_gui_test_requires_gui_before_compiling(self):
+        self.args.gui_test = True
+        with patch.object(builder.subprocess, 'run') as run:
+            with self.assertRaisesRegex(ValueError, '--gui-test requires --gui'):
+                builder.build(self.args)
+        run.assert_not_called()
+
+    def test_gui_failure_stops_before_test_execution(self):
+        self.args.gui = self.args.gui_test = True
+        def run(command, **kwargs):
+            if command[0] == self.args.fpc:
+                self.compile(command)
+            else:
+                raise subprocess.CalledProcessError(8, command)
+        with patch.object(builder.subprocess, 'run', side_effect=run) as execute:
+            with self.assertRaises(subprocess.CalledProcessError):
+                builder.build(self.args)
+        self.assertEqual(execute.call_count, 2)
 
     def test_wine_without_test_is_rejected(self):
         self.args.wine = True

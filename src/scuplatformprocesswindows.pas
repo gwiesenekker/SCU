@@ -63,6 +63,9 @@ begin
     // Assign to the job before user code executes. Inherit only the three
     // explicit standard-stream duplicates, never library/output lock handles.
     CreationFlags := CREATE_SUSPENDED or CREATE_UNICODE_ENVIRONMENT or $80000;
+    // GUI-launched CLI commands have no console to inherit. Keep their build
+    // children on the captured streams rather than allocating a new console.
+    if GetConsoleCP = 0 then CreationFlags := CreationFlags or CREATE_NO_WINDOW;
     if not (cpHandlesInterrupt in Options) then CreationFlags := CreationFlags or CREATE_NEW_PROCESS_GROUP;
     if not CreateProcessW(PWideChar(Application), PWideChar(CommandLine), nil, nil, True,
       CreationFlags,

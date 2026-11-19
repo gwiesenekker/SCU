@@ -25,7 +25,7 @@ type
     property OnStateChanged: TNotifyEvent read FOnStateChanged write FOnStateChanged;
   end;
 implementation
-uses SysUtils, Controls, LazUTF8, ScuFiles, ScuCodec, ScuLibraryNames,
+uses ScuGuiPlatform, SysUtils, Controls, LazUTF8, ScuFiles, ScuCodec, ScuLibraryNames,
   SynHighlighterPas, SynHighlighterCpp;
 constructor TScuEditorTab.CreateDeck(AOwner: TComponent; const LibraryPath, Deck: string; const Source: TGuiDeck);
 var Working: RawByteString; Extension: string;
@@ -45,7 +45,7 @@ begin
     raise Exception.Create('The SynEdit editor supports UTF-8 text decks. This deck contains binary or non-UTF-8 bytes.');
   FEditor := TSynEdit.Create(Self);
   FEditor.Parent := Self; FEditor.Align := alClient;
-  FEditor.Font.Name := 'monospace'; FEditor.Font.Size := 11;
+  FEditor.Font.Name := DefaultGuiFont; FEditor.Font.Size := 11;
   FEditor.OnChange := @Changed;
   Extension := LowerCase(ExtractFileExt(FSourceName));
   if (Extension = '.pas') or (Extension = '.pp') or (Extension = '.lpr') then FEditor.Highlighter := TSynPasSyn.Create(Self)

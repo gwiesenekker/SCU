@@ -144,7 +144,9 @@ begin
       {$IFDEF WINDOWS}
       else if Mode = 'check_handle' then
       begin
-        if SetEvent(THandle(StrToQWord(Arg(2)))) then WriteLn('handle-open') else WriteLn('handle-closed');
+        // A child may allocate its own event at the same numeric handle. The
+        // parent checks its original event to distinguish reuse from inheritance.
+        if SetEvent(THandle(StrToQWord(Arg(2)))) then WriteLn('handle-number-reused') else WriteLn('handle-number-absent');
       end
       else if Mode = 'inheritance' then
       begin
@@ -155,8 +157,9 @@ begin
         try
           Request.Executable := RunningExecutablePath; Request.NullInput := True;
           Request.Arguments.Add('check_handle'); Request.Arguments.Add(UIntToStr(Secret));
-          RunRequest(Request);
+          if RunRequest(Request) <> 0 then raise Exception.Create('Inheritance child failed.');
           if WaitForSingleObject(Secret, 0) <> WAIT_TIMEOUT then raise Exception.Create('Unrelated handle leaked.');
+          WriteLn('handle-isolated');
         finally Request.Free; CloseHandle(Secret); end;
       end
       {$ENDIF}

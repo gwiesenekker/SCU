@@ -1,13 +1,14 @@
 unit ScuGuiProcess;
 {$mode objfpc}{$H+}
 interface
-uses Classes, Process, ScuCommand;
+uses Classes, Process, ScuCommand{$IFDEF WINDOWS}, ScuPlatformProcessJobWindows{$ENDIF};
 type
   TGuiOutputEvent = procedure(Sender: TObject; const Bytes: RawByteString) of object;
   TGuiFinishedEvent = procedure(Sender: TObject; ExitCode: Integer) of object;
   TGuiCommandProcess = class
   private
     FProcess: TProcess;
+    {$IFDEF WINDOWS}FJob: TProcessJob;{$ENDIF}
     FOnOutput: TGuiOutputEvent;
     FOnFinished: TGuiFinishedEvent;
     function GetRunning: Boolean;
@@ -20,7 +21,7 @@ type
     property OnFinished: TGuiFinishedEvent read FOnFinished write FOnFinished;
   end;
 implementation
-uses SysUtils, ScuGuiCommands;
+uses SysUtils, ScuGuiCommands{$IFDEF WINDOWS}, Windows, ScuPlatformProcessStringsWindows{$ENDIF};
 function TGuiCommandProcess.GetRunning: Boolean;
 begin Result := Assigned(FProcess); end;
 destructor TGuiCommandProcess.Destroy;
@@ -28,9 +29,16 @@ begin
   if Assigned(FProcess) then
   begin
     // Normal close is refused while busy; this is only exceptional shutdown.
+    {$IFDEF WINDOWS}
+    try
+      if Assigned(FJob) then FJob.TerminateAndWait;
+    finally FreeAndNil(FJob); FreeAndNil(FProcess); end;
+    {$ELSE}
     if FProcess.Running then FProcess.Terminate(143);
+    {$ENDIF}
     FProcess.Free;
   end;
+  {$IFDEF WINDOWS}FJob.Free;{$ENDIF}
   inherited Destroy;
 end;
 procedure TGuiCommandProcess.Start(const Executable, LibraryPath: string; Command: TScuCommand);
@@ -43,14 +51,39 @@ begin
     FProcess.Parameters.Add(LibraryPath);
     CommandArguments(Command, FProcess.Parameters);
     FProcess.Options := [poUsePipes, poStderrToOutput];
+    {$IFDEF WINDOWS}
+    // FPC 3.2.x's Parameters quoting drops embedded JSON quotes. Reuse the
+    // native argument encoder so the CLI receives the exact command values.
+    FProcess.CommandLine := UTF8Encode(WindowsCommandLine(Executable, FProcess.Parameters));
+    FProcess.ApplicationName := Executable;
+    FJob := TProcessJob.Create;
+    FProcess.Options := FProcess.Options + [poNoConsole, poRunSuspended];
+    {$ENDIF}
     FProcess.Execute;
+    {$IFDEF WINDOWS}
+    FJob.Assign(FProcess.ProcessHandle);
+    if FProcess.Resume = -1 then raise Exception.Create('Could not resume GUI command.');
+    {$ENDIF}
     FProcess.CloseInput;
-  except FreeAndNil(FProcess); raise; end;
+  except
+    {$IFDEF WINDOWS}
+    if Assigned(FProcess) and FProcess.Running then
+    begin FProcess.Terminate(1); WaitForSingleObject(FProcess.ProcessHandle, INFINITE); end;
+    FreeAndNil(FJob);
+    {$ENDIF}
+    FreeAndNil(FProcess); raise;
+  end;
 end;
 procedure TGuiCommandProcess.Poll;
 var Buffer: array[0..16383] of Byte; Count, Budget, Code: Integer; Bytes: RawByteString;
 begin
   if not Running then Exit;
+  {$IFDEF WINDOWS}
+  // Retire pipe-inheriting descendants once the command exits, then drain the
+  // final buffered bytes. A background child must not keep the GUI busy forever.
+  if Assigned(FJob) and not FProcess.Running then
+  begin FJob.TerminateAndWait; FreeAndNil(FJob); end;
+  {$ENDIF}
   // Bound each tick so a noisy compiler cannot starve the window event loop.
   Budget := 256 * 1024;
   while (FProcess.Output.NumBytesAvailable > 0) and (Budget > 0) do
@@ -64,6 +97,7 @@ begin
   if not FProcess.Running and (FProcess.Output.NumBytesAvailable = 0) then
   begin
     Code := FProcess.ExitStatus;
+    {$IFDEF WINDOWS}FreeAndNil(FJob);{$ENDIF}
     FreeAndNil(FProcess);
     if Assigned(FOnFinished) then FOnFinished(Self, Code);
   end;

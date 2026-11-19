@@ -149,7 +149,7 @@ class ProcessTests(unittest.TestCase):
 
     @unittest.skipUnless(WINDOWS, 'Windows handle whitelist')
     def test_unrelated_inheritable_handle_is_not_passed_to_children(self):
-        self.assertIn(b'handle-closed', self.run_probe('inheritance').stdout)
+        self.assertIn(b'handle-isolated', self.run_probe('inheritance').stdout)
 
     @unittest.skipUnless(WINDOWS, 'Windows kill-on-close Job Object')
     def test_killing_the_parent_does_not_leave_build_descendants_running(self):

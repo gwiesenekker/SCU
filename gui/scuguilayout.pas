@@ -37,7 +37,7 @@ type
     property ToVersion: TComboBox read FToVersion;
   end;
 implementation
-uses Math, Graphics, SynHighlighterDiff, SynEditMouseCmds;
+uses ScuGuiPlatform, Math, Graphics, SynHighlighterDiff, SynEditMouseCmds;
 function Panel(Owner: TComponent; Parent: TWinControl; Alignment: TAlign): TPanel;
 begin
   Result := TPanel.Create(Owner); Result.Parent := Parent;
@@ -86,7 +86,7 @@ begin
   FLog := TSynEdit.Create(Self); FLog.Parent := FBottomPane; FLog.Align := alClient;
   FLog.MouseOptions := FLog.MouseOptions - [emRightMouseMovesCursor];
   FLog.ReadOnly := True; FLog.Gutter.Visible := False; FLog.RightEdge := 0;
-  FLog.Font.Name := 'monospace'; FLog.Font.Size := 10;
+  FLog.Font.Name := DefaultGuiFont; FLog.Font.Size := 10;
   FBottomSplit := TSplitter.Create(Self); FBottomSplit.Parent := Self;
   FBottomSplit.Align := alBottom; FBottomSplit.Height := 6; FBottomSplit.OnMoved := @SplitMoved;
   FWorkspace := Panel(Self, Self, alClient);
@@ -100,7 +100,7 @@ begin
   FToVersion := VersionChoice(Self, FRightPane, 'To');
   FFromVersion := VersionChoice(Self, FRightPane, 'From');
   FDiff := TSynEdit.Create(Self); FDiff.Parent := FRightPane; FDiff.Align := alClient;
-  FDiff.ReadOnly := True; FDiff.Gutter.Visible := False; FDiff.RightEdge := 0; FDiff.Font.Name := 'monospace'; FDiff.Font.Size := 10;
+  FDiff.ReadOnly := True; FDiff.Gutter.Visible := False; FDiff.RightEdge := 0; FDiff.Font.Name := DefaultGuiFont; FDiff.Font.Size := 10;
   FDiff.Highlighter := TSynDiffSyn.Create(Self);
   FRightSplit := TSplitter.Create(Self); FRightSplit.Parent := FWorkspace;
   FRightSplit.Align := alRight; FRightSplit.Left := FWorkspace.Width - 456;

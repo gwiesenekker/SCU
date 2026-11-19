@@ -8,8 +8,8 @@ with version and modification-time macros expanded.
 ## Build
 
 Linux is the fully tested native platform. The CLI also has a Win64 build and
-a shared integration suite; native Windows qualification and the Windows GUI
-remain pending. Linux uses Free Pascal 3.2.2 with the FCL, hash,
+a shared integration suite. The CLI and GUI cross-compile for Win64 and run
+under Wine; native Windows qualification remains pending. Linux uses Free Pascal 3.2.2 with the FCL, hash,
 and SQLite units, the zstd and SQLite development libraries, and the OpenSSL 3
 runtime (`libcrypto.so.3`). On Debian-based systems, install
 `make fpc fp-units-db fp-units-fcl fp-units-misc libsqlite3-dev libzstd-dev libssl3t64`.
@@ -60,7 +60,11 @@ when changing runtime distributions.
 
 Distribute the executable, `commands.json`, and all its required app-local DLLs
 from that directory together; the `units` subdirectory is only a build artifact.
-The GUI is not built by this driver. DLL redistribution licenses remain those
+Add `--gui` to build `scu-gui.exe` with Lazarus/SynEdit and the native Windows
+widget set; add `--gui-test` to build and run the GUI integration checks. Use
+`--lazbuild PATH` when Lazarus is not on PATH. Generated LPI projects and GUI
+compiler outputs stay in the selected output directory; tracked projects and
+Linux build outputs are unchanged. DLL redistribution licenses remain those
 of their respective projects; include their required notices when packaging.
 
 A Linux-to-Win64 cross compiler can use the same driver. Pass its executable
@@ -452,7 +456,7 @@ regressions under Wine, including real transactions, build outcomes, identity
 errors and recovery. Native Windows validation is still pending; Wine's long
 recovery-directory test skips only after an independent directory-normalization
 probe fails before recovery/actor lookup. The ordinary recovery cleanup checks
-run under Wine on both success and validation failure. Native GUI setup and
+run under Wine on both success and validation failure. Native Windows GUI qualification and
 packaging remain unfinished. Existing Linux library filenames and source bytes
 are unchanged.
 
@@ -1199,8 +1203,9 @@ for the executor to record in the audit outcome.
 
 ## Native GUI
 
-The optional Lazarus frontend uses LCL/GTK2 and SynEdit. Build it with Lazarus,
-its LCL GTK2 units, and the SynEdit package installed:
+The optional Lazarus frontend uses SynEdit with LCL/GTK2 on Linux and LCL/Win32
+on Windows (including Win64). On Linux, build it with Lazarus, its LCL GTK2
+units, and the SynEdit package installed:
 
 ```sh
 make gui
@@ -1208,7 +1213,26 @@ build/scu-gui
 build/scu-gui project.sqlite
 ```
 
-Keep `scu-gui`, `scu` and `commands.json` together in the build directory. The GUI
+On Windows, install Lazarus with the matching Win64 compiler, LCL Windows units
+and SynEdit package, then build beside the CLI and its DLLs:
+
+```text
+py -3 tools/build_windows.py --dll-directory C:\scu-runtime --gui --gui-test
+build\windows\scu-gui.exe project.sqlite
+```
+
+`--gui-test` requires an interactive desktop and uses temporary libraries and
+font preferences. It does not require running the CLI test suite first; add
+`--test` to run that too. Cross-building requires a configured Win64 Lazarus/FPC
+toolchain as well as the target RTL/FCL/LCL packages. The GUI is a Windows GUI
+subsystem executable, reads startup arguments through the Unicode Windows API,
+and reports startup library failures in a dialog and its log. GUI-launched CLI
+commands run without console windows, retain exact quoted/JSON argument values,
+and capture build output. Their Windows Job Object retires the command and its
+descendants on exceptional shutdown; normal close still waits for active work.
+Build children also stay console-free when launched from a console-free CLI.
+
+Keep `scu-gui` (`scu-gui.exe` on Windows), `scu` (`scu.exe`) and `commands.json` together in the build directory. The GUI
 opens existing `.sqlite` libraries; create a new library with the CLI first.
 The normal `make` and `make test` targets still need only the CLI dependencies.
 On Ubuntu, `Failed to load module "canberra-gtk-module"` means GTK2's optional
@@ -1261,7 +1285,11 @@ Drag the three splitters to resize panes. Window resizing preserves pane
 proportions; layout minimums follow the UI font and DPI. **Edit → Preferences…**
 opens a preferences dialog with **Editor** and **Library** panes. The Editor pane
 has a native font picker; family, size and style apply to open and future tabs
-and persist in `$XDG_CONFIG_HOME/scu/gui.json` (normally `~/.config/scu/gui.json`).
+and persist in `$XDG_CONFIG_HOME/scu/gui.json` (normally `~/.config/scu/gui.json`)
+on Linux, or `%LOCALAPPDATA%\scu\gui.json` on Windows (falling back to
+`%APPDATA%`). Windows defaults to Consolas; Linux retains monospace. Existing
+saved font choices are preserved. Windows preference directories and atomic
+writes use Unicode/long-path APIs.
 Log/diff fonts remain independent. The Library pane edits the default comment
 string, external-editor argument array, build command, release directory,
 version/revision increments and monitored file patterns. Only changed values are
@@ -1295,6 +1323,19 @@ make test-gui
 
 This target requires a display; it leaves a test screenshot at
 `build/gui-check.png` and uses a temporary library and temporary preferences.
+The checks deliberately change fonts, sizes and DPI while opening/resizing
+windows; use `xvfb-run -a make test-gui` on Linux to keep them off your desktop.
+The same checks run with native Windows widgets through `--gui-test`; the runner
+can also accept `--scu PATH --gui-check PATH --wine` for Wine testing. Headless
+process regressions (`tests/gui_process.py` and `gui_process_probe`) run in
+`make test` without Lazarus and cover large merged output, Unicode/quoted
+arguments, failure/retry, exit status, console-free CLI/build execution and Windows
+descendant retirement. Windows process probes also verify actual event isolation
+rather than treating a reused numeric handle as an inherited object.
+Wine may return a blank `GetFormImage` screenshot; passing behavior/layout
+assertions do not establish visual fidelity. Native Windows font rendering,
+display scaling, window management and close behavior still need validation on a real Windows desktop; Wine coverage does
+not establish those results.
 
 ## License
 

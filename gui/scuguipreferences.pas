@@ -16,11 +16,11 @@ type
     property Path: string read FPath;
   end;
 implementation
-uses SysUtils, FPJSON, ScuJSON, ScuFiles, ScuPlatformPaths;
+uses SysUtils, FPJSON, ScuJSON, ScuFiles, ScuPlatformPaths, ScuGuiPlatform;
 constructor TScuGuiPreferences.Create;
 begin
   inherited Create;
-  FEditorFont := TFont.Create; FEditorFont.Name := 'monospace'; FEditorFont.Size := 11;
+  FEditorFont := TFont.Create; FEditorFont.Name := DefaultGuiFont; FEditorFont.Size := 11;
   FPath := GuiPreferencesPath;
 end;
 destructor TScuGuiPreferences.Destroy;
@@ -28,7 +28,7 @@ begin FEditorFont.Free; inherited Destroy; end;
 procedure TScuGuiPreferences.Load;
 var Document: TJSONObject; Size: Integer; Family: string;
 begin
-  if not FileExists(FPath) then Exit;
+  if not {$IFDEF WINDOWS}RegularFileExists{$ELSE}FileExists{$ENDIF}(FPath) then Exit;
   Document := ParseObject(ReadBytes(FPath, 65536), FPath);
   try
     Family := Field(Document, 'editor_font', jtString, FPath).AsString;
@@ -46,8 +46,7 @@ end;
 procedure TScuGuiPreferences.Save;
 var Document: TJSONObject;
 begin
-  if not ForceDirectories(ExtractFileDir(FPath)) then
-    raise Exception.Create('Could not create preferences directory: ' + ExtractFileDir(FPath));
+  EnsureGuiPreferencesDirectory(ExtractFileDir(FPath));
   Document := TJSONObject.Create;
   try
     Document.Add('editor_font', FEditorFont.Name); Document.Add('editor_font_size', FEditorFont.Size);

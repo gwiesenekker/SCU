@@ -86,6 +86,7 @@ type
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
     procedure OpenLibrary(const Path: string);
+    procedure OpenInitialLibrary(const Path: string);
     procedure CloseLibrary;
     procedure OpenDeck(const Deck: string);
     procedure SaveActive;
@@ -450,6 +451,14 @@ begin
     for Entry in Entries do FDeckList.Items.Add(Entry.Name);
     FDeckList.ItemIndex := FDeckList.Items.IndexOf(Selected);
   finally FDeckList.Items.EndUpdate; FUpdating := False; end;
+end;
+procedure TScuMainForm.OpenInitialLibrary(const Path: string);
+begin
+  try OpenLibrary(Path);
+  except on E: Exception do
+    {$IFDEF WINDOWS}CommandError('Open library', E.Message);{$ELSE}
+    WriteLn(StdErr, E.Message);{$ENDIF}
+  end;
 end;
 procedure TScuMainForm.OpenLibrary(const Path: string);
 var Normalized: string;

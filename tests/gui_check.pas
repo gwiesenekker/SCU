@@ -1,7 +1,7 @@
 program gui_check;
 {$mode objfpc}{$H+}
-uses cthreads, Interfaces, Forms, Classes, SysUtils, Controls, StdCtrls, ExtCtrls,
-  ComCtrls, Graphics, Types, FPImage, Dialogs, Menus, FPJSON, Process, ScuGuiOptions, LCLType, ScuGuiTabs, ScuGuiMain, ScuGuiTab, ScuFiles, ScuGuiReader, ScuGuiLiveDiff, ScuSQLite, ScuSQLiteDB;
+uses {$IFDEF UNIX}cthreads,{$ENDIF} {$IFDEF WINDOWS}Windows, ScuPlatformProcessStringsWindows,{$ENDIF} Interfaces, Forms, Classes, SysUtils, Controls, StdCtrls, ExtCtrls,
+  ComCtrls, Graphics, Types, FPImage, Dialogs, Menus, FPJSON, Process, ScuGuiOptions, LCLType, ScuGuiTabs, ScuGuiMain, ScuGuiTab, ScuFiles, ScuGuiReader, ScuGuiLiveDiff, ScuSQLite, ScuSQLiteDB, ScuPlatformPaths, ScuGuiPlatform;
 type TErrorHandler = class
   procedure Failed(Sender: TObject; E: Exception);
 end;
@@ -21,7 +21,11 @@ procedure TTestMainForm.DisplayCommandError(const CommandName, Details: string);
 begin Inc(ErrorDialogs); LastDialogCommand := CommandName; LastDialogDetails := Details; end;
 function TTestMainForm.PromptNewVersion(var Version: string): Boolean;
 begin PrefilledVersion := Version; Result := True; end;
-var Main: TTestMainForm; Errors: TErrorHandler; Checks: Integer;
+var Main: TTestMainForm; Errors: TErrorHandler; Checks: Integer; InvocationArguments: TStringList;
+function CheckArgument(Index: Integer): string;
+begin
+  if Index = 0 then Result := InvocationExecutablePath else Result := InvocationArguments[Index - 1];
+end;
 procedure Check(Value: Boolean; const Message: string);
 begin
   Inc(Checks);
@@ -110,7 +114,7 @@ end;
 function AuditCount: Int64;
 var Database: TSQLiteLibrary; Statement: TSQLiteStatement;
 begin
-  Database := TSQLiteLibrary.OpenRead(ParamStr(1));
+  Database := TSQLiteLibrary.OpenRead(CheckArgument(1));
   try
     Statement := Database.Prepare('SELECT count(*) FROM audit_records');
     try Statement.Step; Result := Statement.Integers[0]; finally Statement.Free; end;
@@ -128,9 +132,9 @@ var Child: TProcess; Argument: string;
 begin
   Child := TProcess.Create(nil);
   try
-    Child.Executable := ExtractFileDir(ParamStr(0)) + '/scu'; Child.Parameters.Add(ParamStr(1));
+    Child.Executable := IncludeTrailingPathDelimiter(ExtractFileDir(CheckArgument(0))) + ExecutableName('scu'); Child.Parameters.Add(CheckArgument(1));
     for Argument in Arguments do Child.Parameters.Add(Argument);
-    Child.Options := [poWaitOnExit]; Child.Execute;
+    Child.Options := [poWaitOnExit{$IFDEF WINDOWS}, poNoConsole{$ENDIF}]; Child.Execute;
     Check(Child.ExitStatus = 0, 'Fixture command succeeded');
   finally Child.Free; end;
 end;
@@ -145,12 +149,32 @@ end;
 var Tab, Other: TScuEditorTab; ListMarker: TObject; Path, OldDisk: string; I: Integer; EditorFont: TFont; BeforeAudit: Int64; OriginalBytes, OriginalDisk: RawByteString; OriginalVersion: string; Configuration: TJSONObject; State: TGuiLibraryState;
   Options: TScuOptionsDialog; Parameters: array of string; VersionItem: TMenuItem; BeforeDialogs: Integer;
 begin
+  InitializePlatformPaths;
+  {$IFDEF WINDOWS}
+  // Wine replaces LOCALAPPDATA during startup. Override it inside this test
+  // process only, so font persistence never touches the real user profile.
+  if WindowsEnvironmentValue('SCU_GUI_TEST_CONFIG') <> '' then
+    SetEnvironmentVariableW('LOCALAPPDATA', PWideChar(UTF8Decode(WindowsEnvironmentValue('SCU_GUI_TEST_CONFIG'))));
+  {$ENDIF}
+  InvocationArguments := TStringList.Create; ReadInvocationArguments(InvocationArguments);
   RequireDerivedFormResource := False; Application.Initialize;
   Errors := TErrorHandler.Create; Application.OnException := @Errors.Failed;
   Main := TTestMainForm.Create(nil);
   try
     Main.Show; Application.ProcessMessages;
-    Main.OpenLibrary(ParamStr(1)); Pump;
+    Check(Main.Preferences.EditorFont.Name = DefaultGuiFont, 'Platform default editor font');
+    Check(Main.LogView.Font.Name = DefaultGuiFont, 'Platform default log font');
+    Check(Main.DiffView.Font.Name = DefaultGuiFont, 'Platform default diff font');
+    {$IFDEF WINDOWS}
+    BeforeDialogs := Main.ErrorDialogs;
+    Main.OpenInitialLibrary(IncludeTrailingPathDelimiter(ExtractFileDir(CheckArgument(1))) + 'missing.sqlite');
+    Check(Main.ErrorDialogs = BeforeDialogs + 1, 'Startup failure displays one dialog without stderr');
+    Check(Main.LastDialogCommand = 'Open library', 'Startup dialog identifies the operation');
+    Check(Main.LibraryPath = '', 'Failed startup leaves no library open');
+    Check(Pos('missing.sqlite', Main.LastError) > 0, 'Startup failure is retained in the log');
+    {$ENDIF}
+
+    Main.OpenLibrary(CheckArgument(1)); Pump;
     Check(Main.LastError = '', Main.LastError);
     Check(Main.DeckList.Count = 2, 'Deck list');
     Check(Assigned(Main.LogView.PopupMenu), 'Log has a context menu');
@@ -166,7 +190,7 @@ begin
     Main.OpenDeck('main.pas'); Pump;
     Tab := TScuEditorTab(Main.EditorTabs.ActivePage);
     Check(Tab.Caption = 'main.pas', 'Initial tab title');
-    Check(Tab.SourceBytes = ReadGuiDeck(ParamStr(1), 'main.pas').Bytes, 'Initial text round-trip count=' + IntToStr(Tab.Editor.Lines.Count) + ' bytes=' + Tab.SourceBytes);
+    Check(Tab.SourceBytes = ReadGuiDeck(CheckArgument(1), 'main.pas').Bytes, 'Initial text round-trip count=' + IntToStr(Tab.Editor.Lines.Count) + ' bytes=' + Tab.SourceBytes);
     Check(Main.FromVersion.Text = 'scu$current_deck_version', 'Default From is latest stored deck');
     Check(Main.ToVersion.Text = LiveDeckVersionSelector, 'Default To is live buffer');
     Check(Pos('No differences.', Main.DiffView.Text) > 0, 'Clean buffer has no default differences');
@@ -201,8 +225,8 @@ begin
     finally Main.DeckList.Items.Objects[0] := nil; ListMarker.Free; end;
 
     OriginalBytes := Tab.SourceBytes;
-    OriginalDisk := ReadBytes(ExtractFileDir(ParamStr(1)) + '/Main.pas', 1024*1024);
-    OriginalVersion := ReadGuiDeck(ParamStr(1), 'main.pas').DeckVersion;
+    OriginalDisk := ReadBytes(ExtractFileDir(CheckArgument(1)) + '/Main.pas', 1024*1024);
+    OriginalVersion := ReadGuiDeck(CheckArgument(1), 'main.pas').DeckVersion;
     BeforeAudit := AuditCount;
     Check(Main.FromVersion.Items.IndexOf(LiveDeckVersionSelector) >= 0, 'Live selector in From dropdown');
     Check(Main.ToVersion.Items.IndexOf(LiveDeckVersionSelector) >= 0, 'Live selector in To dropdown');
@@ -222,9 +246,9 @@ begin
     Pump;
     Check(Pos('+// LATEST LIVE EDIT', Main.DiffView.Text) > 0, 'Typing refreshes the live preview');
     Check(Main.DeckList.Enabled and Main.EditorTabs.Enabled, 'Live preview leaves browsing enabled');
-    Check(ReadGuiDeck(ParamStr(1), 'main.pas').Bytes = OriginalBytes, 'Preview never stores draft bytes');
-    Check(ReadGuiDeck(ParamStr(1), 'main.pas').DeckVersion = OriginalVersion, 'Preview creates no revision');
-    Check(ReadBytes(ExtractFileDir(ParamStr(1)) + '/Main.pas', 1024*1024) = OriginalDisk, 'Preview never writes working file');
+    Check(ReadGuiDeck(CheckArgument(1), 'main.pas').Bytes = OriginalBytes, 'Preview never stores draft bytes');
+    Check(ReadGuiDeck(CheckArgument(1), 'main.pas').DeckVersion = OriginalVersion, 'Preview creates no revision');
+    Check(ReadBytes(ExtractFileDir(CheckArgument(1)) + '/Main.pas', 1024*1024) = OriginalDisk, 'Preview never writes working file');
     Check(AuditCount = BeforeAudit, 'Preview emits no audit commands');
     Tab.Editor.Undo; Tab.Editor.Undo; Pump;
     Check(not Tab.Dirty, 'Undo live edits restores clean tab');
@@ -237,11 +261,11 @@ begin
     Main.SaveActive; Pump;
     Check(Main.LastError = '', Main.LastError);
     Check(Tab.Caption = 'main.pas', 'Saved tab title');
-    Check(Pos('// GUI EDIT', ReadGuiDeck(ParamStr(1), 'main.pas').Bytes) > 0, 'Save through backend');
+    Check(Pos('// GUI EDIT', ReadGuiDeck(CheckArgument(1), 'main.pas').Bytes) > 0, 'Save through backend');
     Check(Pos('// GUI EDIT', Main.DiffView.Text) > 0, 'Diff refreshed after save');
     EditorFont := TFont.Create;
     try
-      EditorFont.Name := 'monospace'; EditorFont.Size := 13; Main.SetEditorFont(EditorFont);
+      EditorFont.Name := DefaultGuiFont; EditorFont.Size := 13; Main.SetEditorFont(EditorFont);
     finally EditorFont.Free; end;
     Check(Tab.Editor.Font.Size = 13, 'Font preference applies to open tab');
     Main.OpenDeck('other.cpp'); Pump;
@@ -256,7 +280,7 @@ begin
     Main.SaveActive; Pump;
     Check(Main.ToVersion.Text = LiveDeckVersionSelector, 'Save retains live selection');
     Check(Pos('No differences.', Main.DiffView.Text) > 0, 'Saved buffer matches latest stored version');
-    Check(ReadGuiDeck(ParamStr(1), 'other.cpp').Bytes = 'int other = 2;' + #13#10 + '// no final newline', 'Saved CRLF');
+    Check(ReadGuiDeck(CheckArgument(1), 'other.cpp').Bytes = 'int other = 2;' + #13#10 + '// no final newline', 'Saved CRLF');
     Main.OpenDeck('main.pas'); Pump;
     Check((Main.ToVersion.Text = LiveDeckVersionSelector) and (Pos('No differences.', Main.DiffView.Text) > 0), 'Default live preview follows selected tab');
     Main.ExtractActive; Pump;
@@ -274,7 +298,7 @@ begin
     ChooseDiff('scu$previous_deck_version', 'scu$current_deck_version'); Pump;
     Main.PublishVersion('scu$current_version'); Pump;
     Check(Main.LastError = '', Main.LastError);
-    Path := ExtractFileDir(ParamStr(1));
+    Path := ExtractFileDir(CheckArgument(1));
     Check(FileExists(Path + '/release/Main.pas'), 'Published recorded filename');
     Check(Pos('scu> import_deck deck_name=', Main.LogView.Text) > 0, 'Canonical command log');
     Check(Main.TabBar.Visible and not Main.EditorTabs.ShowTabs, 'Editor-style tab strip replaces native labels');
@@ -296,13 +320,13 @@ begin
     Main.OpenDeck('main.pas'); Pump;
     Main.CloseAnswer := mrYes; ClickTab(Other.PageIndex, True); Pump;
     Check(Main.EditorTabs.PageCount = 1, 'Save and close inactive dirty tab');
-    Check(Pos('// SAVE THIS', ReadGuiDeck(ParamStr(1), 'other.cpp').Bytes) = 1, 'Close saves the clicked deck through backend');
+    Check(Pos('// SAVE THIS', ReadGuiDeck(CheckArgument(1), 'other.cpp').Bytes) = 1, 'Close saves the clicked deck through backend');
     Check(Main.EditorTabs.ActivePage = Tab, 'Save and close preserves active tab');
     Main.OpenDeck('other.cpp'); Pump; Other := TScuEditorTab(Main.EditorTabs.ActivePage);
     Other.Editor.CaretXY := Point(1,1); Other.Editor.SelText := '// DISCARD THIS' + #10;
     Main.CloseAnswer := mrNo; ClickTab(Other.PageIndex, True); Pump;
     Check(Main.EditorTabs.PageCount = 1, 'Discard closes dirty tab');
-    Check(Pos('// DISCARD THIS', ReadGuiDeck(ParamStr(1), 'other.cpp').Bytes) = 0, 'Discard leaves stored source unchanged');
+    Check(Pos('// DISCARD THIS', ReadGuiDeck(CheckArgument(1), 'other.cpp').Bytes) = 0, 'Discard leaves stored source unchanged');
     Check(Main.ClosePrompts = 3, 'Dirty tab close asks exactly once per attempt');
     Main.OpenDeck('other.cpp'); Pump; Main.OpenDeck('main.pas'); Pump;
     CheckOverflow;
@@ -324,7 +348,7 @@ begin
     Main.AutoAdjustLayout(lapAutoAdjustForDPI, 144, 96, Main.Width, Round(Main.Width / 1.5));
     Main.Font.Size := 10; Main.Width := 1380; Main.Height := 850;
     Application.ProcessMessages; Main.RefreshLayout; Application.ProcessMessages; Inspect(Main);
-    if ParamCount > 1 then SnapshotWindow(Main, ParamStr(2));
+    if ParamCount > 1 then SnapshotWindow(Main, CheckArgument(2));
     // An external editor must not be overwritten by an older GUI buffer.
     OldDisk := ReadBytes(Path + '/Main.pas', 1024 * 1024);
     AtomicWrite(Path + '/Main.pas', 'external edit');
@@ -339,16 +363,16 @@ begin
     Check(not Tab.Dirty, 'Undo to stored bytes clears dirty title');
     // Lock the stored version externally, then exercise the GUI failure/recovery path.
     BackendCommand(['lock_version', 'description=GUI lock workflow']);
-    OriginalBytes := ReadGuiDeck(ParamStr(1), 'main.pas').Bytes;
-    OriginalVersion := ReadGuiDeck(ParamStr(1), 'main.pas').DeckVersion;
+    OriginalBytes := ReadGuiDeck(CheckArgument(1), 'main.pas').Bytes;
+    OriginalVersion := ReadGuiDeck(CheckArgument(1), 'main.pas').DeckVersion;
     Tab.Editor.CaretXY := Point(1,2); Tab.Editor.SelText := '// AFTER LOCK' + #10;
     BeforeDialogs := Main.ErrorDialogs; Main.SaveActive; Pump;
     Check(Main.ErrorDialogs = BeforeDialogs+1, 'Locked save shows one error dialog');
     Check(Pos('locked', Main.LastDialogDetails) > 0, 'Error dialog contains actual locked-version error');
     Check(Main.LastDialogCommand = 'import_deck', 'Error dialog identifies failed save command');
     Check(Tab.Dirty, 'Locked save keeps editor buffer modified');
-    Check(ReadGuiDeck(ParamStr(1), 'main.pas').Bytes = OriginalBytes, 'Locked source is unchanged');
-    State := ReadGuiLibraryState(ParamStr(1));
+    Check(ReadGuiDeck(CheckArgument(1), 'main.pas').Bytes = OriginalBytes, 'Locked source is unchanged');
+    State := ReadGuiLibraryState(CheckArgument(1));
     Check(State.NextVersion = '1.01', 'Next version uses backend increment');
     VersionItem := nil;
     for I := 0 to Main.Menu.Items[0].Count-1 do
@@ -356,10 +380,10 @@ begin
     Check(Assigned(VersionItem), 'File menu has Create new version');
     VersionItem.Click; Pump;
     Check(Main.PrefilledVersion = '1.01', 'Create version dialog prefills next version');
-    State := ReadGuiLibraryState(ParamStr(1));
+    State := ReadGuiLibraryState(CheckArgument(1));
     Check((State.CurrentVersion = '1.01') and not State.Locked, 'Create version uses backend and leaves new version open');
     Check(Tab.Dirty, 'Creating version preserves unsaved edit');
-    Configuration := ReadGuiConfiguration(ParamStr(1));
+    Configuration := ReadGuiConfiguration(CheckArgument(1));
     Options := TScuOptionsDialog.CreateOptions(Main, Main.Preferences.EditorFont, Configuration, State.PrefixEditable);
     try
       Options.Show; Application.ProcessMessages;
@@ -369,7 +393,7 @@ begin
       Options.Pages.ActivePageIndex := 1; Application.ProcessMessages; Inspect(Options);
       for I := 0 to 4 do CheckFieldLabel(Options.LibraryField(I));
       CheckFieldLabel(Options.BuildField); CheckFieldLabel(Options.PatternsField);
-      if ParamCount > 1 then SnapshotWindow(Options, ChangeFileExt(ParamStr(2), '-preferences.png'));
+      if ParamCount > 1 then SnapshotWindow(Options, ChangeFileExt(CheckArgument(2), '-preferences.png'));
       Options.Font.Size := 14; Options.Width := 600; Options.Height := 550;
       Application.ProcessMessages; Inspect(Options);
       for I := 0 to 4 do CheckFieldLabel(Options.LibraryField(I));
@@ -383,7 +407,7 @@ begin
       Main.ApplyLibraryOptions(Parameters); Pump;
       Check(Main.LastError = '', Main.LastError);
     finally Options.Free; Configuration.Free; end;
-    Configuration := ReadGuiConfiguration(ParamStr(1));
+    Configuration := ReadGuiConfiguration(CheckArgument(1));
     try
       Check(Configuration.Get('comment_prefix','') = '#', 'Library comment string saved');
       Check(Configuration.Get('version_increment','') = '0.05', 'Version increment saved');
@@ -391,21 +415,21 @@ begin
       Check(Configuration.Get('release_directory','') = 'gui-release', 'Release directory saved');
       Check(TJSONArray(Configuration.Find('file_patterns')).Count = 2, 'Monitored patterns saved');
     finally Configuration.Free; end;
-    Check(ReadGuiLibraryState(ParamStr(1)).NextVersion = '1.06', 'Suggested version reflects configured increment');
+    Check(ReadGuiLibraryState(CheckArgument(1)).NextVersion = '1.06', 'Suggested version reflects configured increment');
     Main.SaveActive; Pump;
     Check(Main.LastError = '', Main.LastError);
     Check(not Tab.Dirty, 'Save succeeds in the new version');
-    Check(ReadGuiDeck(ParamStr(1), 'main.pas').DeckVersion = '1.01-0.000', 'Edit belongs to new version');
-    Check(ReadGuiDeckVersion(ParamStr(1), 'main.pas', OriginalVersion).Bytes = OriginalBytes, 'Earlier locked version source preserved');
+    Check(ReadGuiDeck(CheckArgument(1), 'main.pas').DeckVersion = '1.01-0.000', 'Edit belongs to new version');
+    Check(ReadGuiDeckVersion(CheckArgument(1), 'main.pas', OriginalVersion).Bytes = OriginalBytes, 'Earlier locked version source preserved');
     Main.CloseLibrary;
     Check(Main.LibraryPath = '', 'Close library');
     Check(Main.EditorTabs.PageCount = 0, 'Close clears tabs');
     Main.Free; Main := nil;
     Main := TTestMainForm.Create(nil); Main.Show;
     Check(Main.Preferences.EditorFont.Size = 13, 'Font preference reloaded in a new session');
-    Main.OpenLibrary(ParamStr(1)); Pump; Main.OpenDeck('main.pas'); Pump;
+    Main.OpenLibrary(CheckArgument(1)); Pump; Main.OpenDeck('main.pas'); Pump;
     Check(TScuEditorTab(Main.EditorTabs.ActivePage).Editor.Font.Size = 13, 'Reloaded font used by editor');
     Main.CloseLibrary;
     WriteLn('GUI checks passed: ', Checks);
-  finally Main.Free; Errors.Free; end;
+  finally Main.Free; Errors.Free; InvocationArguments.Free; end;
 end.

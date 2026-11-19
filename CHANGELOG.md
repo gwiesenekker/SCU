@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Port GUI startup, defaults and preferences to Windows: conditional Unix thread initialization, Unicode startup arguments, a GUI subsystem executable, startup error dialogs/logging, Consolas defaults and native Unicode preference-directory handling. Preserve Linux defaults and startup diagnostics.
+- Launch GUI commands without Windows console windows, using the existing exact Windows argument encoder for JSON, quotes, Unicode and backslashes. Contain suspended commands in a Job Object before resuming, drain merged output asynchronously and retire descendants on exceptional shutdown or command completion. Suppress build consoles when the parent CLI has no console; retain Linux process behavior.
+- Make the existing Windows handle-inheritance regression check the parent event itself, avoiding false positives when a child reuses the same numeric handle.
+- Extend the Windows build driver with --gui/--gui-test and generated local Lazarus projects. Add portable GUI integration, font/startup checks, headless process/cleanup regressions and build-driver tests. Document native desktop prerequisites, Wine limits and virtual-display testing.
+
 - Add a Python Win64 CLI build driver with isolated compiler outputs, configurable compiler/search flags, explicit app-local runtime staging and optional native/Wine integration testing. Propagate compiler/test failures without downloading dependencies or changing Linux build targets.
 - Extract shared command, version, revision, deletion, diff, release, manifest, audit/rollback, argument and batch/command-file assertions into a portable CLI suite inherited by the Linux integration runner. Add Unicode/binary and platform-shell build-outcome coverage plus build-driver regressions.
 - Add make test-portable, retain the complete Linux suite, and document native Windows prerequisites, runtime distribution and cross-testing. Use a file-backed Wine batch-input adapter for its host-pipe limitation while native Windows tests retain real subprocess pipes. Keep repository text checkouts at LF without converting binary fixtures.

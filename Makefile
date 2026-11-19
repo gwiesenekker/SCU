@@ -50,7 +50,11 @@ build/actor_probe: tests/actor_probe.pas build/scu
 build/export_names_probe: tests/export_names_probe.pas build/scu
 	$(FPC) $(FPCFLAGS) -Fu./src -FU./build -FE./build tests/export_names_probe.pas
 
-test: all build/executor_probe build/platform_probe build/files_probe build/locks_probe build/process_probe build/terminal_probe build/sqlite_probe build/scan_probe build/cleanup_probe build/dll_probe build/actor_probe build/export_names_probe
+build/gui_process_probe: tests/gui_process_probe.pas $(wildcard gui/*.pas) build/scu
+	$(FPC) $(FPCFLAGS) -Fu./src -Fu./gui -FU./build -FE./build tests/gui_process_probe.pas
+
+test: all build/executor_probe build/platform_probe build/files_probe build/locks_probe build/process_probe build/terminal_probe build/sqlite_probe build/scan_probe build/cleanup_probe build/dll_probe build/actor_probe build/export_names_probe build/gui_process_probe
+	python3 tests/gui_process.py ./build/gui_process_probe
 	python3 tests/windows_build.py
 	python3 tests/export_names.py ./build/export_names_probe
 	python3 tests/actors.py ./build/actor_probe

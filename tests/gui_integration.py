@@ -1,6 +1,7 @@
 """Drive the native Lazarus check against an isolated, audited CLI library."""
 from contextlib import closing
 import json
+import argparse
 import os
 from pathlib import Path
 import sqlite3
@@ -8,12 +9,28 @@ import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parents[1]
-scu = root / "build/scu"
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--scu', type=Path, default=root / ('build/windows/scu.exe' if os.name == 'nt' else 'build/scu'))
+parser.add_argument('--gui-check', type=Path, default=root / ('build/windows/gui-check.exe' if os.name == 'nt' else 'build/gui-check'))
+parser.add_argument('--wine', action='store_true')
+args = parser.parse_args()
+scu = args.scu.resolve()
+windows = args.wine or os.name == 'nt'
+def argument(value):
+    if args.wine and isinstance(value, Path):
+        return 'Z:' + str(value.absolute()).replace('/', '\\')
+    return str(value)
+def run(executable, *values, **options):
+    command = (['wine', str(executable)] if args.wine else [str(executable)])
+    return subprocess.run(command + [argument(v) for v in values], encoding='utf-8', **options)
 with tempfile.TemporaryDirectory(prefix="scu-gui-test-") as temporary:
     work = Path(temporary)
-    library = work / "project.sqlite"
+    if windows:
+        work = work / 'work 日本'
+        work.mkdir()
+    library = work / ('project 日本.sqlite' if windows else 'project.sqlite')
     def command(*args):
-        result = subprocess.run([scu, library, *args], cwd=work, capture_output=True, text=True, timeout=20)
+        result = run(scu, library, *args, cwd=work, capture_output=True, text=True, timeout=20)
         if result.returncode:
             raise AssertionError(result.stderr)
         return result.stdout
@@ -25,14 +42,21 @@ with tempfile.TemporaryDirectory(prefix="scu-gui-test-") as temporary:
     command("import_deck", "deck_name=main.pas", "source_file=Main.pas")
     (work / "other.cpp").write_bytes(b"int other = 1;\r\n// no final newline")
     command("import_deck", "deck_name=other.cpp", "source_file=other.cpp")
-    command("configure_library", "build_command=printf 'GUI-BUILD-START\\n'; sleep 0.2; printf 'GUI-BUILD-DONE\\n'")
-    result = subprocess.run([root / "build/gui-check", library, root / "build/gui-check.png"], cwd=work,
-                            capture_output=True, text=True, timeout=60,
-                            env=dict(os.environ, XDG_CONFIG_HOME=str(work / "config")))
+    build = 'echo GUI-BUILD-START & echo GUI-BUILD-DONE' if windows else "printf 'GUI-BUILD-START\\n'; sleep 0.2; printf 'GUI-BUILD-DONE\\n'"
+    command('configure_library', 'build_command=' + build)
+    config_path = work / ('config 日本' if windows else 'config')
+    configuration = dict(os.environ)
+    if windows:
+        configuration.update(LOCALAPPDATA=argument(config_path), APPDATA=argument(config_path),
+                             SCU_GUI_TEST_CONFIG=argument(config_path))
+    else:
+        configuration['XDG_CONFIG_HOME'] = str(work / 'config')
+    result = run(args.gui_check.resolve(), library, args.gui_check.resolve().with_suffix('.png'), cwd=work,
+                 capture_output=True, text=True, timeout=120 if windows else 60, env=configuration)
     if result.returncode:
         raise AssertionError(result.stdout + result.stderr)
     print(result.stdout.strip())
-    preferences = json.loads((work / "config/scu/gui.json").read_text())
+    preferences = json.loads((config_path / "scu/gui.json").read_text(encoding="utf-8"))
     assert preferences["editor_font_size"] == 13
     command("verify_audit")
     with closing(sqlite3.connect(library)) as database:
