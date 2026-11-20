@@ -58,7 +58,7 @@ procedure ReportLibraryHeader(const Context: TCommandContext);
 var
   Configuration: TJSONObject;
   Previous: TLibrarySnapshot;
-  PreviousVersion: string;
+  PreviousVersion, VersionStatus: string;
 begin
   if BooleanArgument(Context.Command, 'json', 'no') then
   begin
@@ -71,6 +71,11 @@ begin
     if Context.LibraryFile.TryPreviousSnapshot(Previous) then
       PreviousVersion := Previous.Version;
     Configuration.Strings['previous_locked_version'] := PreviousVersion;
+    if Context.LibraryFile.VersionHistory[Context.LibraryFile.VersionCount - 1].Locked then
+      VersionStatus := 'locked'
+    else
+      VersionStatus := 'unlocked';
+    Configuration.Strings['current_version'] := Format('%s (%s)', [Context.LibraryFile.CurrentVersion, VersionStatus]);
     WriteLibraryConfiguration(Configuration, Context.Output, Context.Output.Columns);
   finally
     Configuration.Free;
@@ -141,10 +146,16 @@ begin
 end;
 
 function DeleteVersion(var Context: TCommandContext): string;
+var
+  BeforeCount: Integer;
 begin
-  Context.LibraryFile.DeleteVersion(Context.Command['version']);
+  BeforeCount := Context.LibraryFile.Revision;
+  Context.LibraryFile.DeleteVersion(Context.Command['version'],
+    BooleanArgument(Context.Command, 'delete_revisions', 'no'));
   Result := Format('Deleted version %s. Current version %s is locked.',
     [Context.Command['version'], Context.LibraryFile.CurrentVersion]);
+  if BeforeCount > Context.LibraryFile.Revision then
+    Result := Result + Format(' Removed %d deck revision(s).', [BeforeCount - Context.LibraryFile.Revision]);
 end;
 
 function CreateVersion(var Context: TCommandContext): string;

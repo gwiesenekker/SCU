@@ -41,7 +41,7 @@ disvd of=unified isc=no ilsh=no
 
 Test your working files. When satisfied, enter `locv` at the SCU prompt or run `scu ln=project.sqlite locv` from the shell. Both open the configured external editor. Write a summary on the first line, then add as many paragraphs as needed. Use `disvh dd=full` to read the complete description below its version row, with the original paragraph breaks. Save the file and close the editor to lock the version. An empty description cancels the lock. In a shell script, supply it on the command line, for example `scu project.sqlite locv description="Fix board initialization"`.
 
-Use `disl` to inspect library settings, or `disl json=yes` for the full JSON header including version history.
+Use `disl` to see whether the current version is locked or unlocked and inspect library settings, or `disl json=yes` for the full JSON header including version history.
 
 ## Understand versions and revisions
 
@@ -57,7 +57,7 @@ A library version groups changes across decks. Each deck has its own revision wi
 
 Modification and lock times in `disd`, `disv`, and `disvh` use your local time zone. The numeric offset distinguishes the two occurrences of a local time when daylight saving ends. The JSON header, audit records, and release macros use UTC.
 
-To undo an accidental `crev 8.1307`, enter `delv 8.1307`. This returns to the preceding locked version if 8.1307 is still open and has no deck revisions of its own. Inherited decks are safe.
+To undo an accidental `crev 8.1307`, enter `delv 8.1307`. This returns to the preceding locked version if 8.1307 is still open and has no deck revisions of its own. To remove a populated open version and its stored deck revisions, enter `delv 8.1307 delete_revisions=yes`. Earlier versions, audit history, and working files are preserved.
 
 By default `disvh` shows the ten most recent versions. `disdd` compares the previous and current **stored revisions of one deck**. `disvd` compares **two library versions** across all decks.
 
@@ -78,6 +78,8 @@ Open this manual with **Help → Manual** or F1. Select a heading in the content
 ```text
 extv build=no
 ```
+
+To discard an external edit to `book.c`, use `extd book.c o=y b=n`. SCU reports the output path and whether it wrote the file or found matching contents. If you already imported the edit, select the version to restore, for example `extd book.c v=8.1306 o=y b=n`.
 
 Set `configure_library build_command="make"` to build after extraction. If no build command is set, extraction just writes the files. When SCU reports that an output contains local edits, import edits you want to keep before using `overwrite=yes`.
 
@@ -152,7 +154,7 @@ Use the full command or any listed abbreviation. For argument details, enter `di
 | `create_deck` | cred | Create an empty deck or initialize it from a file. |
 | `create_version` | crev | Create a higher version after locking the current version. |
 | `delete_deck` | deld | Record the deletion of a deck in the open version. |
-| `delete_version` | delv | Undo creation of an empty open version. |
+| `delete_version` | delv | Delete the current unlocked successor version. |
 | `display_audit_trail` | disat | Show recent commands from the library audit trail. |
 | `display_command` | disc | Show a command's help and its arguments and options. |
 | `display_command_list` | discl, help | List commands alphabetically with aliases and short descriptions. |

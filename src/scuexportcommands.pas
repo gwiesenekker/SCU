@@ -103,6 +103,7 @@ var
   Selection: TDeckSelection;
   Manifest: TExportManifest;
   Rendered: TRenderedDeck;
+  Written: Boolean;
 begin
   Deck := DeckName(ResolveDeck(Context));
   if Context.Command.HasArgument('revision') and (Context.Command.Argument('revision') = '') then
@@ -136,7 +137,7 @@ begin
   Manifest := TExportManifest.Create(ExtractFileDir(Path));
   try
     Manifest.Recover;
-    Manifest.WriteExport(Context.LibraryPath, Path, Deck, Selection.Snapshot.Version,
+    Written := Manifest.WriteExport(Context.LibraryPath, Path, Deck, Selection.Snapshot.Version,
       ResolvedDeckVersion, emExtract, '', '', Bytes, BooleanArgument(Context.Command, 'overwrite', 'no'));
     Context.FilesPublished := True;
   finally
@@ -145,7 +146,11 @@ begin
   ScheduleBuild(Context, Path);
   Context.Snapshots.DeckVersion := ResolvedDeckVersion;
   ReportSnapshot(Context, ResolvedDeckVersion, Deck);
-  Result := '';
+  if Written then
+    Result := 'Wrote "' + StringToJSONString(Path) + '".'
+  else
+    Result := 'Unchanged: "' + StringToJSONString(Path) + '" already matches deck version ' +
+      ResolvedDeckVersion + '.';
 end;
 
 {$IFDEF WINDOWS}

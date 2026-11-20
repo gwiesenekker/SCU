@@ -45,9 +45,9 @@ type
     procedure PlanDelete(const LibraryPath, OutputPath, Version: string; ReplaceExisting: Boolean = False);
     procedure Observe(const Entry: TExportRecord; Removed: Boolean);
     procedure SaveObservations;
-    procedure Publish;
-    procedure WriteExport(const LibraryPath, OutputPath, Deck, Version, DeckVersion: string;
-      Mode: TExportMode; const ExpansionUTC, Prefix: string; const Bytes: RawByteString; ReplaceExisting: Boolean = False);
+    function Publish: Integer;
+    function WriteExport(const LibraryPath, OutputPath, Deck, Version, DeckVersion: string;
+      Mode: TExportMode; const ExpansionUTC, Prefix: string; const Bytes: RawByteString; ReplaceExisting: Boolean = False): Boolean;
     property Count: Integer read GetCount;
     property Entries[Index: Integer]: TExportRecord read GetEntry; default;
   end;
@@ -577,12 +577,13 @@ begin
   Plan.ReplaceExisting := ReplaceExisting;
 end;
 
-procedure TExportManifest.Publish;
+function TExportManifest.Publish: Integer;
 var
   Index: Integer;
   Plan, RecoveryPlan: TExportPlan;
   Path, Actual: string;
 begin
+  Result := 0;
   if FPlanned.Count = 0 then Exit;
   if FPending.Count <> 0 then raise EScuError.Create('Another export batch still needs recovery.');
   Save(True);
@@ -614,7 +615,10 @@ begin
     else
     begin
       if Actual <> Plan.Data.SHA256 then
+      begin
         AtomicWrite(Path, ReadBytes(Plan.StageFile, MaxDeckSize), [awSourceOutput]);
+        Inc(Result);
+      end;
       Install(Plan.Data);
     end;
   end;
@@ -627,11 +631,11 @@ begin
   FPlanned.Clear;
 end;
 
-procedure TExportManifest.WriteExport(const LibraryPath, OutputPath, Deck, Version, DeckVersion: string;
-  Mode: TExportMode; const ExpansionUTC, Prefix: string; const Bytes: RawByteString; ReplaceExisting: Boolean);
+function TExportManifest.WriteExport(const LibraryPath, OutputPath, Deck, Version, DeckVersion: string;
+  Mode: TExportMode; const ExpansionUTC, Prefix: string; const Bytes: RawByteString; ReplaceExisting: Boolean): Boolean;
 begin
   PlanExport(LibraryPath, OutputPath, Deck, Version, DeckVersion, Mode, ExpansionUTC, Prefix, Bytes, ReplaceExisting);
-  Publish;
+  Result := Publish <> 0;
 end;
 
 function TExportManifest.GetCount: Integer;

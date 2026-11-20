@@ -29,7 +29,7 @@ type
   public
     constructor Create(Entries: TJSONArray; Latest: Integer);
     procedure Lock(const Description: string);
-    procedure DeleteEmpty(const Name: string; Latest: Integer);
+    procedure DeleteCurrent(const Name: string; Latest: Integer; DeleteRevisions: Boolean);
     procedure Start(const Name, Prefix: string; Latest: Integer);
     function NextVersion(Increment: Int64): string;
     function CommentPrefix(const Name: string): string;
@@ -335,7 +335,7 @@ begin
   Result := FEntries[First].Name;
 end;
 
-procedure TVersionHistory.DeleteEmpty(const Name: string; Latest: Integer);
+procedure TVersionHistory.DeleteCurrent(const Name: string; Latest: Integer; DeleteRevisions: Boolean);
 begin
   if Name <> Current then
     raise EScuError.CreateFmt('Only the current version (%s) can be deleted.', [Current]);
@@ -343,8 +343,8 @@ begin
     raise EScuError.Create('Cannot delete the only library version.');
   if Locked then
     raise EScuError.CreateFmt('Version %s is locked.', [Name]);
-  if BaseRevision(Count - 1) <> Latest then
-    raise EScuError.CreateFmt('Version %s contains deck revisions and cannot be deleted.', [Name]);
+  if not DeleteRevisions and (BaseRevision(Count - 1) <> Latest) then
+    raise EScuError.CreateFmt('Version %s contains deck revisions. Use delete_revisions=yes to delete them with the version.', [Name]);
   FSerialized.Delete(Count - 1);
   SetLength(FEntries, Count - 1);
 end;

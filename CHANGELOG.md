@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `delete_version` accepts `delete_revisions=yes` to remove a populated open successor and its revisions in one audited transaction.
+
+- `extract_deck` reports the output path and whether it wrote the file or its contents already matched.
+
+- Show the current version’s lock status in the library summary and interactive opening display.
+
 - Display full version descriptions below each metadata row, preserving line and paragraph breaks.
 
 - Create hidden library lock files and continue to honor existing visible locks.

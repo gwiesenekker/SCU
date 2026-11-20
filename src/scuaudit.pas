@@ -194,10 +194,21 @@ begin
   First := IntegerField(Contents, 'first_revision');
   Count := IntegerField(Contents, 'revision_count');
   Digests := TJSONArray(Field(Contents, 'revision_sha256', jtArray));
-  if not IsHexDigest(FHeaderDigest, HashLength) or (Count < FRevisionCount) or
+  if not IsHexDigest(FHeaderDigest, HashLength) or (Count < 0) or
     (Count > High(Integer)) or (First < 1) or (First > Count + 1) or
     (Digests.Count <> Count - First + 1) then
     raise EScuError.Create('Invalid saved contents in audit log.');
+  if Assigned(Contents.Find('removed_revisions')) then
+  begin
+    if (FPendingCommand <> 'delete_version') or (Count >= FRevisionCount) or
+      (IntegerField(Contents, 'removed_revisions') <> FRevisionCount - Count) or
+      (First <> Count + 1) then
+      raise EScuError.Create('Invalid version deletion in audit log.');
+    while (FContents.Count > 0) and (FContents.Keys[FContents.Count - 1] > Count) do
+      FContents.Delete(FContents.Count - 1);
+  end
+  else if Count < FRevisionCount then
+    raise EScuError.Create('Unexplained revision count decrease in audit log.');
   FRevisionCount := Count;
   for Index := 0 to Digests.Count - 1 do
   begin

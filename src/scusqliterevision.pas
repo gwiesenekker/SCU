@@ -26,6 +26,7 @@ type
     function ReadRevision(Sequence: Integer): TJSONObject;
     function ReadRevisionCopyMetadata(Sequence: Integer): RawByteString;
     procedure SaveMetadata(const Payload: RawByteString);
+    procedure RemoveVersionTail(KeepCount: Integer; const Version: string);
     procedure AppendRevision(Sequence: Integer;
       const Deck, Version, DeckRevision, Payload, CopyMetadata: RawByteString; Deleted: Boolean);
   end;
@@ -171,6 +172,29 @@ begin
     'ON CONFLICT(id) DO UPDATE SET generation = generation + 1, payload = excluded.payload');
   try
     Statement.Bind(1, Payload);
+    Statement.Step;
+  finally
+    Statement.Free;
+  end;
+end;
+
+procedure TSQLiteRevisionStore.RemoveVersionTail(KeepCount: Integer; const Version: string);
+var
+  Statement: TSQLiteStatement;
+begin
+  Statement := FDatabase.Prepare('DELETE FROM deck_revisions WHERE sequence > ? AND library_version = ?');
+  try
+    Statement.Bind(1, KeepCount);
+    Statement.Bind(2, Version);
+    Statement.Step;
+  finally
+    Statement.Free;
+  end;
+  if RevisionCount <> KeepCount then
+    raise EScuError.Create('Stored deck revisions do not match the selected version.');
+  Statement := FDatabase.Prepare('DELETE FROM pending_working_exports WHERE library_version = ?');
+  try
+    Statement.Bind(1, Version);
     Statement.Step;
   finally
     Statement.Free;

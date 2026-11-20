@@ -564,26 +564,26 @@ class ScuIntegration(portable_cli.PortableCliTests):
 
 
     def test_library_versions_are_columns_and_do_not_change_stored_configuration(self):
-        def check(version, previous):
+        def check(version, previous, status):
             before = self.read_library()["header"]
             summary, output = self.run_scu("disl").split("\n", 1)
             self.assertEqual(summary, f'Library "{self.library}".')
             attributes = dict(re.split(r" {2,}", line, maxsplit=1)
                               for line in output.splitlines()[1:])
-            self.assertEqual(attributes["current_version"], version)
+            self.assertEqual(attributes["current_version"], f"{version} ({status})")
             self.assertEqual(attributes["previous_locked_version"], previous)
             self.assertNotIn("versions", attributes)
             self.assertEqual(self.read_library()["header"], before)
             self.assertNotIn("previous_locked_version", before)
-        check("1.0", "none")
+        check("1.0", "none", "unlocked")
         self.run_scu("locv", "d=First")
-        check("1.0", "none")
+        check("1.0", "none", "locked")
         self.run_scu("crev", "1.1")
-        check("1.1", "1.0")
+        check("1.1", "1.0", "unlocked")
         self.run_scu("locv", "d=Second")
-        check("1.1", "1.0")
+        check("1.1", "1.0", "locked")
         self.run_scu("crev", "1.2")
-        check("1.2", "1.1")
+        check("1.2", "1.1", "unlocked")
         self.run_scu("verify_audit_trail")
 
     def test_removed_version_listing(self):
@@ -2951,7 +2951,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         self.run_scu("show_deck_history", "number=1,25", error="Expected float", executable=executable)
         self.run_scu("show_deck_history", "number=nan", error="Expected float", executable=executable)
         self.run_scu("show_deck_history", "dn=1.25", error="Unknown argument dn", executable=executable)
-        self.assertEqual(self.run_scu("extd", "dn=1.25", "of=old-alias", executable=executable), "")
+        self.assertIn('old-alias".', self.run_scu("extd", "dn=1.25", "of=old-alias", executable=executable))
 
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
         extracts = [event for event in events if event.get("command") == "extract_deck"]

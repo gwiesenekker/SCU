@@ -106,7 +106,7 @@ type
     function PreviousDeckSnapshot(const Name: string; AtRevision: Integer): TLibrarySnapshot;
     procedure LockVersion(const Description: string);
     function SuggestedNextVersion: string;
-    procedure DeleteVersion(const Name: string);
+    procedure DeleteVersion(const Name: string; DeleteRevisions: Boolean);
     procedure CreateVersion(const Name: string);
     function CurrentVersion: string;
     function VersionAt(Revision: Integer): string;
@@ -609,9 +609,18 @@ begin
     MarkModified;
 end;
 
-procedure TDeckLibrary.DeleteVersion(const Name: string);
+procedure TDeckLibrary.DeleteVersion(const Name: string; DeleteRevisions: Boolean);
+var
+  Base: Integer;
 begin
-  FStore.Header.DeleteVersion(Name, Revision);
+  Base := VersionHistory[VersionCount - 1].BaseRevision;
+  FStore.Header.DeleteVersion(Name, Revision, DeleteRevisions);
+  while Revision > Base do
+    FStore.RemoveLast;
+  if Base = 0 then
+    FStore.Header.SetLastModifiedDeck('')
+  else
+    FStore.Header.SetLastModifiedDeck(FStore[Base - 1].Name);
   MarkModified;
 end;
 

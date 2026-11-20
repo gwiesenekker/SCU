@@ -34,7 +34,7 @@ type
     function SetFilePatterns(Patterns: TStrings): Boolean;
     procedure SetLastModifiedDeck(const Deck: string);
     function SuggestedNextVersion: string;
-    procedure DeleteVersion(const Name: string; RevisionCount: Integer);
+    procedure DeleteVersion(const Name: string; RevisionCount: Integer; DeleteRevisions: Boolean);
     procedure CreateVersion(const Name: string; RevisionCount: Integer);
     function CloneJSON: TJSONObject;
     // The caller owns the configuration copy; version history is excluded.
@@ -361,9 +361,9 @@ begin
   end;
 end;
 
-procedure TLibraryHeader.DeleteVersion(const Name: string; RevisionCount: Integer);
+procedure TLibraryHeader.DeleteVersion(const Name: string; RevisionCount: Integer; DeleteRevisions: Boolean);
 begin
-  Versions.DeleteEmpty(Name, RevisionCount);
+  Versions.DeleteCurrent(Name, RevisionCount, DeleteRevisions);
   FSerialized.Strings['current_version'] := Versions.Current;
   FSerialized.Strings['comment_prefix'] := Versions.CommentPrefix(Versions.Current);
 end;

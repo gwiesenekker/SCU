@@ -506,6 +506,21 @@ class PortableCliTests(unittest.TestCase):
         self.run_scu("verify_audit_trail")
 
 
+    def test_extract_reports_writes_and_identical_working_files(self):
+        self.store("book.c", b"stored source\n")
+        self.store("other.c", b"another deck\n")
+        path = self.root / "book.c"
+        self.assertIn('Wrote "', self.run_scu("extd", "book.c"))
+        timestamp = path.stat().st_mtime_ns
+        message = self.run_scu("extd", "book.c")
+        self.assertIn('book.c" already matches deck version 1.0-0.000.', message)
+        self.assertEqual(path.stat().st_mtime_ns, timestamp)
+        path.write_bytes(b"local edit\n")
+        self.run_scu("extd", "book.c", error="Use overwrite=yes")
+        self.assertEqual(path.read_bytes(), b"local edit\n")
+        self.assertIn('Wrote "', self.run_scu("extd", "book.c", "o=y", "b=n"))
+        self.assertEqual(path.read_bytes(), b"stored source\n")
+
     def standalone_cli(self):
         directory = self.root / 'standalone'
         directory.mkdir()
@@ -590,6 +605,39 @@ class PortableCliTests(unittest.TestCase):
         self.run_scu("delv", "8.1307", error="contains deck revisions")
         self.run_scu("locv", "Release")
         self.run_scu("delv", "8.1307", error="is locked")
+        self.run_scu("verat")
+
+    def test_delete_populated_version_and_reuse_its_name(self):
+        self.store("main", b"baseline")
+        self.run_scu("locv", "Baseline")
+        self.run_scu("crev", "1.1")
+        self.run_scu("deld", "main")
+        self.store("added", b"new")
+        self.store("added", b"edited")
+        working = self.root / "added"
+        working.write_bytes(b"external edit")
+        self.run_scu("delv", "1.0", "dr=y", error="Only the current version")
+        with closing(sqlite3.connect(self.library, isolation_level=None)) as db:
+            before = self.sqlite_state(db)
+            db.executescript("""
+                CREATE TRIGGER fail_version_deletion BEFORE INSERT ON audit_records
+                WHEN json_extract(substr(NEW.line, 66), '$.saved_contents.removed_revisions') > 0
+                BEGIN SELECT RAISE(ABORT, 'injected audit failure'); END;
+            """)
+            self.run_scu("delv", "1.1", "dr=y", error="injected audit failure")
+            self.assertEqual(self.sqlite_state(db), before)
+            db.execute("DROP TRIGGER fail_version_deletion")
+        self.assertIn("Removed 3 deck revision(s)", self.run_scu("delv", "1.1", "dr=y"))
+        self.assertEqual(working.read_bytes(), b"external edit")
+        self.assertEqual(self.read_library()["header"]["last_modified_deck"], "main")
+        self.assertNotIn("added", self.run_scu("disdl"))
+        self.run_scu("extd", "main", "of=check")
+        self.assertEqual((self.root / "check").read_bytes(), b"baseline")
+        self.run_scu("verat")
+        self.run_scu("crev", "1.1")
+        self.store("main", b"new revision")
+        self.run_scu("locv", "Locked successor")
+        self.run_scu("delv", "1.1", "dr=y", error="is locked")
         self.run_scu("verat")
 
     def test_library_json_switch_and_audit_verification_abbreviation(self):

@@ -164,7 +164,7 @@
     {
       "name": "delete_version",
       "aliases": ["delv"],
-      "summary": "Undo creation of an empty open version.",
+      "summary": "Delete the current unlocked successor version.",
       "arguments": [
         {
           "name": "version",
@@ -172,9 +172,27 @@
           "aliases": ["v"],
           "value": "scu$required",
           "description": "Exact name of the current open version to remove."
+        },
+        {
+          "name": "delete_revisions",
+          "type": "enum",
+          "aliases": ["dr"],
+          "value": "no",
+          "prompt_for_default": false,
+          "description": "Delete all deck revisions stored in the selected version.",
+          "values": [
+            {
+              "name": "yes",
+              "aliases": ["y"]
+            },
+            {
+              "name": "no",
+              "aliases": ["n"]
+            }
+          ]
         }
       ],
-      "help": "Return to the preceding locked version. The current version must have no deck revisions of its own. Inherited decks are preserved. The only version in a library cannot be deleted."
+      "help": "Return to the preceding locked version. Use delete_revisions=yes to remove all revisions belonging to this version. The default permits deletion only of an empty version. Working files stay on disk. Inherited decks are preserved. The only version in a library cannot be deleted."
     },
     {
       "name": "display_audit_trail",
@@ -385,7 +403,7 @@
           ]
         }
       ],
-      "help": "Show the library path, followed by aligned configuration attributes and values, including current_version, previous_locked_version, editor, and build_command. Omit the versions array; use display_version_history for history. SCU also runs this command when opening an existing library at a terminal. Use json=yes for the complete JSON header."
+      "help": "Show the library path, followed by aligned configuration attributes and values, including current_version with its lock status in parentheses, previous_locked_version, editor, and build_command. Omit the versions array; use display_version_history for history. SCU also runs this command when opening an existing library at a terminal. Use json=yes for the complete JSON header."
     },
     {
       "name": "display_version",

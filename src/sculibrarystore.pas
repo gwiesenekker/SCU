@@ -269,10 +269,10 @@ begin
   if Database.Revisions.StateKey <> FSavedState then
     raise EScuError.Create('The saved library changed outside this session. Unsaved changes are still in this session.');
   SavedCount := Database.Revisions.RevisionCount;
-  if SavedCount > Count then
-    raise EScuError.Create('SQLite library contains newer revisions.');
   if SavedCount <> FSavedRevisionCount then
     raise EScuError.Create('The saved library changed outside this session. Unsaved changes are still in this session.');
+  if SavedCount > Count then
+    Database.Revisions.RemoveVersionTail(Count, Database.Revisions.ReadCurrentVersion);
   Database.Revisions.SaveMetadata(FMetadata.AsJSON);
   for Index := SavedCount to Count - 1 do
   begin
@@ -281,7 +281,10 @@ begin
       FormatFixed(Entry.Number, 3), Entry.Serialized, Entry.CopyMetadataJSON, Entry.Deleted);
   end;
   Save.StateKey := Database.Revisions.StateKey;
-  Save.FirstRevision := FSavedRevisionCount + 1;
+  if SavedCount > Count then
+    Save.FirstRevision := Count + 1
+  else
+    Save.FirstRevision := SavedCount + 1;
 end;
 
 procedure TLibraryStore.AcceptSave(const Save: TLibrarySave);
@@ -301,6 +304,8 @@ begin
   try
     Result.Add('header_sha256', Header.Digest);
     Result.Add('revision_count', Count);
+    if FSavedRevisionCount > Count then
+      Result.Add('removed_revisions', FSavedRevisionCount - Count);
     Result.Add('first_revision', Save.FirstRevision);
     Digests := TJSONArray.Create;
     Result.Add('revision_sha256', Digests);

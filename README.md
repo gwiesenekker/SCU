@@ -673,6 +673,7 @@ scu extract_deck main.pas revision=0.001 version=1.1 build=no
 scu extract_version version=1.1
 ```
 
+`extract_deck` reports the output path and whether it wrote the file or found matching contents.
 Existing identical files can be tracked without replacement. Differing untracked
 or locally edited files require `overwrite=yes`. Extraction can explicitly restore
 working sources; no export may overwrite SQLite storage. Separate sessions
@@ -755,7 +756,7 @@ scu display_deck main.pas limit=10
 scu display_deck_list
 ```
 
-To undo an accidental `crev 8.1307`, enter `delv 8.1307`. This returns to the preceding locked version if 8.1307 is still open and has no deck revisions of its own. Inherited decks are safe.
+To undo an accidental `crev 8.1307`, enter `delv 8.1307`. This returns to the preceding locked version if 8.1307 is still open and has no deck revisions of its own. To remove a populated open version and its stored deck revisions, enter `delv 8.1307 delete_revisions=yes`. Earlier versions, audit history, and working files are preserved.
 
 Lock descriptions are required. To write a multiline description in the configured editor, enter `locv` at the SCU prompt or run `scu ln=project.sqlite locv` from a terminal. Save and close to lock, or leave it empty to cancel. Batch input requires an explicit description. Lock
 timestamps are recorded in UTC. Deck and version listings display local time with the UTC offset in effect on the recorded date. `version_increment` defaults to `0.01`; explicit
