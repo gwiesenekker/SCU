@@ -85,7 +85,7 @@ var
   PatternList: TStringList;
   Index: Integer;
 begin
-  Settings.ChangePrefix := Context.Command.HasArgument('comment-prefix');
+  Settings.ChangePrefix := Context.Command.HasArgument('comment_prefix');
   Settings.ChangeBuild := Context.Command.HasArgument('build_command');
   Settings.ChangeReleaseDirectory := Context.Command.HasArgument('release_directory');
   Settings.ReleaseDirectory := Context.Command.Argument('release_directory');

@@ -29,7 +29,7 @@ type
   end;
 implementation
 uses SysUtils, Dialogs, ExtCtrls, ButtonPanel, ScuLibraryNames;
-const Names: array[0..4] of string = ('comment-prefix','editor','version_increment','revision_increment','release_directory');
+const Names: array[0..4] of string = ('comment_prefix','editor','version_increment','revision_increment','release_directory');
   Keys: array[0..4] of string = ('comment_prefix','editor','version_increment','revision_increment','release_directory');
   Titles: array[0..4] of string = ('Default comment string (new decks)','External editor (JSON argument array)',
     'Version increment','Deck revision increment','Release directory');

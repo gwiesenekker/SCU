@@ -86,7 +86,7 @@ begin
     if dfUntracked in Check.Issues then Explain('untracked. No export record exists for this file.');
   end;
   if dfInterrupted in Check.Issues then
-    Explain('interrupted export. Recovery could not confirm completion; re-export this file with replace=yes to resolve it.');
+    Explain('interrupted export. Recovery could not confirm completion; re-export this file with overwrite=yes to resolve it.');
 end;
 
 constructor TDeckVerifier.Create(const Context: TCommandContext);

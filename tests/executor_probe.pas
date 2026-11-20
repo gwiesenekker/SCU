@@ -226,7 +226,7 @@ begin
     Arguments[0].Value := 'example.pas';
     Arguments[0].Provided := True;
     Arguments[1].Name := 'from_file';
-    Arguments[2].Name := 'comment-prefix';
+    Arguments[2].Name := 'comment_prefix';
     Arguments[2].Value := '#';
     Arguments[2].Provided := True;
     Command := TScuCommand.Create('create_deck', Arguments);

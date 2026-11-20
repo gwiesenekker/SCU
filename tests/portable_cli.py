@@ -197,7 +197,7 @@ class PortableCliTests(unittest.TestCase):
 
     def test_deleted_decks_stay_absent_until_recreated_and_follow_revision_numbering(self):
         self.store("main", b"version one\n")
-        self.run_scu("locv", "desc=First")
+        self.run_scu("locv", "d=First")
         before = self.read_library()
         self.run_scu("deld", "main", error="Version 1.0 is locked")
         self.assertEqual(self.read_library(), before)
@@ -207,7 +207,7 @@ class PortableCliTests(unittest.TestCase):
         self.assertIn("main\t1.0-0.000", self.table_data(self.run_scu("disdl", "v=1.0")))
         self.run_scu("extd", "main", "old", "v=1.0")
         self.assertEqual((self.root / "old").read_bytes(), b"version one\n")
-        self.run_scu("locv", "desc=Removed")
+        self.run_scu("locv", "d=Removed")
         self.run_scu("crev", "1.2")
         self.assertEqual(self.table_data(self.run_scu("disdl")), "")
         self.assertIn("revision 0.000", self.run_scu("cred", "main"))
@@ -228,7 +228,7 @@ class PortableCliTests(unittest.TestCase):
         before = self.read_library()
         self.run_scu("deld", "main", error='has reached the revision limit')
         self.assertEqual(self.read_library(), before)
-        self.run_scu("locv", "desc=Full")
+        self.run_scu("locv", "d=Full")
         self.run_scu("crev", "1.1")
         self.assertIn("revision 0.000", self.run_scu("deld", "main"))
         self.assertIn("revision 0.999", self.run_scu("cred", "main"))
@@ -239,7 +239,7 @@ class PortableCliTests(unittest.TestCase):
     def test_deletion_and_recreation_diffs_use_missing_file_endpoints(self):
         self.store("main", b"original\n")
         self.run_scu("cred", "empty")
-        self.run_scu("locv", "desc=First")
+        self.run_scu("locv", "d=First")
         self.run_scu("crev", "1.1")
         self.run_scu("deld", "main")
         self.run_scu("deld", "empty")
@@ -250,9 +250,9 @@ class PortableCliTests(unittest.TestCase):
         diff = self.run_scu("disvd", "output_format=unified")
         self.assertIn("Only in version 1.0: empty (empty deck)", diff)
         self.assertIn("+++ /dev/null", diff)
-        self.run_scu("locv", "desc=Removed")
+        self.run_scu("locv", "d=Removed")
         self.run_scu("crev", "1.2")
-        self.run_scu("locv", "desc=Still absent")
+        self.run_scu("locv", "d=Still absent")
         self.run_scu("crev", "1.3")
         self.store("main", b"returned\n")
         self.run_scu("cred", "empty")
@@ -304,7 +304,7 @@ class PortableCliTests(unittest.TestCase):
         self.store("main", b"second\n")
         self.run_scu("extd", "main", "expanded", "build=n")
         event = json.loads(self.audit_lines()[-2].split(b" ", 1)[1])
-        self.assertEqual(event["parameters"], {"deck_name": "main", "output_file": "expanded", "build": "no", "version": "scu$current_version", "replace": "no"})
+        self.assertEqual(event["parameters"], {"deck_name": "main", "output_file": "expanded", "build": "no", "version": "scu$current_version", "overwrite": "no"})
         self.assertNotIn("options", event)
         self.assertEqual(event["provided_arguments"], ["deck_name", "output_file", "build"])
         self.run_scu("extd", "main", "original", "0.000")
@@ -340,7 +340,7 @@ class PortableCliTests(unittest.TestCase):
         self.store("main", b"original")
         self.store("main", b"edited")
         self.run_scu("deld", "main")
-        self.run_scu("locv", "desc=First")
+        self.run_scu("locv", "d=First")
         self.run_scu("crev", "123456789.1234567890")
         self.run_scu("cred", "main")
         before = self.read_library()
@@ -366,7 +366,7 @@ class PortableCliTests(unittest.TestCase):
     def test_display_version_lists_latest_changes_only_in_the_selected_version(self):
         for name in ("inherited", "main", "removed", "recreated"):
             self.store(name, b"original")
-        self.run_scu("locv", "desc=First")
+        self.run_scu("locv", "d=First")
         self.run_scu("crev", "1.1")
         self.store("main", b"changed")
         self.store("main", b"original")  # A recorded edit still counts after reverting bytes.
@@ -398,7 +398,7 @@ class PortableCliTests(unittest.TestCase):
                           ("disv", "--version", "1.1")):
             self.assertEqual(self.run_scu(*arguments), output)
         self.assertEqual(self.read_library(), before)
-        self.run_scu("locv", "desc=Second")
+        self.run_scu("locv", "d=Second")
         self.run_scu("crev", "1.2")
         self.run_scu("cred", "removed")
         self.assertEqual(self.run_scu("disv", "1.1"), output)
@@ -412,9 +412,9 @@ class PortableCliTests(unittest.TestCase):
             before = self.audit_lines()
             self.run_scu(retired, "1.1", error="Unknown command")
             self.assertEqual(self.audit_lines(), before)
-        self.run_scu("locv", "desc=First")
+        self.run_scu("locv", "d=First")
         self.assertEqual(self.run_scu("create_version", "v=1.1"), "Created version 1.1")
-        self.run_scu("locv", "desc=Second")
+        self.run_scu("locv", "d=Second")
         self.assertEqual(self.run_scu("crev"), "Created version 1.11")
         self.assertEqual(self.read_library()["header"]["current_version"], "1.11")
         self.assertIn("create_version, crev", self.run_scu("disc", "crev"))
@@ -443,7 +443,7 @@ class PortableCliTests(unittest.TestCase):
         self.assertEqual(self.run_scu("disdl"), "Deck name  Deck version")
         self.store("a", b"first")
         self.store("long-deck-name.pas", b"second")
-        self.run_scu("locv", "desc=First")
+        self.run_scu("locv", "d=First")
         self.run_scu("crev", "123456789.1234567890")
         self.store("a", b"changed")
         self.run_scu("cred", "gone")
@@ -465,7 +465,7 @@ class PortableCliTests(unittest.TestCase):
         for revision in range(12):
             self.store("main", str(revision).encode())
         self.run_scu("deld", "main")
-        self.run_scu("locv", "desc=First")
+        self.run_scu("locv", "d=First")
         self.run_scu("crev", "1.1")
         self.run_scu("cred", "main")
         full = self.run_scu("disd", "main", "limit=0").splitlines()
@@ -502,6 +502,42 @@ class PortableCliTests(unittest.TestCase):
         self.run_scu("verify_audit")
 
 
+    def test_shipped_argument_aliases_use_initials_and_help_matches_catalog(self):
+        catalog = json.loads(SCU.with_name('commands.json').read_bytes())
+        definitions = [catalog['library_argument'], catalog['batch_argument']]
+        for command in catalog['commands']:
+            definitions.extend(command.get('arguments', []))
+            help_text = self.run_scu('disc', command['name'])
+            for parameter in command.get('arguments', []):
+                label = parameter['name'] + ' (' + ', '.join(parameter['aliases']) + ')'
+                self.assertIn(label + ' : ', help_text)
+            spellings = [name.casefold() for parameter in command.get('arguments', [])
+                         for name in [parameter['name'], *parameter['aliases']]]
+            self.assertEqual(len(spellings), len(set(spellings)), command['name'])
+        for parameter in definitions:
+            with self.subTest(parameter=parameter['name']):
+                self.assertRegex(parameter['name'], r'^[a-z]+(?:_[a-z]+)*$')
+                self.assertEqual(parameter['aliases'], [''.join(word[0] for word in parameter['name'].split('_'))])
+
+    def test_extract_aliases_distinguish_output_revision_and_overwrite(self):
+        self.store('main.c', b'old\n')
+        self.store('main.c', b'new\n')
+        directory = self.root / 'output'
+        directory.mkdir()
+        (directory / 'main.c').write_bytes(b'external edits\n')
+        self.run_scu('extv', 'v=1.0', 'od=' + str(directory), 'o=y', 'b=n')
+        self.assertEqual((directory / 'main.c').read_bytes(), b'new\n')
+        self.run_scu('extd', 'dn=main.c', 'of=' + str(directory / 'main.c'), 'r=0.000', 'o=y', 'b=n')
+        self.assertEqual((directory / 'main.c').read_bytes(), b'old\n')
+        events = [json.loads(line.split(b' ', 1)[1]) for line in self.audit_lines()]
+        command = next(e for e in reversed(events) if e.get('command') == 'extract_deck')
+        self.assertEqual(command['parameters']['revision'], '0.000')
+        self.assertEqual(command['parameters']['overwrite'], 'yes')
+        self.assertNotIn('replace', command['parameters'])
+        for option in ['directory=output', 'rp=yes', 'replace=yes']:
+            self.run_scu('extv', option, error='Unknown argument')
+        self.assertNotIn('replace (', self.run_scu('disc', 'extv'))
+
     def test_only_nos_command_abbreviations_and_documented_convenience_aliases_are_shipped(self):
         catalog = json.loads(SCU.with_name("commands.json").read_bytes())
         for command in catalog["commands"]:
@@ -533,7 +569,7 @@ class PortableCliTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1, result.stdout)
                 self.assertIn(expected, result.stderr)
                 self.assertEqual(working.read_bytes(), b"unsaved work\n")
-        result = self.invoke([SCU], cwd=self.root, input='extd o="" main.pas\n',
+        result = self.invoke([SCU], cwd=self.root, input='extd of="" main.pas\n',
                                 capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn(expected, result.stderr)
@@ -613,7 +649,7 @@ class PortableCliTests(unittest.TestCase):
 
     def test_library_version_selectors_work_consistently_across_commands(self):
         self.store("main", b"old")
-        self.run_scu("locv", "desc=First")
+        self.run_scu("locv", "d=First")
         self.run_scu("crev", "1.1")
         self.store("main", b"current")
         directory = self.root / "output"
@@ -639,7 +675,7 @@ class PortableCliTests(unittest.TestCase):
     def test_extract_version_lists_the_complete_snapshot_with_latest_deck_versions(self):
         self.store("inherited", b"inherited")
         self.store("removed", b"removed")
-        self.run_scu("locv", "desc=First")
+        self.run_scu("locv", "d=First")
         self.run_scu("crev", "1.1")
         self.store("zebra", b"first")
         self.store("alpha", b"alpha")
@@ -657,7 +693,7 @@ class PortableCliTests(unittest.TestCase):
         manifest = json.loads((self.root / ".scu-exports.json").read_bytes())
         self.assertEqual({e["deck_name"]: e["deck_version"] for e in manifest["files"]},
                          {"alpha": "1.1-0.000", "zebra": "1.1-0.001", "inherited": "1.0-0.000"})
-        self.run_scu("locv", "desc=Second")
+        self.run_scu("locv", "d=Second")
         self.run_scu("crev", "1.2")
         self.assertIn("Wrote 3 deck(s) for version 1.2", self.run_scu("extv"))
         self.run_scu("verify_audit")
@@ -665,7 +701,7 @@ class PortableCliTests(unittest.TestCase):
 
     def test_verify_decks_flags_older_root_revision_and_honors_selected_version(self):
         self.store("main", b"old")
-        self.run_scu("locv", "desc=First")
+        self.run_scu("locv", "d=First")
         self.run_scu("crev", "1.1")
         self.store("main", b"current")
         self.run_scu("extd", "main", "output", "v=1.0", "r=0.000")
@@ -721,7 +757,7 @@ class PortableCliTests(unittest.TestCase):
         self.store("main", b"first")
         self.store("unrelated", b"unrelated")
         self.store("main", b"second")
-        self.run_scu("locv", "desc=First")
+        self.run_scu("locv", "d=First")
         self.run_scu("crev", "1.1")
         self.store("unrelated", b"changed")
         self.run_scu("extd", "main", "inherited")
@@ -758,7 +794,7 @@ class PortableCliTests(unittest.TestCase):
             self.run_scu(command, "main", "result", "v=1.0-0.000", "r=0.000",
                          error="complete deck version without revision")
             self.assertEqual(output.read_bytes(), b"keep")
-        self.run_scu("extd", "main", "result", "r=0.000", "replace=yes")
+        self.run_scu("extd", "main", "result", "r=0.000", "overwrite=yes")
         self.assertEqual(output.read_bytes(), b"original")
         self.run_scu("extd", "main", "result", "r=0.002")
         self.assertEqual(output.read_bytes(), b"")
@@ -807,7 +843,7 @@ class PortableCliTests(unittest.TestCase):
         self.assertEqual(names(full), expected[-2:])
         self.assertIn("Release 11\\nMore detail", full)
         self.assertEqual(self.read_library()["header"]["versions"], entries)
-        self.run_scu("locv", "desc=Current is locked")
+        self.run_scu("locv", "d=Current is locked")
         self.assertEqual(names(self.run_scu("disvh", "limit=1")), expected[-1:])
         self.assertIn("locked", self.run_scu("disvh", "limit=1").splitlines()[-1])
         self.run_scu("verify_audit")
@@ -879,7 +915,7 @@ class PortableCliTests(unittest.TestCase):
     def test_library_names_append_sqlite_for_positional_and_named_forms(self):
         invocations = (("positional", ("positional", "inil")),
                        ("named", ("ln=named", "inil")),
-                       ("long", ("--library", "long", "inil")),
+                       ("long", ("--library_name", "long", "inil")),
                        ("alias", ("library_name=alias", "inil")),
                        ("flags", ("flags", "coe=yes", "inil")),
                        ("leading", ("coe=yes", "leading", "INIL")))
@@ -901,7 +937,7 @@ class PortableCliTests(unittest.TestCase):
 
     def test_library_names_reject_all_other_extensions_without_touching_files(self):
         for name in ("aap.json", "aap.db", "aap.sqlite3", "aap.JSON", "aap.backup", "aap.sqlite.bad", "aap."):
-            for arguments in ((name, "inil"), ("ln=" + name, "inil"), ("--library", name, "inil")):
+            for arguments in ((name, "inil"), ("ln=" + name, "inil"), ("--library_name", name, "inil")):
                 with self.subTest(arguments=arguments):
                     self.run_scu(*arguments, error="Library filename must have the .sqlite extension")
                     for suffix in ("", ".sqlite", ".lock", ".sqlite.lock"):
@@ -1072,7 +1108,7 @@ class PortableCliTests(unittest.TestCase):
         self.run_scu("disdd", "output_format=unified", error='Deck "aap.c" has no earlier revision')
         self.store("aap.c", b"second\n")
         self.store("other", b"unrelated\n")
-        output = self.run_scu("disdd", "dn=aap.c", "to=1.0-0.001", "output_format=unified")
+        output = self.run_scu("disdd", "dn=aap.c", "ts=1.0-0.001", "output_format=unified")
         self.assertIn("--- aap.c@1.0-0.000\n+++ aap.c@1.0-0.001", output)
         self.assertIn("-first\n+second", output)
 
@@ -1111,9 +1147,9 @@ class PortableCliTests(unittest.TestCase):
         def check_endpoints(before, after, from_deck, to_deck):
             arguments = ["main.pas"]
             if after is not None:
-                arguments.insert(0, f"to={after}")
+                arguments.insert(0, f"ts={after}")
             if before is not None:
-                arguments.append(f"from={before}")
+                arguments.append(f"fs={before}")
             result = self.invoke(
                 [SCU, "display_deck_diff", *arguments, "output_format=unified"],
                 cwd=self.root, capture_output=True, text=True, timeout=20,
@@ -1225,7 +1261,7 @@ class PortableCliTests(unittest.TestCase):
         self.store("main", b"before\n")
         self.store("removed", b"gone\n")
         self.store("inherited", b"unchanged\n")
-        self.run_scu("locv", "desc=First")
+        self.run_scu("locv", "d=First")
         self.run_scu("crev", "1.1")
         self.store("main", b"after\n")
         self.run_scu("deld", "removed")
@@ -1292,7 +1328,7 @@ class PortableCliTests(unittest.TestCase):
         attempt, outcome = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()[-2:]]
         self.assertEqual(attempt["command"], "release_version")
         self.assertEqual(attempt["parameters"], {"version": "scu$current_version",
-                         "output_directory": "scu$release_directory", "replace": "no"})
+                         "output_directory": "scu$release_directory", "overwrite": "no"})
         self.assertEqual(outcome["snapshot"]["version"], "1.0")
         self.assertTrue(self.run_scu("disc", "relv").startswith("release_version, relv\n"))
         for spelling in ("expand_version", "expv"):
@@ -1319,7 +1355,7 @@ class PortableCliTests(unittest.TestCase):
     def test_batch_continue_option_aliases_boolean_validation_and_exit_status(self):
         for index, options in enumerate((
                 ["continue_on_error=yes"], ["--continue_on_error", "y"],
-                ["coe=y"], ["--continue-on-error", "yes"],
+                ["coe=y"], ["--continue_on_error", "yes"],
                 ["ln=" + str(self.library), "continue_on_error=yes"])):
             with self.subTest(options=options):
                 result = self.invoke(

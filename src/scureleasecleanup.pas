@@ -41,13 +41,13 @@ begin
     begin
       CheckSessionInterrupt;
       if not Manifest.TracksFile(Context.LibraryPath, Name) and
-        not BooleanArgument(Context.Command, 'replace', 'no') then
+        not BooleanArgument(Context.Command, 'overwrite', 'no') then
       begin
         Preserved.Add(Name);
         Continue;
       end;
       Manifest.PlanDelete(Context.LibraryPath, IncludeTrailingPathDelimiter(Directory) + Name,
-        Version, BooleanArgument(Context.Command, 'replace', 'no'));
+        Version, BooleanArgument(Context.Command, 'overwrite', 'no'));
       Removed.Add(Name);
       Inc(Result);
     end;

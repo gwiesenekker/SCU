@@ -500,7 +500,7 @@ begin
   if (Previous <> '') and (Previous <> AuditSHA256(Bytes)) and not ReplaceExisting and
     (not Assigned(Existing) or (Existing.Data.SHA256 <> Previous) or Existing.Data.Interrupted or
       (not SameExportLibrary(Existing.Data.LibraryPath, CanonicalLibrary))) then
-    raise EScuError.Create('Refusing to overwrite untracked or edited output "' + OutputPath + '". Use replace=yes to replace it explicitly.');
+    raise EScuError.Create('Refusing to overwrite untracked or edited output "' + OutputPath + '". Use overwrite=yes to replace it explicitly.');
   if FPlanNames.Find(FileKey(Name)) <> nil then
     raise EScuError.Create('Duplicate output path in export batch: "' + OutputPath + '".');
   if FStageDirectory = '' then
@@ -553,10 +553,10 @@ begin
   Existing := TExportItem(FFiles.Find(FileKey(Name)));
   if (Previous <> '') and not ReplaceExisting and
     (not Assigned(Existing) or (not SameExportLibrary(Existing.Data.LibraryPath, CanonicalFile(LibraryPath)))) then
-    raise EScuError.Create('Refusing to remove untracked release file "' + OutputPath + '". Use replace=yes to remove it explicitly.');
+    raise EScuError.Create('Refusing to remove untracked release file "' + OutputPath + '". Use overwrite=yes to remove it explicitly.');
   if Assigned(Existing) and not ReplaceExisting and (Previous <> '') and
     ((Existing.Data.SHA256 <> Previous) or (not SameExportLibrary(Existing.Data.LibraryPath, CanonicalFile(LibraryPath)))) then
-    raise EScuError.Create('Refusing to remove edited release output "' + OutputPath + '". Use replace=yes to remove it explicitly.');
+    raise EScuError.Create('Refusing to remove edited release output "' + OutputPath + '". Use overwrite=yes to remove it explicitly.');
   Plan := TExportPlan.Create;
   FPlanned.Add(Plan);
   FPlanNames.Add(FileKey(Name), Plan);

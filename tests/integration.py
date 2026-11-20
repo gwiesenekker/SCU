@@ -45,7 +45,7 @@ class ScuIntegration(portable_cli.PortableCliTests):
                 self.assertEqual(result.returncode, 1, result.stdout)
                 self.assertIn("Expected a file path", result.stderr)
                 self.assertEqual(working.read_bytes(), b"unsaved work\n")
-        result = subprocess.run([SCU], cwd=self.root, input='extd o="" main.pas\n',
+        result = subprocess.run([SCU], cwd=self.root, input='extd of="" main.pas\n',
                                 capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("Expected a file path", result.stderr)
@@ -320,14 +320,14 @@ class ScuIntegration(portable_cli.PortableCliTests):
 
     def test_completion_skips_deleted_snapshots_but_keeps_history_and_old_versions(self):
         self.store("gone", b"original")
-        self.run_scu("locv", "desc=First")
+        self.run_scu("locv", "d=First")
         self.run_scu("crev", "1.1")
         self.run_scu("deld", "gone")
-        self.run_scu("locv", "desc=Deleted")
+        self.run_scu("locv", "d=Deleted")
         self.run_scu("crev", "1.2")
         with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
             read_until(b"scu> ")
-            os.write(terminal, b"extd v=1.0 dn=gon\t o=old\n")
+            os.write(terminal, b"extd v=1.0 dn=gon\t of=old\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "old").read_bytes(), b"original")
             os.write(terminal, b"disd gon\t\n")
@@ -336,7 +336,7 @@ class ScuIntegration(portable_cli.PortableCliTests):
             self.assertIn(b'Deck "gon" does not exist', read_until(b"scu> "))
             os.write(terminal, b"cred gone\n")
             read_until(b"scu> ")
-            prefix = b"extd dn=gone o=old v=1."
+            prefix = b"extd dn=gone of=old v=1."
             os.write(terminal, prefix + b"\t\t")
             matches = read_until(b"scu> " + prefix)
             self.assertIn(b"1.0", matches)
@@ -375,7 +375,7 @@ class ScuIntegration(portable_cli.PortableCliTests):
         help_text = self.run_scu("disc", "disv")
         self.assertIn("display_version, disv", help_text)
         self.assertIn("version (v) : string = scu$current_version", help_text)
-        self.run_scu("locv", "desc=Empty")
+        self.run_scu("locv", "d=Empty")
         self.run_scu("crev", "1.1")
         self.assertEqual(self.run_scu("disv"), output.replace('"1.0"', '"1.1"'))
         self.assertEqual(self.run_scu("disv", "9.9", error='Version "9.9" does not exist'), "")
@@ -396,7 +396,7 @@ class ScuIntegration(portable_cli.PortableCliTests):
         self.run_scu("verify_audit")
 
     def test_display_version_completes_library_versions_and_selectors(self):
-        self.run_scu("locv", "desc=First")
+        self.run_scu("locv", "d=First")
         self.run_scu("crev", "1.1")
         with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
             read_until(b"scu> ")
@@ -449,11 +449,11 @@ class ScuIntegration(portable_cli.PortableCliTests):
             self.assertEqual(self.read_library()["header"], before)
             self.assertNotIn("previous_locked_version", before)
         check("1.0", "none")
-        self.run_scu("locv", "desc=First")
+        self.run_scu("locv", "d=First")
         check("1.0", "none")
         self.run_scu("crev", "1.1")
         check("1.1", "1.0")
-        self.run_scu("locv", "desc=Second")
+        self.run_scu("locv", "d=Second")
         check("1.1", "1.0")
         self.run_scu("crev", "1.2")
         check("1.2", "1.1")
@@ -462,7 +462,7 @@ class ScuIntegration(portable_cli.PortableCliTests):
     def test_other_listings_use_headers_and_aligned_spaces(self):
         self.store("main", b"source")
         self.run_scu("relv")
-        self.run_scu("locv", "desc=First")
+        self.run_scu("locv", "d=First")
         self.run_scu("crev", "123456789.1234567890")
         cases = [
             (("lisv",), ["Version", "Status"]),
@@ -498,8 +498,8 @@ class ScuIntegration(portable_cli.PortableCliTests):
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines(database)]
         creation = events[2]
         self.assertEqual(creation["command"], "create_deck")
-        self.assertEqual(creation["parameters"], {"deck_name": "example.pas", "from_file": "", "comment-prefix": "#"})
-        self.assertEqual(creation["provided_arguments"], ["deck_name", "comment-prefix"])
+        self.assertEqual(creation["parameters"], {"deck_name": "example.pas", "from_file": "", "comment_prefix": "#"})
+        self.assertEqual(creation["provided_arguments"], ["deck_name", "comment_prefix"])
         self.assertNotIn("options", creation)
         self.assertIn("records=6 interrupted=0", self.run_scu(database, "verify_audit"))
 
@@ -614,7 +614,7 @@ class ScuIntegration(portable_cli.PortableCliTests):
         self.assertEqual((self.root / "main.pas").read_bytes(), b"new\n//SCU$VERSION\n")
         begin, outcome = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()[-2:]]
         self.assertEqual(begin["parameters"], {"deck_name": "scu$last_modified_deck",
-                                              "output_file": "scu$deck_name", "version": "scu$current_version", "replace": "no", "build": "yes"})
+                                              "output_file": "scu$deck_name", "version": "scu$current_version", "overwrite": "no", "build": "yes"})
         self.assertEqual(outcome["resolved_deck"], "main.pas")
         self.run_scu("extd", "output_file=last-expanded")
         self.assertEqual((self.root / "last-expanded").read_bytes(), b"new\n//SCU$VERSION\n")
@@ -622,7 +622,7 @@ class ScuIntegration(portable_cli.PortableCliTests):
         self.assertEqual((self.root / "main.pas").read_bytes(), b"new\n//SCU$VERSION\n")
         begin, outcome = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()[-2:]]
         self.assertEqual(begin["parameters"], {"deck_name": "scu$last_modified_deck",
-                                              "output_file": "scu$deck_name", "build": "yes", "version": "scu$current_version", "replace": "no"})
+                                              "output_file": "scu$deck_name", "build": "yes", "version": "scu$current_version", "overwrite": "no"})
         self.assertEqual(outcome["resolved_deck"], "main.pas")
         self.run_scu("extd", "other.pas")
         self.assertEqual((self.root / "other.pas").read_bytes(), b"unrelated\n")
@@ -756,7 +756,7 @@ int mkstemp(char *pattern) {
 
     def test_export_recovery_preserves_modified_files_and_requires_explicit_reexport(self):
         self.store("main", b"generated")
-        self.crash_export_write(3, self.root, "extd", "main", "custom.raw", "replace=yes")
+        self.crash_export_write(3, self.root, "extd", "main", "custom.raw", "overwrite=yes")
         output = self.root / "custom.raw"
         output.write_bytes(b"user edits after interruption")
         path = self.root / ".scu-exports.json"
@@ -771,14 +771,14 @@ int mkstemp(char *pattern) {
         self.assertEqual(path.read_bytes(), interrupted)
         self.assertEqual(output.read_bytes(), b"user edits after interruption")
         # An interrupted retry must retain the earlier unresolved provenance.
-        self.crash_export_write(2, self.root, "extd", "main", "custom.raw", "replace=yes")
+        self.crash_export_write(2, self.root, "extd", "main", "custom.raw", "overwrite=yes")
         self.assertIn("interrupted export", self.run_scu("verd", "od=.", error="need attention"))
         self.assertEqual(path.read_bytes(), interrupted)
         self.assertEqual(output.read_bytes(), b"user edits after interruption")
         # Unrelated exports can proceed without discarding or overwriting this file.
         self.run_scu("extd", "main", "different.raw")
         self.assertEqual(output.read_bytes(), b"user edits after interruption")
-        self.run_scu("extd", "main", "custom.raw", "replace=yes")
+        self.run_scu("extd", "main", "custom.raw", "overwrite=yes")
         self.assertEqual(output.read_bytes(), b"generated")
         self.assertNotIn("pending", json.loads(path.read_bytes()))
         self.assertFalse(any(e.get("interrupted_export") for e in json.loads(path.read_bytes())["files"]))
@@ -825,7 +825,7 @@ int mkstemp(char *pattern) {
 
     def test_extract_version_defaults_to_current_version_without_prompting(self):
         self.store("main", b"old")
-        self.run_scu("locv", "desc=First")
+        self.run_scu("locv", "d=First")
         self.run_scu("crev", "1.1")
         self.store("main", b"current")
         directory = self.root / "outputs"
@@ -884,7 +884,7 @@ int mkstemp(char *pattern) {
         self.store("boards.c", b"boards")
         self.store(name, b"hidden checksums")
         self.run_scu("relv", "v=scu$latest_version")
-        self.run_scu("locv", "desc=First")
+        self.run_scu("locv", "d=First")
         self.run_scu("crev", "1.1")
         path = self.root / "release" / ".scu-exports.json"
         before = path.read_bytes()
@@ -985,7 +985,7 @@ int mkstemp(char *pattern) {
         self.run_scu("extd", "main", "output", error="Export manifest")
         self.assertEqual(output.read_bytes(), b"keep")
         manifest.unlink()
-        self.run_scu("extd", "main", "output", "build=no", "replace=yes")
+        self.run_scu("extd", "main", "output", "build=no", "overwrite=yes")
         saved = manifest.read_bytes()
         self.run_scu("extd", "main", manifest, error="reserved for the SCU export manifest")
         self.assertEqual(manifest.read_bytes(), saved)
@@ -1305,7 +1305,7 @@ int mkstemp(char *pattern) {
         self.assertIn("1 unchanged", self.run_scu("impd", "main", source.name))
         source.write_bytes(b"different source")
         self.run_scu("impd", "main", source.name, error="revision limit")
-        self.run_scu("locv", "desc=First")
+        self.run_scu("locv", "d=First")
         self.run_scu("impd", "main", source.name, error="is locked")
         self.run_scu("crev", "1.1")
         self.run_scu("impd", "main", source.name)
@@ -1322,7 +1322,7 @@ int mkstemp(char *pattern) {
         self.store("main", b"old0")
         self.store("main", b"old1")
         self.store("inherited", b"inherited")
-        self.run_scu("locv", "desc=First")
+        self.run_scu("locv", "d=First")
         self.run_scu("crev", "1.1")
         self.store("main", b"new0")
         self.store("other", b"other0")
@@ -1333,13 +1333,13 @@ int mkstemp(char *pattern) {
             matches = read_until(b"scu> extd main v=1.0 r=0.00")
             self.assertIn(b"r=0.000", matches)
             self.assertIn(b"r=0.001", matches)
-            os.write(terminal, b"\x15extd main v=1.1 r=0.00\t o=current\n")
+            os.write(terminal, b"\x15extd main v=1.1 r=0.00\t of=current\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "current").read_bytes(), b"new0")
-            os.write(terminal, b"extd r=0.001 v=1.0 dn=ma\t o=old\n")
+            os.write(terminal, b"extd r=0.001 v=1.0 dn=ma\t of=old\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "old").read_bytes(), b"old1")
-            os.write(terminal, b"extd main r=0.001 v=1.\t o=filtered-version\n")
+            os.write(terminal, b"extd main r=0.001 v=1.\t of=filtered-version\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "filtered-version").read_bytes(), b"old1")
             os.write(terminal, b"quis\n")
@@ -1349,7 +1349,7 @@ int mkstemp(char *pattern) {
         source = b"'SCU$VERSION'\n"
         self.store("main.pas", source)
         self.store("shared.inc", b"shared")
-        self.run_scu("locv", "desc=First")
+        self.run_scu("locv", "d=First")
         self.run_scu("crev", "1.1")
         self.store("extra.inc", b"extra")
         for version, revision in (("1.0", 2), ("1.1", 3)):
@@ -1407,7 +1407,7 @@ path.with_suffix('.bak').write_text('editor backup')
 
         # Reopen the same list, edit while locked, and verify that no-op edits
         # do not rewrite metadata or advance its generation.
-        self.run_scu("locv", "desc=Configuration is library-wide")
+        self.run_scu("locv", "d=Configuration is library-wide")
         with closing(sqlite3.connect(self.library)) as database:
             before = database.execute("SELECT generation, payload FROM library").fetchone()
         self.assertEqual(self.run_scu("edit_file_patterns"), "Saved 5 file pattern(s).")
@@ -1544,7 +1544,7 @@ if pathlib.Path('remove-file').exists():
         self.run_scu("verify_audit")
 
     def test_header_configures_editor_and_preserves_old_comment_prefix(self):
-        self.run_scu("conl", "--comment-prefix", "#", "--editor", '["true"]')
+        self.run_scu("conl", "--comment_prefix", "#", "--editor", '["true"]')
         self.store("demo", b"#SCU$VERSION\n")
         self.assertEqual(self.run_scu("edit_deck", "demo"), "No changes to demo")
         self.assertEqual(len(self.read_library()["revisions"]), 1)
@@ -1558,7 +1558,7 @@ if pathlib.Path('remove-file').exists():
         self.run_scu("edit_deck", "demo", error="is locked")
         self.run_scu("create_version", "1.1")
         self.run_scu("edid", "noot", error='Deck "noot" does not exist in version 1.1.')
-        self.run_scu("conl", "--comment-prefix", "//", "--editor", '["false"]')
+        self.run_scu("conl", "--comment_prefix", "//", "--editor", '["false"]')
         self.run_scu("edit_deck", "demo", error="exit status 1")
         self.run_scu("extract_deck", "demo", "output", "--version", "1.0")
         self.assertEqual((self.root / "output").read_bytes(), b"#SCU$VERSION\nsaved text\n")
@@ -1706,17 +1706,17 @@ if pathlib.Path('remove-file').exists():
         for index in range(1, 22):
             self.run_scu("cred", f"deck-{index}")
         self.table_data(self.run_scu("disdl", "v=1.0"))
-        self.run_scu("extd", "dn=deck-21", "o=output copy")
+        self.run_scu("extd", "dn=deck-21", "of=output copy")
         before = self.audit_lines()
         history = self.table_data(self.run_scu("show_history")).splitlines()
         self.assertEqual(len(history), 20)
         self.assertEqual(history[0], 'create_deck deck_name=deck-4\tsucceeded')
         self.assertEqual(history[-2:], [
             "display_deck_list version=1.0\tsucceeded",
-            'extract_deck deck_name=deck-21 output_file="output copy" version="scu$current_version" replace=no build=yes\tsucceeded',
+            'extract_deck deck_name=deck-21 output_file="output copy" version="scu$current_version" overwrite=no build=yes\tsucceeded',
         ])
         self.assertEqual(self.table_data(self.run_scu("shoh", "2")).splitlines(), history[-2:])
-        self.assertEqual(self.table_data(self.run_scu("show_history", "nl=1")), history[-1])
+        self.assertEqual(self.table_data(self.run_scu("show_history", "nol=1")), history[-1])
         self.table_data(self.run_scu("show_history", "0", error="Expected a positive number_of_lines"))
         self.assertEqual(self.audit_lines(), before)
 
@@ -1730,7 +1730,7 @@ if pathlib.Path('remove-file').exists():
                                     capture_output=True, text=True, timeout=2)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.table_data(result.stdout).splitlines(), [
-            'extract_deck deck_name=missing output_file=output version="scu$current_version" replace=no build=yes\tfailed',
+            'extract_deck deck_name=missing output_file=output version="scu$current_version" overwrite=no build=yes\tfailed',
             'create_deck deck_name=saved\tsucceeded',
         ])
         self.assertEqual(self.audit_lines(), before)
@@ -1815,14 +1815,14 @@ if pathlib.Path('remove-file').exists():
         argument["type"] = "enum"
         argument["values"] = ["Ready now", "Wait later"]
         (self.root / "commands.json").write_text(json.dumps(catalog))
-        self.run_scu("locv", "desc=not allowed", executable=executable,
+        self.run_scu("locv", "d=not allowed", executable=executable,
                      error="Expected one of [Ready now, Wait later] for description")
         self.run_scu("locv", executable=executable, error="Missing required argument description")
         with self.terminal_session(TERM="xterm", executable=executable) as (process, terminal, read_until):
             read_until(b"scu> ")
             os.write(terminal, b"locv\n")
             prompt = read_until(b"description= ")
-            self.assertIn(b"description (desc) : enum [Ready now, Wait later] = scu$required", prompt)
+            self.assertIn(b"description (d) : enum [Ready now, Wait later] = scu$required", prompt)
             os.write(terminal, b"Re\t\n")
             self.assertIn(b"Locked version 1.0", read_until(b"scu> "))
             os.write(terminal, b'quis\n')
@@ -1830,7 +1830,7 @@ if pathlib.Path('remove-file').exists():
         self.assertEqual(self.read_library()["header"]["versions"][0]["description"], "Ready now")
         self.run_scu("crev", "1.1")
         result = subprocess.run([executable], cwd=self.root, capture_output=True, text=True, timeout=20,
-                                input="locv desc=\"Wait later\"\nquis\n")
+                                input="locv d=\"Wait later\"\nquis\n")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.read_library()["header"]["versions"][-1]["description"], "Wait later")
 
@@ -1872,13 +1872,13 @@ if pathlib.Path('remove-file').exists():
         self.assertIn("enum [short (s), full (f)] = full", self.run_scu("display_command", "disvh", executable=executable))
         with self.terminal_session(TERM="xterm", executable=executable) as (process, terminal, read_until):
             read_until(b"scu> ")
-            os.write(terminal, b"locv desc=publ\t\n")
+            os.write(terminal, b"locv d=publ\t\n")
             self.assertIn(b"Locked version 1.0", read_until(b"scu> "))
             os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
         self.assertEqual(self.read_library()["header"]["versions"][0]["description"], "Ready now")
         self.run_scu("crev", "1.1")
-        result = subprocess.run([executable], cwd=self.root, input="locv desc=\"do later\"\ndisvh\nquis\n",
+        result = subprocess.run([executable], cwd=self.root, input="locv d=\"do later\"\ndisvh\nquis\n",
                                 capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.read_library()["header"]["versions"][-1]["description"], "Wait later")
@@ -1972,7 +1972,7 @@ if pathlib.Path('remove-file').exists():
                 AND json_extract(substr(NEW.line, 66), '$.success') = 1
                 BEGIN SELECT RAISE(ABORT, 'injected lock audit failure'); END
             """)
-            self.run_scu("locv", "desc=Ready", error="injected lock audit failure")
+            self.run_scu("locv", "d=Ready", error="injected lock audit failure")
             database.execute("DROP TRIGGER reject_locked_outcome")
         entry = self.read_library()["header"]["versions"][0]
         self.assertFalse(entry["locked"])
@@ -1985,7 +1985,7 @@ if pathlib.Path('remove-file').exists():
             read_until(b"scu> ")
             os.write(terminal, b"locv\n")
             prompt = read_until(b"description= ")
-            self.assertIn(b"description (desc) : string = scu$required", prompt)
+            self.assertIn(b"description (d) : string = scu$required", prompt)
             process.send_signal(signal.SIGINT)
             self.assertIn(b"Command cancelled.", read_until(b"scu> "))
             self.assertFalse(self.read_library()["header"]["versions"][0]["locked"])
@@ -2128,7 +2128,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
                 self.skipTest("The second group is unavailable in this user namespace.")
             raise
         target.chmod(0o640)
-        self.run_scu("extd", "main", target, "replace=yes")
+        self.run_scu("extd", "main", target, "overwrite=yes")
         self.assertEqual(target.read_bytes(), b"replacement")
         self.assertEqual(target.stat().st_gid, group)
         self.assertEqual(target.stat().st_mode & 0o777, 0o640)
@@ -2667,7 +2667,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
 
     def test_version_and_interactive_diffs_share_whitespace_defaults_and_exact_option(self):
         self.store("main", b"a  b  \n")
-        self.run_scu("locv", "desc=First")
+        self.run_scu("locv", "d=First")
         self.run_scu("crev", "1.1")
         self.store("main", b"a\tb\n")
         self.assertEqual(self.run_scu("disvd"), "")
@@ -2697,7 +2697,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         self.store("main", b"old\ncontext\n")
         self.store("main", b"new\ncontext\n")
         expected = "1c1\n< old\n---\n> new"
-        self.assertEqual(self.run_scu("disdd", "main", "format=NORMAL"), expected)
+        self.assertEqual(self.run_scu("disdd", "main", "of=NORMAL"), expected)
         self.assertIn("@@ -1,2 +1,2 @@", self.run_scu("disdd", "main", "of=UNIFIED"))
         with self.terminal_session(TERM="dumb") as (process, terminal, read_until):
             read_until(b"scu> ")
@@ -2710,7 +2710,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         self.run_scu("disdd", "main", "of=invalid", error="Expected one of [normal, unified] for output_format")
         self.run_scu("disvd", "of=invalid", error="Expected one of [normal, unified] for output_format")
         help_text = self.run_scu("display_command", "disdd")
-        self.assertIn("output_format (format, of) : enum [normal, unified] = normal", help_text)
+        self.assertIn("output_format (of) : enum [normal, unified] = normal", help_text)
         self.assertIn("normal shows changed lines only", help_text)
 
     def test_normal_diff_search_fallback_emits_ranges_without_shared_lines(self):
@@ -2795,12 +2795,12 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         self.run_scu("show_deck_history", "number=1,25", error="Expected float", executable=executable)
         self.run_scu("show_deck_history", "number=nan", error="Expected float", executable=executable)
         self.run_scu("show_deck_history", "dn=1.25", error="Unknown argument dn", executable=executable)
-        self.assertEqual(self.run_scu("extd", "dn=1.25", "o=old-alias", executable=executable), "")
+        self.assertEqual(self.run_scu("extd", "dn=1.25", "of=old-alias", executable=executable), "")
 
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
         extracts = [event for event in events if event.get("command") == "extract_deck"]
-        self.assertEqual(extracts[-1]["parameters"], {"deck_name": "1.25", "output_file": "old-alias", "version": "scu$current_version", "replace": "no", "build": "yes"})
-        self.assertEqual(extracts[0]["parameters"], {"deck_name": "1.25", "output_file": "output with spaces", "revision": "0.000", "version": "scu$current_version", "replace": "no", "build": "yes"})
+        self.assertEqual(extracts[-1]["parameters"], {"deck_name": "1.25", "output_file": "old-alias", "version": "scu$current_version", "overwrite": "no", "build": "yes"})
+        self.assertEqual(extracts[0]["parameters"], {"deck_name": "1.25", "output_file": "output with spaces", "revision": "0.000", "version": "scu$current_version", "overwrite": "no", "build": "yes"})
 
     def test_executor_uses_argument_names_when_catalog_order_changes(self):
         self.store("main.pas", b"//SCU$VERSION\n")
@@ -2819,7 +2819,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
         attempt = next(event for event in events if event.get("command") == "extract_deck")
         self.assertEqual(attempt["arguments"], [str(path), "main.pas", "scu$current_version", "no", "no"])
-        self.assertEqual(attempt["parameters"], {"output_file": str(path), "deck_name": "main.pas", "build": "no", "version": "scu$current_version", "replace": "no"})
+        self.assertEqual(attempt["parameters"], {"output_file": str(path), "deck_name": "main.pas", "build": "no", "version": "scu$current_version", "overwrite": "no"})
         self.assertEqual(attempt["provided_arguments"], ["output_file", "deck_name", "build"])
 
     def test_library_first_and_named_invocation_share_the_same_library(self):
@@ -2828,7 +2828,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         (self.root / "source").write_text("project source")
         self.run_scu(f"ln={name}", "import_deck", "main.pas", "source")
         self.assertEqual(self.table_data(self.run_scu(f"library_name={name}", "disdl")), "main.pas\t1.0-0.000")
-        self.assertEqual(self.table_data(self.run_scu("--library", name, "disdl")), "main.pas\t1.0-0.000")
+        self.assertEqual(self.table_data(self.run_scu("--library_name", name, "disdl")), "main.pas\t1.0-0.000")
         self.assertEqual(self.table_data(self.run_scu("--ln", name, "disdl")), "main.pas\t1.0-0.000")
         self.table_data(self.run_scu("ln=", name, "disdl", error="Expected a library name"))
         self.assertEqual(self.table_data(self.run_scu("disdl")), "")
@@ -2941,7 +2941,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         self.assertEqual(commands, ["initialize_library", "import_deck", "extract_deck", "display_deck_list"])
         extract = next(event for event in events if event.get("command") == "extract_deck")
         self.assertEqual(extract["parameters"],
-                         {"deck_name": "main.pas", "output_file": "working copy.pas", "version": "scu$current_version", "replace": "no", "build": "yes"})
+                         {"deck_name": "main.pas", "output_file": "working copy.pas", "version": "scu$current_version", "overwrite": "no", "build": "yes"})
         self.assertIn("records=8 interrupted=0",
                       self.run_scu("interactive library", "verify_audit"))
         result = subprocess.run(
@@ -3020,9 +3020,9 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         self.assertNotIn("output_file", listing)
         help_text = self.run_scu("display_command", "command_name=extd")
         self.assertEqual(help_text.splitlines()[0], "extract_deck, extd")
-        self.assertIn("deck_name (deck, dn) : string = scu$last_modified_deck", help_text)
+        self.assertIn("deck_name (dn) : string = scu$last_modified_deck", help_text)
         self.assertIn("including COPY directives and macro text", help_text)
-        self.assertIn("output_file (o, output) : string = scu$deck_name\n"
+        self.assertIn("output_file (of) : string = scu$deck_name\n"
                       "    Destination for original bytes. Defaults to the selected revision's recorded source filename, or the deck name if absent; an explicit output_file is honored.", help_text)
         self.assertIn("revision (r) : string = scu$optional\n"
                       "    Deck revision within the selected library version, from 0.000 to 0.999. Omit to select the latest visible deck revision, including inherited decks.",
@@ -3069,6 +3069,9 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         catalog = json.loads((project / "commands.json").read_bytes())
         diff = next(command for command in catalog["commands"] if command["name"] == "display_deck_diff")
         diff["arguments"].reverse()
+        # Custom catalogs may define additional aliases; exercise nontrivial
+        # sorting independently of the shipped one-abbreviation convention.
+        catalog['library_argument']['aliases'] = ['library_name', 'ln']
         expected = json.loads(json.dumps(catalog))
 
         catalog["library_argument"]["aliases"].reverse()
@@ -3254,7 +3257,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         (self.root / "commands.json").write_text(json.dumps(definitions))
         help_text = self.run_scu("display_command", "extd", executable=executable)
         self.assertIn("Help loaded from a file.", help_text)
-        self.assertIn("output_file (o, output) : string = default output", help_text)
+        self.assertIn("output_file (of) : string = default output", help_text)
         self.assertIn("revision (r) : string = 0.000", help_text)
         self.run_scu("extd", "main.pas", executable=executable)
         self.assertEqual((self.root / "default output").read_bytes(), b"source")
@@ -3265,7 +3268,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         with self.terminal_session(TERM="dumb", executable=executable) as (process, terminal, read_until):
             read_until(b"scu> ")
             os.write(terminal, b"extd main.pas\n")
-            self.assertIn(b"output_file (o, output) : string = default output", read_until(b"output_file= "))
+            self.assertIn(b"output_file (of) : string = default output", read_until(b"output_file= "))
             os.write(terminal, b"\n")
             self.assertIn(b"revision (r) : string = 0.000", read_until(b"revision= "))
             os.write(terminal, b"\n")
@@ -3602,7 +3605,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         with self.terminal_session() as (process, terminal, read_until):
             read_until(b"scu> ")
             os.write(terminal, b"create_deck\n")
-            self.assertIn(b"deck_name (deck, dn) : string = scu$required", read_until(b"deck_name= "))
+            self.assertIn(b"deck_name (dn) : string = scu$required", read_until(b"deck_name= "))
             process.send_signal(signal.SIGINT)
             self.assertIn(b"Command cancelled.", read_until(b"scu> "))
             os.write(terminal, b'quis\n')
@@ -3766,7 +3769,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
             (self.root / "resume").touch()
             os.write(terminal, b"fg\n")
             self.assertIn(b"BUILD-RESUMED", read_until(b"scu> "))
-            os.write(terminal, b"extd main o=choice-\t\t")
+            os.write(terminal, b"extd main of=choice-\t\t")
             read_until(b"--More--")
             os.write(terminal, b"\x1a")
             self.assertIn(b"Stopped", read_until(b"test-shell> "))
@@ -3890,7 +3893,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
             read_until(b"scu> ")
             os.write(terminal, b"cred pending\n")
             read_until(b"scu> ")
-            os.write(terminal, b"extd pending o=choice-\t\t")
+            os.write(terminal, b"extd pending of=choice-\t\t")
             read_until(b"--More--")
             process.send_signal(signal.SIGTERM)
             self.assertEqual(process.wait(timeout=8), 128 + signal.SIGTERM)
@@ -4187,12 +4190,12 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
             self.assertIn(b"display_command_list", matches)
             self.assertIn(b"display_deck_list", matches)
             os.write(terminal, b"\x15")
-            os.write(terminal, b'import_de\tdeck_na\tmain.pas s\t"source file"\n')
+            os.write(terminal, b'import_de\tdeck_na\tmain.pas sf\t"source file"\n')
             self.assertRegex(read_until(b"scu> "), rb"main.pas +1.0-0.000 +new")
             os.write(terminal, b"extd\tdn\tmain.pas output_f\tcopy --rev\t0.000\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "copy").read_bytes(), b"source")
-            os.write(terminal, b"extd\tdn=main.pas o\tsecond rev\t0.000\n")
+            os.write(terminal, b"extd\tdn=main.pas of\tsecond rev\t0.000\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "second").read_bytes(), b"source")
             os.write(terminal, b'disdl\t--v\t1.0\n')
@@ -4221,7 +4224,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
             self.assertEqual(process.wait(timeout=5), 0)
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
         attempt = next(event for event in events if event.get("command") == "extract_deck")
-        self.assertEqual(attempt["parameters"], {"deck_name": "main.pas", "output_file": "expanded", "build": "no", "version": "1.0", "replace": "no"})
+        self.assertEqual(attempt["parameters"], {"deck_name": "main.pas", "output_file": "expanded", "build": "no", "version": "1.0", "overwrite": "no"})
 
     def test_tab_skips_a_positional_argument_with_an_empty_quoted_value_after_the_cursor(self):
         self.store("main", b"source")
@@ -4250,27 +4253,27 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
                 TERM="xterm", LC_ALL="C.UTF-8", columns=columns
             ) as (process, terminal, read_until):
                 read_until(b"scu> ")
-                os.write(terminal, b"extd o=pick-\t\t")
-                output = read_until(b"scu> extd o=pick-").decode()
+                os.write(terminal, b"extd of=pick-\t\t")
+                output = read_until(b"scu> extd of=pick-").decode()
                 rows = output.split("\r\n")[1:-1]
                 self.assertEqual({candidate for row in rows for candidate in row.split()},
-                                 {"o=" + name for name in names})
+                                 {"of=" + name for name in names})
                 for row in rows:
                     self.assertLessEqual(cells(row), columns)
                     self.assertEqual(len(row.split()), per_row)
                     if per_row == 2:
                         second = row.split()[1]
-                        self.assertEqual(cells(row[:row.index(second)]), 12)
+                        self.assertEqual(cells(row[:row.index(second)]), 13)
                 (self.root / "pick-a").unlink()
                 os.write(terminal, b"a\n")
                 read_until(b"scu> ")
                 self.assertEqual((self.root / "pick-a").read_bytes(), b"source")
 
                 if columns == 20:
-                    os.write(terminal, b"extd o=long-\t\t")
-                    output = read_until(b"scu> extd o=long-").decode()
+                    os.write(terminal, b"extd of=long-\t\t")
+                    output = read_until(b"scu> extd of=long-").decode()
                     rows = output.split("\r\n")[1:-1]
-                    labels = ["o=" + name for name in long_names]
+                    labels = ["of=" + name for name in long_names]
                     self.assertEqual(rows, [part for label in labels for part in (label[:20], label[20:])])
                     os.write(terminal, b"\x15")
 
@@ -4286,11 +4289,11 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
             os.write(terminal, b"disd\t\t")
             matches = read_until(b"scu> disd")
             self.assertIn(b"disdl", matches)
-            os.write(terminal, b"\x15extd replace=yes o=my\t\t")
-            matches = read_until(b"scu> extd replace=yes o=my\\ fi")
-            self.assertIn(b"o=my\\ file.txt", matches)
-            self.assertIn(b"o=my\\ fine.txt", matches)
-            os.write(terminal, b"\x15extd replace=yes o=back\t\n")
+            os.write(terminal, b"\x15extd overwrite=yes of=my\t\t")
+            matches = read_until(b"scu> extd overwrite=yes of=my\\ fi")
+            self.assertIn(b"of=my\\ file.txt", matches)
+            self.assertIn(b"of=my\\ fine.txt", matches)
+            os.write(terminal, b"\x15extd overwrite=yes of=back\t\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "back\\slash.txt").read_bytes(), b"source")
             os.write(terminal, b'quis\n')
@@ -4301,12 +4304,12 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         names = [f"pick-{index:02}" for index in range(20)]
         for name in names:
             (self.root / name).touch()
-        prefix, tail = b"extd o=pick-", b" dn=main"
+        prefix, tail = b"extd of=pick-", b" dn=main"
         complete = prefix + tail + b"\x02" * len(tail) + b"\t\t"
         draft = b"scu> " + prefix + tail
 
         def matches(output):
-            return [label.decode()[2:] for label in re.findall(rb"o=pick-\d{2}", output)]
+            return [label.decode()[3:] for label in re.findall(rb"of=pick-\d{2}", output)]
 
         with self.terminal_session(TERM="xterm", columns=28, rows=5) as (
             process, terminal, read_until
@@ -4355,13 +4358,13 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
             read_until(b"scu> ")
             audit_before = self.audit_lines()
-            os.write(terminal, b'extd replace=yes main.pas v=2.0 r=0.00\t\t')
-            self.assertIn(b"r=0.008", read_until(b'scu> extd replace=yes main.pas v=2.0 r=0.00'))
+            os.write(terminal, b'extd overwrite=yes main.pas v=2.0 r=0.00\t\t')
+            self.assertIn(b"r=0.008", read_until(b'scu> extd overwrite=yes main.pas v=2.0 r=0.00'))
             self.assertEqual(self.audit_lines(), audit_before)
-            os.write(terminal, b"\x15extd replace=yes ma\t o=out\twork\t --v 1.0 --r 0.000\n")
+            os.write(terminal, b"\x15extd overwrite=yes ma\t of=out\twork\t --v 1.0 --r 0.000\n")
             read_until(b"scu> ")
             self.assertEqual((directory / "working copy").read_bytes(), b"old\n")
-            os.write(terminal, b"extd dn=ma\t v=2.\t o=expanded\n")
+            os.write(terminal, b"extd dn=ma\t v=2.\t of=expanded\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "expanded").read_bytes(), b"new\n")
             os.write(terminal, b"disdd of=unified ma\t 1.\t 2.0-0.008\t\n")
@@ -4376,7 +4379,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
             self.assertIn(b"From deck version 2.0-0.007.", read_until(b"scu> "))
             os.write(terminal, b'import_deck prompted source_file="prompt c\t\n')
             self.assertRegex(read_until(b"scu> "), rb"prompted +2.0-0.000 +new")
-            os.write(terminal, b"extd replace=yes prompted\n")
+            os.write(terminal, b"extd overwrite=yes prompted\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "prompt copy").read_bytes(), b"prompt source\n")
             os.write(terminal, b'cred latest ff="source f\t\n')
@@ -4390,11 +4393,11 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         self.store("first-deck", b"first")
         with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
             read_until(b"scu> ")
-            os.write(terminal, b"extd fir\t o=first-out\n")
+            os.write(terminal, b"extd fir\t of=first-out\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "first-out").read_bytes(), b"first")
             self.store("second-deck", b"second")
-            os.write(terminal, b"extd sec\t o=second-out\n")
+            os.write(terminal, b"extd sec\t of=second-out\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "second-out").read_bytes(), b"second")
             os.write(terminal, b'quis\n')
@@ -4414,15 +4417,15 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
             read_until(b"scu> ")
             for command, output, source in (
-                (b"extd --v 1.0 dn=alpha-\t o=old-version\n", "old-version", b"old\n"),
-                (b"extd v=2.0 inh\t o=inherited-copy\n", "inherited-copy", b"inherited\n"),
-                (b"extd v=1.0 r=0.000 dn=alpha-\t o=old-revision\n", "old-revision", b"old\n"),
+                (b"extd --v 1.0 dn=alpha-\t of=old-version\n", "old-version", b"old\n"),
+                (b"extd v=2.0 inh\t of=inherited-copy\n", "inherited-copy", b"inherited\n"),
+                (b"extd v=1.0 r=0.000 dn=alpha-\t of=old-revision\n", "old-revision", b"old\n"),
             ):
                 os.write(terminal, command)
                 read_until(b"scu> ")
                 self.assertEqual((self.root / output).read_bytes(), source)
 
-            tail = b" o=version-after v=1.0"
+            tail = b" of=version-after v=1.0"
             os.write(terminal, b"extd dn=alpha-" + tail + b"\x02" * len(tail) + b"\t\x05\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "version-after").read_bytes(), b"old\n")
@@ -4457,7 +4460,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
             self.assertNotIn(b"v=1.0", matches)
             self.assertIn(b"v=1.1", matches)
             self.assertIn(b"v=1.2", matches)
-            os.write(terminal, b"2 o=inherited-copy\n")
+            os.write(terminal, b"2 of=inherited-copy\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "inherited-copy").read_bytes(), b"source")
 
@@ -4470,7 +4473,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         self.store("main.pas", b"source")
         with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
             read_until(b"scu> ")
-            command = b"extd main.pas o=copy --r 0.000 "
+            command = b"extd main.pas of=copy --r 0.000 "
             os.write(terminal, command + b"\t\t\t")
             matches = read_until(b"scu> " + command)
             self.assertIn(b"build", matches)
@@ -4479,21 +4482,21 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
                 rb"(?:^|\s)(?:deck_name|deck|dn|output_file|output|o|revision|r|version|v)(?:\s|$)",
             )
 
-            command = b"extd dn=main.pas o=copy r=0.000 --"
+            command = b"extd dn=main.pas of=copy r=0.000 --"
             os.write(terminal, b"\x15" + command + b"\t\t\t")
             matches = read_until(b"scu> " + command)
-            self.assertIn(b"--replace", matches)
+            self.assertIn(b"--overwrite", matches)
             self.assertNotRegex(matches, rb"(?:^|\s)--(?:revision|r)(?:\s|$)")
 
             prefix = b"extd main.pas build=no --"
-            tail = b" --r 0.000 o=copy"
+            tail = b" --r 0.000 of=copy"
             os.write(terminal, b"\x15" + prefix + tail + b"\x02" * len(tail) + b"\t\t\t")
             matches = read_until(b"scu> " + prefix + tail)
-            self.assertIn(b"--replace", matches)
+            self.assertIn(b"--overwrite", matches)
             self.assertNotIn(b"--revision", matches)
             self.assertIn(b"--version", matches)
 
-            os.write(terminal, b"\x05\x15extd dn=main.pas o=expanded r=0.000 buil\tno\n")
+            os.write(terminal, b"\x05\x15extd dn=main.pas of=expanded r=0.000 buil\tno\n")
             read_until(b"scu> ")
             self.assertEqual((self.root / "expanded").read_bytes(), b"source")
             os.write(terminal, b'quis\n')
@@ -4504,19 +4507,19 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         self.run_scu("extd", "main.pas", "unused", "v=1.0", "r=0.000")
         with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
             read_until(b"scu> ")
-            command = b"extd main.pas o=copy --"
+            command = b"extd main.pas of=copy --"
             os.write(terminal, command + b"\t\t")
             matches = read_until(b"scu> " + command)
             self.assertIn(b"--version", matches)
             self.assertIn(b"--revision", matches)
 
-            command = b"extd main.pas o=copy --v 1.0 "
+            command = b"extd main.pas of=copy --v 1.0 "
             os.write(terminal, b"\x15" + command + b"\t\t\t")
             matches = read_until(b"scu> " + command)
             self.assertIn(b"build", matches)
             self.assertRegex(matches, rb"(?:^|\s)(?:revision|r)=(?:\s|$)")
 
-            command = b"extd main.pas o=copy v=1.0 --"
+            command = b"extd main.pas of=copy v=1.0 --"
             os.write(terminal, b"\x15" + command + b"\t\t\t")
             matches = read_until(b"scu> " + command)
             self.assertIn(b"--build", matches)
@@ -4565,13 +4568,13 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         self.run_scu("impd", "main.pas")
         out = self.root / "custom"
         out.write_bytes(b"private work")
-        self.run_scu("extd", "main.pas", out, "build=no", error="replace=yes")
+        self.run_scu("extd", "main.pas", out, "build=no", error="overwrite=yes")
         self.assertEqual(out.read_bytes(), b"private work")
-        self.run_scu("extd", "main.pas", out, "build=no", "replace=yes")
-        self.run_scu("extd", "main.pas", source, "build=no", "replace=yes")
+        self.run_scu("extd", "main.pas", out, "build=no", "overwrite=yes")
+        self.run_scu("extd", "main.pas", source, "build=no", "overwrite=yes")
         other = self.root / "other.data"
         with sqlite3.connect(other) as db: db.execute("create table marker(value)")
-        self.run_scu("extd", "main.pas", other, "replace=yes", error="SQLite")
+        self.run_scu("extd", "main.pas", other, "overwrite=yes", error="SQLite")
         self.run_scu("impd", "flattened", out.name)
         self.assertEqual(source.read_bytes(), b"SCU$DECK_VERSION")
 
@@ -4699,10 +4702,10 @@ int mkstemp(char *pattern) {
         (directory / "gone.pas").write_bytes(b"local edit")
         self.store("main.pas", b"new"); self.run_scu("deld", "gone.pas")
         manifest = (directory / ".scu-exports.json").read_bytes()
-        self.run_scu("relv", error="replace=yes")
+        self.run_scu("relv", error="overwrite=yes")
         self.assertEqual((directory / "main.pas").read_bytes(), b"old")
         self.assertEqual((directory / ".scu-exports.json").read_bytes(), manifest)
-        self.run_scu("relv", "replace=yes")
+        self.run_scu("relv", "overwrite=yes")
         self.assertFalse((directory / "gone.pas").exists())
         self.assertEqual((directory / "main.pas").read_bytes(), b"new")
         self.run_scu("relv", "od=.", error="separate")
@@ -4737,8 +4740,8 @@ int mkstemp(char *pattern) {
         report = self.run_scu("verd", error="need attention")
         self.assertIn("interrupted", report)
         self.assertEqual((directory / "gone.pas").read_bytes(), b"recreated externally")
-        self.run_scu("relv", error="replace=yes")
-        self.run_scu("relv", "replace=yes")
+        self.run_scu("relv", error="overwrite=yes")
+        self.run_scu("relv", "overwrite=yes")
         self.assertFalse((directory / "gone.pas").exists())
         self.assertIn("No errors were found", self.run_scu("verd"))
 
@@ -4834,7 +4837,7 @@ int mkstemp(char *pattern) {
         self.assertIn('Kept untracked release file "thesis.txt"', result)
         self.assertEqual((directory / "thesis.txt").read_bytes(), b"unique work")
         self.assertEqual((directory / "photo.jpg").read_bytes(), b"photo")
-        result = self.run_scu("relv", "replace=yes")
+        result = self.run_scu("relv", "overwrite=yes")
         self.assertIn('Removed obsolete release file "thesis.txt"', result)
         self.assertFalse((directory / "thesis.txt").exists())
         self.assertEqual((directory / "main.pas").read_bytes(), b"source")
@@ -5053,13 +5056,13 @@ int mkstemp(char *pattern) {
         for index in range(20): (self.root / f"pick-{index:02}").touch()
         with self.terminal_session(TERM="xterm", columns=28, rows=5) as (process, terminal, read_until):
             read_until(b"scu> ")
-            os.write(terminal, b"extd o=pick-\t\t")
+            os.write(terminal, b"extd of=pick-\t\t")
             read_until(b"--More--")
             fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack("HHHH", 6, 18, 0, 0))
             process.send_signal(signal.SIGWINCH)
             resized = read_until(b"--More--")
-            self.assertIn(b"o=pick-00\r\n", resized)
-            self.assertNotIn(b"o=pick-00  o=pick-01", resized)
+            self.assertIn(b"of=pick-00\r\n", resized)
+            self.assertNotIn(b"of=pick-00  of=pick-01", resized)
             os.write(terminal, b"q")
             read_until(b"scu> ")
             (self.root / "pick-00").unlink()
@@ -5368,7 +5371,7 @@ char *mkdtemp(char *pattern) {
                     self.run_scu(*command, error="old importer with temporary source filenames")
             self.assertEqual(self.read_library()["revisions"], before)
             self.assertFalse((self.root / "release/0").exists())
-            self.run_scu("extd", "first.pas", "o=rescue.pas", "build=no")
+            self.run_scu("extd", "first.pas", "of=rescue.pas", "build=no")
             self.assertEqual((self.root / "rescue.pas").read_bytes(), b"first")
         self.run_scu("vera")
 
@@ -5380,7 +5383,7 @@ char *mkdtemp(char *pattern) {
         # Explicit source selection is still available for deliberate repair/rescue.
         (self.root / "First.pas").write_bytes(b"new source")
         self.run_scu("impd", "first.pas", "First.pas")
-        self.run_scu("extd", "first.pas", "o=rescue.pas", "build=no")
+        self.run_scu("extd", "first.pas", "of=rescue.pas", "build=no")
         self.assertEqual((self.root / "rescue.pas").read_bytes(), b"new source")
         self.run_scu("vera")
 

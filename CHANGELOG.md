@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Standardize every shipped command argument on a single initials abbreviation, including output_directory (od), output_file (of), source_file (sf), deck_name (dn), editor (e) and description (d). Use underscore names consistently, including comment_prefix and the library_name (ln) selector; keep continue_on_error (coe).
+- Rename replace to overwrite (o), avoiding the collision with revision (r). Update execution, help, completion expectations, examples and overwrite diagnostics; remove former convenience argument aliases. Preserve enum value aliases and positional argument order.
+- Add catalog/help consistency and extraction/audit regressions proving revision, output and overwrite resolve independently to canonical argument names.
+
 - Port GUI startup, defaults and preferences to Windows: conditional Unix thread initialization, Unicode startup arguments, a GUI subsystem executable, startup error dialogs/logging, Consolas defaults and native Unicode preference-directory handling. Preserve Linux defaults and startup diagnostics.
 - Launch GUI commands without Windows console windows, using the existing exact Windows argument encoder for JSON, quotes, Unicode and backslashes. Contain suspended commands in a Job Object before resuming, drain merged output asynchronously and retire descendants on exceptional shutdown or command completion. Suppress build consoles when the parent CLI has no console; retain Linux process behavior.
 - Make the existing Windows handle-inheritance regression check the parent event itself, avoiding false positives when a child reuses the same numeric handle.

@@ -193,7 +193,7 @@ class ExportNamesTests(unittest.TestCase):
             before = list(db.execute('SELECT payload FROM deck_revisions ORDER BY sequence'))
         sentinel = self.output / 'Case.c'
         sentinel.write_bytes(b'do not overwrite')
-        self.cli('extv', 'output_directory=' + argument(self.output), 'replace=yes', 'build=no',
+        self.cli('extv', 'output_directory=' + argument(self.output), 'overwrite=yes', 'build=no',
                  library=restored, error=b'collision')
         self.assertEqual(sentinel.read_bytes(), b'do not overwrite')
         self.assertFalse(self.manifest.exists())
@@ -213,7 +213,7 @@ class ExportNamesTests(unittest.TestCase):
         restored = self.recovery(['Case.c', 'case.c'])
         obsolete = self.output / 'obsolete.c'
         obsolete.write_bytes(b'keep until the selected version is safe')
-        self.cli('relv', 'output_directory=' + argument(self.output), 'replace=yes',
+        self.cli('relv', 'output_directory=' + argument(self.output), 'overwrite=yes',
                  library=restored, error=b'collision')
         self.assertEqual(obsolete.read_bytes(), b'keep until the selected version is safe')
         self.assertFalse(self.manifest.exists())
@@ -275,7 +275,7 @@ class ExportNamesTests(unittest.TestCase):
         short = self.probe('short', target).decode().strip()
         if short.rsplit('\\', 1)[-1].casefold() == target.name.casefold():
             self.skipTest('Filesystem did not generate an 8.3 alias')
-        self.cli('extd', 'main.c', 'output_file=' + short, 'replace=yes', 'build=no', error=b'short-name alias')
+        self.cli('extd', 'main.c', 'output_file=' + short, 'overwrite=yes', 'build=no', error=b'short-name alias')
         self.assertEqual(target.read_bytes(), b'keep original')
         self.assertFalse(self.manifest.exists())
 

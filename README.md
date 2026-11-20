@@ -501,12 +501,29 @@ aliases/recovery, portable libraries and unchanged Linux byte names. An existing
 8.3-alias test skips when the filesystem does not generate an alias. These checks
 supplement native Windows testing; native Windows validation remains pending.
 
+## Argument abbreviations
+
+Each SCU argument has one abbreviation: the initials of its underscore-separated
+name. For example, `deck_name (dn)`, `output_file (of)`, `output_directory (od)`,
+`source_file (sf)`, `revision (r)` and `overwrite (o)`. Single-word arguments use
+their first letter, such as `build (b)`, `editor (e)` and `description (d)`.
+Both `name=value` and `--name value` accept full names or abbreviations.
+`display_command` shows the exact names and abbreviations from `commands.json`;
+Tab completion uses the same definitions.
+
+`overwrite` replaces the former `replace` argument. For example,
+`extv od=output o=yes b=no` or `extd dn=main.c of=output/main.c r=0.000 o=yes`.
+Previous convenience argument aliases such as `directory`, `rp`, `deck`, `output`
+and `desc` are no longer accepted. The library selector is `library_name (ln)`;
+the batch selector is `continue_on_error (coe)`. Enum value aliases such as
+`yes (y)`, `no (n)`, `short (s)` and `full (f)` are unchanged.
+
 ## Work with a library
 
 Libraries use SQLite. The default library is `library.sqlite` in the current
 directory.
 To select another library, put its filename before the command, or use
-`library_name=PATH`, `ln=PATH`, or `--library PATH`. SCU uses the filename
+`library_name=PATH`, `ln=PATH`, or `--library_name PATH`. SCU uses the filename
 with `.sqlite` appended when no extension is supplied. Any other extension is
 an error; `.sqlite` is matched case-insensitively. The containing directory
 must already exist.
@@ -537,7 +554,7 @@ unambiguously. Commands keep precedence over library names.
 At the `scu>` prompt, enter one command per line. Use single or double quotes
 for values with spaces, such as `extract_deck main.pas output_file="working copy.pas"`.
 An assignment such as `output_file=` supplies an empty value. Attach a named
-value directly after `=`, as in `ln=project.sqlite`, or use `--library project.sqlite`.
+value directly after `=`, as in `ln=project.sqlite`, or use `--library_name project.sqlite`.
 Every successful modifying command saves automatically, in both interactive and
 one-shot use. New deck revisions, library metadata, and audit records commit
 in one SQLite transaction before the command reports success. You can run
@@ -622,7 +639,7 @@ scu extract_version version=1.1
 ```
 
 Existing identical files can be tracked without replacement. Differing untracked
-or locally edited files require `replace=yes`. Extraction can explicitly restore
+or locally edited files require `overwrite=yes`. Extraction can explicitly restore
 working sources; no export may overwrite SQLite storage. Separate sessions
 serialize exports and builds targeting the same output directory. A build may
 run a nested extraction with `build=no`, synchronously retaining the inherited
@@ -650,12 +667,12 @@ scu configure_library release_directory=github-release
 Before publication completes, SCU removes obsolete regular files previously
 recorded by this library in the output directory that match `file_patterns` and
 are absent from the selected snapshot.
-Untracked or foreign matching files are named and kept unless `replace=yes`
+Untracked or foreign matching files are named and kept unless `overwrite=yes`
 explicitly authorizes their removal. Keep non-source release assets outside
 those patterns. Files present in the snapshot receive the selected contents; identical files
 retain their inode and modification time. Unmatched files, subdirectories, symbolic links, SQLite files,
 and SQLite operational files are preserved. Edited tracked release files require
-`replace=yes` for replacement or deletion. Working source files are never removed
+`overwrite=yes` for replacement or deletion. Working source files are never removed
 by release cleanup. All output is planned before any new file is published or
 obsolete file removed.
 
@@ -779,7 +796,7 @@ After interruption, the next export or verification reconciles each intent:
 
 Recovery never overwrites or deletes a destination file, invokes a build, or
 replays commands; it can remove dead-process private staging files.
-Repeated recovery is safe. `replace=yes` permits an explicit retry of conflicting
+Repeated recovery is safe. `overwrite=yes` permits an explicit retry of conflicting
 outputs. Corrupt manifests report how to restore a backup or reset tracking.
 
 ```sh
@@ -800,12 +817,12 @@ publication removes obsolete matching files and records as described above.
 
 | Command | Parameters in positional order | Default destination |
 | --- | --- | --- |
-| `extract_deck` (`extd`) | `deck_name`, `output_file`, `revision`, `version`, `replace`, `build` | Library directory, `<recorded source filename>` |
-| `extract_version` (`extv`) | `version`, `output_directory`, `replace`, `build` | Library directory, `<recorded source filename>` |
-| `release_version` (`relv`) | `version`, `output_directory`, `replace` | Release directory, `<recorded source filename>` |
+| `extract_deck` (`extd`) | `deck_name`, `output_file`, `revision`, `version`, `overwrite`, `build` | Library directory, `<recorded source filename>` |
+| `extract_version` (`extv`) | `version`, `output_directory`, `overwrite`, `build` | Library directory, `<recorded source filename>` |
+| `release_version` (`relv`) | `version`, `output_directory`, `overwrite` | Release directory, `<recorded source filename>` |
 
 Defaults are `deck_name=scu$last_modified_deck`, `version=scu$current_version`,
-`replace=no`, and `build=yes` for extraction. `revision` is optional. An explicit
+`overwrite=no`, and `build=yes` for extraction. `revision` is optional. An explicit
 `output_file` is honored unchanged. Both bulk commands export complete snapshots.
 Use `display_command` for argument aliases, types, descriptions, and examples.
 
@@ -933,7 +950,7 @@ Batches stop at the first error by default, including unknown commands, invalid
 arguments, and execution failures. Each successful modifying command is saved
 immediately; the entire batch is not a single transaction. Commands after the
 error are neither executed nor audited. To continue after errors, set the startup
-option `continue_on_error=yes` (aliases `coe` and `continue-on-error`):
+option `continue_on_error=yes` (alias `coe`):
 
 ```sh
 ./build/scu ln=project.sqlite continue_on_error=yes < commands.scu
@@ -1059,8 +1076,8 @@ The shipped catalog keeps each command's standard abbreviation, with two
 convenience aliases: `help` for `display_command_list` (`discl`) and `quit` for
 `quit_session` (`quis`). Spellings such as `dd`, `ddl`, `deck_history`, `init`,
 `modify_library`, and `q` are not command aliases. Use `disd`, `disdl`, `inil`, `conl`, and
-`quis`, or their full command names. Argument names and enum values can still
-have their own aliases as defined in the catalog.
+`quis`, or their full command names. Each shipped argument uses its initials
+as its sole abbreviation; enum value aliases are defined separately in the catalog.
 Canonical names are used when dispatching commands and recording the audit trail.
 
 ```json
@@ -1072,7 +1089,7 @@ Canonical names are used when dispatching commands and recording the audit trail
     {
       "name": "deck_name",
       "type": "string",
-      "aliases": ["deck", "dn"],
+      "aliases": ["dn"],
       "value": "scu$required",
       "description": "Name of the deck whose revision history to show.",
       "completion": "deck"

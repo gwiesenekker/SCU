@@ -58,8 +58,8 @@ end;
 
 function PrefixArgument(Command: TScuCommand): string;
 begin
-  Result := Command.Argument('comment-prefix');
-  if Command.HasArgument('comment-prefix') then
+  Result := Command.Argument('comment_prefix');
+  if Command.HasArgument('comment_prefix') then
     ValidateCommentPrefix(Result);
 end;
 

@@ -1,16 +1,16 @@
 {
   "format": 4,
   "library_argument": {
-    "name": "library",
+    "name": "library_name",
     "type": "string",
-    "aliases": ["library_name", "ln"],
+    "aliases": ["ln"],
     "default": "library.sqlite",
     "description": "Path to the SQLite source library. Append .sqlite when no extension is given; reject other extensions."
   },
   "batch_argument": {
     "name": "continue_on_error",
     "type": "enum",
-    "aliases": ["coe", "continue-on-error"],
+    "aliases": ["coe"],
     "value": "no",
     "description": "Continue reading batch commands after an error; the final exit status remains nonzero.",
     "values": [
@@ -38,16 +38,16 @@
           "description": "Shell command run after extraction, from the library directory. The output target is $1 on Linux or %SCU_BUILD_OUTPUT% on Windows."
         },
         {
-          "name": "comment-prefix",
+          "name": "comment_prefix",
           "type": "string",
-          "aliases": ["comment_prefix", "cp"],
+          "aliases": ["cp"],
           "value": "scu$optional",
           "description": "Default comment prefix for new decks in the current version."
         },
         {
           "name": "editor",
           "type": "string",
-          "aliases": ["ed"],
+          "aliases": ["e"],
           "value": "scu$optional",
           "description": "Editor executable and arguments as a JSON array."
         },
@@ -91,7 +91,7 @@
         {
           "name": "deck_name",
           "type": "string",
-          "aliases": ["deck", "dn"],
+          "aliases": ["dn"],
           "value": "scu$required",
           "description": "Name of the new deck."
         },
@@ -104,14 +104,14 @@
           "completion": "file"
         },
         {
-          "name": "comment-prefix",
+          "name": "comment_prefix",
           "type": "string",
-          "aliases": ["comment_prefix", "cp"],
+          "aliases": ["cp"],
           "value": "scu$optional",
           "description": "Comment prefix for this deck. Omit to use the current version's default."
         }
       ],
-      "help": "Create the first revision of a new deck in the open version. Set its comment prefix with --comment-prefix. An existing deck name, including one inherited from a previous version, is an error.",
+      "help": "Create the first revision of a new deck in the open version. Set its comment prefix with --comment_prefix. An existing deck name, including one inherited from a previous version, is an error.",
       "examples": [
         {
           "command": "scu create_deck main.pas",
@@ -146,7 +146,7 @@
         {
           "name": "deck_name",
           "type": "string",
-          "aliases": ["deck", "dn"],
+          "aliases": ["dn"],
           "value": "scu$last_modified_deck",
           "prompt_for_default": false,
           "description": "Name of the existing deck to delete. Defaults to the last modified deck.",
@@ -192,7 +192,7 @@
         {
           "name": "deck_name",
           "type": "string",
-          "aliases": ["deck", "dn"],
+          "aliases": ["dn"],
           "value": "scu$last_modified_deck",
           "prompt_for_default": false,
           "description": "Name of the deck whose revision history to show.",
@@ -227,7 +227,7 @@
         {
           "name": "deck_name",
           "type": "string",
-          "aliases": ["deck", "dn"],
+          "aliases": ["dn"],
           "value": "scu$last_modified_deck",
           "prompt_for_default": false,
           "description": "Name of the deck to compare in both snapshots.",
@@ -236,7 +236,7 @@
         {
           "name": "from_snapshot",
           "type": "string",
-          "aliases": ["from", "fs"],
+          "aliases": ["fs"],
           "value": "scu$previous_deck_version",
           "prompt_for_default": false,
           "description": "Deck version, scu$current_deck_version, or scu$previous_deck_version. Omit to use the deck version immediately before the right endpoint.",
@@ -245,7 +245,7 @@
         {
           "name": "to_snapshot",
           "type": "string",
-          "aliases": ["to", "ts"],
+          "aliases": ["ts"],
           "value": "scu$current_deck_version",
           "prompt_for_default": false,
           "description": "Deck version, scu$current_deck_version, or scu$previous_deck_version. Omit to use the deck's latest version.",
@@ -272,7 +272,7 @@
         {
           "name": "output_format",
           "type": "enum",
-          "aliases": ["format", "of"],
+          "aliases": ["of"],
           "value": "normal",
           "prompt_for_default": false,
           "description": "Diff output format: normal shows changed lines only; unified shows three lines of unchanged context. Default normal.",
@@ -372,7 +372,7 @@
         {
           "name": "from_version",
           "type": "string",
-          "aliases": ["from", "fv"],
+          "aliases": ["fv"],
           "value": "scu$previous_version",
           "prompt_for_default": false,
           "description": "Library version to compare from. Defaults to the locked version before the current version.",
@@ -381,7 +381,7 @@
         {
           "name": "to_version",
           "type": "string",
-          "aliases": ["to", "tv"],
+          "aliases": ["tv"],
           "value": "scu$current_version",
           "prompt_for_default": false,
           "description": "Library version to compare to. Defaults to the current library version, including automatically saved interactive edits.",
@@ -408,7 +408,7 @@
         {
           "name": "output_format",
           "type": "enum",
-          "aliases": ["format", "of"],
+          "aliases": ["of"],
           "value": "normal",
           "prompt_for_default": false,
           "description": "Diff output format: normal shows changed lines only; unified shows three lines of unchanged context. Default normal.",
@@ -499,7 +499,7 @@
         {
           "name": "deck_name",
           "type": "string",
-          "aliases": ["deck", "dn"],
+          "aliases": ["dn"],
           "value": "scu$last_modified_deck",
           "prompt_for_default": false,
           "description": "Name of the existing deck to edit.",
@@ -529,7 +529,7 @@
         {
           "name": "deck_name",
           "type": "string",
-          "aliases": ["deck", "dn"],
+          "aliases": ["dn"],
           "value": "scu$last_modified_deck",
           "prompt_for_default": false,
           "description": "Name of the deck to extract.",
@@ -538,7 +538,7 @@
         {
           "name": "output_file",
           "type": "string",
-          "aliases": ["o", "output"],
+          "aliases": ["of"],
           "value": "scu$deck_name",
           "prompt_for_default": false,
           "description": "Destination for original bytes. Defaults to the selected revision's recorded source filename, or the deck name if absent; an explicit output_file is honored.",
@@ -562,9 +562,9 @@
           "prompt_for_default": false
         },
         {
-          "name": "replace",
+          "name": "overwrite",
           "type": "enum",
-          "aliases": ["rp"],
+          "aliases": ["o"],
           "value": "no",
           "prompt_for_default": false,
           "description": "Explicitly replace edited or untracked output files. Edited source files require explicit replacement; SQLite libraries remain protected.",
@@ -598,7 +598,7 @@
           "prompt_for_default": false
         }
       ],
-      "help": "Select a library version (default scu$current_version) and optionally a deck revision within that version. With no revision, select the latest visible deck, including inherited decks. Version and revision may be combined, for example version=1.1 revision=0.001. A complete deck version such as version=1.1-0.001 is equivalent; do not combine it with a separate revision. Write the original source bytes, including COPY directives and macro text. Internal library revision numbers are not command selectors. Default to the recorded source filename beside the library; honor an explicit output_file unchanged. Differing untracked or locally edited outputs require replace=yes; SQLite libraries cannot be overwritten. Run the configured build command from the library directory after successful extraction; build=no skips it. Preserve the recorded filename's case; fall back to the deck name only when no source filename was recorded. Restoring old source files does not change the current library version; import records them as new revisions.",
+      "help": "Select a library version (default scu$current_version) and optionally a deck revision within that version. With no revision, select the latest visible deck, including inherited decks. Version and revision may be combined, for example version=1.1 revision=0.001. A complete deck version such as version=1.1-0.001 is equivalent; do not combine it with a separate revision. Write the original source bytes, including COPY directives and macro text. Internal library revision numbers are not command selectors. Default to the recorded source filename beside the library; honor an explicit output_file unchanged. Differing untracked or locally edited outputs require overwrite=yes; SQLite libraries cannot be overwritten. Run the configured build command from the library directory after successful extraction; build=no skips it. Preserve the recorded filename's case; fall back to the deck name only when no source filename was recorded. Restoring old source files does not change the current library version; import records them as new revisions.",
       "examples": [
         {
           "command": "scu extract_deck main.pas release-1.1.pas version=1.1",
@@ -631,16 +631,16 @@
         {
           "name": "output_directory",
           "type": "string",
-          "aliases": ["directory", "od"],
+          "aliases": ["od"],
           "value": "scu$library_directory",
           "description": "Directory for original source files. Defaults to the library directory.",
           "completion": "directory",
           "prompt_for_default": false
         },
         {
-          "name": "replace",
+          "name": "overwrite",
           "type": "enum",
-          "aliases": ["rp"],
+          "aliases": ["o"],
           "value": "no",
           "prompt_for_default": false,
           "description": "Explicitly replace edited or untracked output files. Edited source files require explicit replacement; SQLite libraries remain protected.",
@@ -674,7 +674,7 @@
           "prompt_for_default": false
         }
       ],
-      "help": "Extract every live deck in the selected library version, including inherited decks, under its recorded source filename. Default to scu$current_version and the library directory. Preserve macro text without expansion. Update the export manifest, then run the configured build once from the library directory unless build=no. Unchanged files need no replacement permission; edited or untracked differing files require replace=yes. SQLite libraries cannot be overwritten. Preserve the recorded filename's case; fall back to the deck name only when no source filename was recorded. Restoring old source files does not change the current library version; import records them as new revisions.",
+      "help": "Extract every live deck in the selected library version, including inherited decks, under its recorded source filename. Default to scu$current_version and the library directory. Preserve macro text without expansion. Update the export manifest, then run the configured build once from the library directory unless build=no. Unchanged files need no replacement permission; edited or untracked differing files require overwrite=yes. SQLite libraries cannot be overwritten. Preserve the recorded filename's case; fall back to the deck name only when no source filename was recorded. Restoring old source files does not change the current library version; import records them as new revisions.",
       "examples": [
         {
           "command": "scu extract_version output_directory=build",
@@ -694,7 +694,7 @@
         {
           "name": "deck_name",
           "type": "string",
-          "aliases": ["deck", "dn"],
+          "aliases": ["dn"],
           "value": "scu$optional",
           "prompt_for_default": false,
           "description": "Deck to create, revise, or recreate. Omit to snapshot file_patterns in the library directory.",
@@ -703,16 +703,16 @@
         {
           "name": "source_file",
           "type": "string",
-          "aliases": ["s", "source"],
+          "aliases": ["sf"],
           "value": "scu$optional",
           "description": "Bare source filename in the library directory. Directory components and absolute paths are errors. Defaults to the deck's recorded filename. Requires deck_name.",
           "completion": "library_file",
           "prompt_for_default": false
         },
         {
-          "name": "comment-prefix",
+          "name": "comment_prefix",
           "type": "string",
-          "aliases": ["comment_prefix", "cp"],
+          "aliases": ["cp"],
           "value": "scu$optional",
           "description": "Comment prefix for new or changed revisions. Omit to retain each deck prefix or use the version default for new decks."
         }
@@ -764,7 +764,7 @@
         {
           "name": "description",
           "type": "string",
-          "aliases": ["desc"],
+          "aliases": ["d"],
           "value": "scu$required",
           "description": "Describe the changes completed in this version."
         }
@@ -825,16 +825,16 @@
         {
           "name": "output_directory",
           "type": "string",
-          "aliases": ["directory", "od"],
+          "aliases": ["od"],
           "value": "scu$release_directory",
           "prompt_for_default": false,
           "description": "Release output directory. Default to release_directory (release beside the library); cannot be the working-source directory.",
           "completion": "directory"
         },
         {
-          "name": "replace",
+          "name": "overwrite",
           "type": "enum",
-          "aliases": ["rp"],
+          "aliases": ["o"],
           "value": "no",
           "prompt_for_default": false,
           "description": "Explicitly replace edited outputs or remove untracked matching release files. SQLite storage and working sources remain protected.",
@@ -850,7 +850,7 @@
           ]
         }
       ],
-      "help": "Write every live deck in the selected version, including inherited decks, to release_directory (default release beside the library). Every run publishes the full snapshot. Expand only uppercase SCU$DATE, SCU$TIME, SCU$DATE_TIME, SCU$DECK_VERSION, and SCU$VERSION. Date/time values are the deck modification timestamp in UTC; VERSION is the selected library version. COPY directives and other text remain literal. Remove obsolete regular files previously recorded by this library matching file_patterns only when absent from the selected snapshot; untracked matching files are named and kept unless replace=yes; keep unrelated files, subdirectories, symbolic links, and SQLite storage. Update the export manifest with recoverable writes and deletions. Edited tracked outputs require replace=yes. No build command runs during publication. Use each selected revision's recorded source filename, preserving case and exact bytes. Warn once if former COPY directives are found; they remain literal.",
+      "help": "Write every live deck in the selected version, including inherited decks, to release_directory (default release beside the library). Every run publishes the full snapshot. Expand only uppercase SCU$DATE, SCU$TIME, SCU$DATE_TIME, SCU$DECK_VERSION, and SCU$VERSION. Date/time values are the deck modification timestamp in UTC; VERSION is the selected library version. COPY directives and other text remain literal. Remove obsolete regular files previously recorded by this library matching file_patterns only when absent from the selected snapshot; untracked matching files are named and kept unless overwrite=yes; keep unrelated files, subdirectories, symbolic links, and SQLite storage. Update the export manifest with recoverable writes and deletions. Edited tracked outputs require overwrite=yes. No build command runs during publication. Use each selected revision's recorded source filename, preserving case and exact bytes. Warn once if former COPY directives are found; they remain literal.",
       "examples": [
         {
           "command": "scu release_version",
@@ -877,7 +877,7 @@
         {
           "name": "number_of_lines",
           "type": "integer",
-          "aliases": ["lines", "nl", "nol"],
+          "aliases": ["nol"],
           "value": 20,
           "prompt_for_default": false,
           "description": "Maximum number of recent command attempts to display."
@@ -900,7 +900,7 @@
         {
           "name": "head",
           "type": "string",
-          "aliases": ["ah"],
+          "aliases": ["h"],
           "value": "scu$optional",
           "description": "Previously saved SHA-256 digest to look for in the audit chain."
         }
@@ -915,7 +915,7 @@
         {
           "name": "output_directory",
           "type": "string",
-          "aliases": ["directory", "od"],
+          "aliases": ["od"],
           "value": "scu$release_directory",
           "prompt_for_default": false,
           "description": "Directory to verify. Default release_directory; use scu$library_directory for extracted source files.",

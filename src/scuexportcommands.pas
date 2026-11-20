@@ -25,9 +25,6 @@ const
 
 function OutputFileArgument(Command: TScuCommand): string;
 begin
-  // Older command catalogs use output as the argument name.
-  if not Command.HasArgument('output_file') and Command.HasArgument('output') then
-    Exit(Command['output']);
   Result := Command.Argument('output_file');
 end;
 
@@ -63,7 +60,7 @@ var
   Path: string;
 begin
   Path := OutputFileArgument(Context.Command);
-  if not Context.Command.Provided['output_file'] and not Context.Command.Provided['output'] then
+  if not Context.Command.Provided['output_file'] then
     Exit(ExtractFileDir(CanonicalFile(Context.LibraryPath)));
   if (Path = '') or SameText(Path, DeckNameSelector) or SameText(Path, LastModifiedDeckSelector) then
     Result := GetCurrentDir
@@ -127,7 +124,7 @@ begin
     Path := Rendered.FileName
   else if SameText(Path, LastModifiedDeckSelector) then
     Path := Context.LibraryFile.DeckSourcePath(Context.Database, ResolveLastModifiedDeck(Context.LibraryFile));
-  if not Context.Command.Provided['output_file'] and not Context.Command.Provided['output'] then
+  if not Context.Command.Provided['output_file'] then
     Path := IncludeTrailingPathDelimiter(Context.OutputDirectory) + ExtractFileName(Path);
   Path := OutputPath(Context, Path);
   Context.Snapshots.OutputPath := Path;
@@ -140,7 +137,7 @@ begin
   try
     Manifest.Recover;
     Manifest.WriteExport(Context.LibraryPath, Path, Deck, Selection.Snapshot.Version,
-      ResolvedDeckVersion, emExtract, '', '', Bytes, BooleanArgument(Context.Command, 'replace', 'no'));
+      ResolvedDeckVersion, emExtract, '', '', Bytes, BooleanArgument(Context.Command, 'overwrite', 'no'));
     Context.FilesPublished := True;
   finally
     Manifest.Free;
@@ -235,7 +232,7 @@ begin
       FileNames.Add(Rendered.FileName);
       Manifest.PlanExport(Context.LibraryPath, OutputPath(Context, IncludeTrailingPathDelimiter(Directory) + Rendered.FileName),
         Names[Index], Version, Rendered.DeckVersion, Mode, Rendered.ExpansionUTC, '', Rendered.Bytes,
-        BooleanArgument(Context.Command, 'replace', 'no'));
+        BooleanArgument(Context.Command, 'overwrite', 'no'));
       Written[Index].Name := Names[Index];
       Written[Index].DeckVersion := Rendered.DeckVersion;
     end;
@@ -246,7 +243,7 @@ begin
     if LegacyCopy then Context.Output.Report('Warning: COPY is no longer expanded; COPY directives are released as literal source.');
     if Names.Count > 0 then WriteDeckList(Written, Context.Output);
     for Index := 0 to Removed.Count - 1 do Context.Output.WriteLine('Removed obsolete release file "' + StringToJSONString(Removed[Index]) + '".');
-    for Index := 0 to Preserved.Count - 1 do Context.Output.WriteLine('Kept untracked release file "' + StringToJSONString(Preserved[Index]) + '"; use replace=yes to remove it.');
+    for Index := 0 to Preserved.Count - 1 do Context.Output.WriteLine('Kept untracked release file "' + StringToJSONString(Preserved[Index]) + '"; use overwrite=yes to remove it.');
     if not Expand then ScheduleBuild(Context, Directory);
     Result := Format('Wrote %d deck(s) for version %s', [Names.Count, Version]);
     if DeletedCount > 0 then Result := Result + Format('; removed %d obsolete file(s).', [DeletedCount]);
