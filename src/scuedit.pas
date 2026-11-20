@@ -9,6 +9,7 @@ uses
 
 function EditTextFile(LibraryFile: TDeckLibrary; const Name: string;
   const Original: RawByteString; Limit: Int64): RawByteString;
+function EditLockDescription(const LibraryPath: string; out Version: string): string;
 function EditDeck(LibraryFile: TDeckLibrary; Database: TSQLiteLibrary; const Deck: string): Integer;
 
 implementation
@@ -46,6 +47,34 @@ begin
     Result := ReadBytes(Path, Limit);
   finally
     RemoveWorkingDirectory(TempDir);
+  end;
+end;
+
+function EditLockDescription(const LibraryPath: string; out Version: string): string;
+var
+  Database: TSQLiteLibrary;
+  LibraryFile: TDeckLibrary;
+begin
+  Database := TSQLiteLibrary.OpenRead(LibraryPath);
+  try
+    LibraryFile := TDeckLibrary.Load(LibraryPath, Database);
+  finally
+    Database.Free;
+  end;
+  try
+    LibraryFile.RequireOpenVersion;
+    Version := LibraryFile.CurrentVersion;
+    Result := EditTextFile(LibraryFile, 'lock-description.txt', '', 1024 * 1024);
+    CheckSessionInterrupt;
+    if Trim(Result) = '' then
+      raise ECommandCancelled.Create('Lock cancelled: empty description.');
+    if Result[Length(Result)] = #10 then
+    begin
+      SetLength(Result, Length(Result) - 1);
+      if Result[Length(Result)] = #13 then SetLength(Result, Length(Result) - 1);
+    end;
+  finally
+    LibraryFile.Free;
   end;
 end;
 

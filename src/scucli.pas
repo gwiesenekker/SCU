@@ -24,7 +24,7 @@ type
     function Definition(const Name: string): TCommandDefinition;
     function SelectLibrary(Tokens: TStrings): Integer;
     function ParseCommand(Tokens: TStrings; CommandIndex: Integer; Spec: TCommandDefinition;
-      Interactive: Boolean): TScuCommand;
+      Interactive: Boolean; EditMissingDescription: Boolean = False): TScuCommand;
     procedure CompleteInteractiveLine(const Before, Prefix, After: string; Candidates: TStrings;
       out AppendCharacter: Char);
     procedure ExecuteCommand(Command: TScuCommand);
@@ -41,7 +41,7 @@ type
 implementation
 
 uses
-  SysUtils, ScuBinder, ScuHelp, ScuInput, ScuErrors,
+  SysUtils, ScuEdit, ScuBinder, ScuHelp, ScuInput, ScuErrors,
   ScuCommandRegistry, ScuLibrary, ScuLibraryPaths, ScuSignals, ScuTerminal, ScuTokenizer, ScuPlatformPaths;
 
 const
@@ -72,8 +72,8 @@ begin
   FCompletionLibrary := TCompletionLibrary.Create;
   CatalogPath := CommandFile;
   FCatalogDirectory := ExtractFileDir(CatalogPath);
-  FCatalog := TCommandCatalog.Create(CatalogPath);
-  ValidateCatalog(CatalogPath);
+  FCatalog := TCommandCatalog.Create(CatalogPath, True);
+  ValidateCatalog(FCatalog.SourceName);
 end;
 
 procedure TScuCLI.ValidateCatalog(const CatalogPath: string);
@@ -240,11 +240,11 @@ begin
 end;
 
 function TScuCLI.ParseCommand(Tokens: TStrings; CommandIndex: Integer; Spec: TCommandDefinition;
-  Interactive: Boolean): TScuCommand;
+  Interactive, EditMissingDescription: Boolean): TScuCommand;
 var
   Binder: TCommandBinder;
   Index: Integer;
-  Value: string;
+  Value, EditedVersion: string;
 
   function CompleteParameter(Entry: TParameterDefinition; out Argument: string): Boolean;
   var
@@ -264,6 +264,13 @@ var
       Exit(False);
 
     ParameterName := Entry.Name;
+    if (Interactive or EditMissingDescription) and (Binder.Name = 'lock_version') and
+      (ParameterName = 'description') and (Entry.KindName = 'string') then
+    begin
+      Argument := EditLockDescription(FLibraryPath, EditedVersion);
+      Entry.Validate(Argument);
+      Exit(True);
+    end;
     if not Interactive then
       raise EScuError.CreateFmt('Missing required argument %s for %s.', [ParameterName, Binder.Name]);
     Columns := TerminalColumns(TextRec(StdErr).Handle);
@@ -319,6 +326,7 @@ begin
         CompleteParameter(Binder.ParameterAt(Index), Value) then
         Binder.Bind(Index, Value, False);
     Result := Binder.CreateCommand;
+    Result.ExpectedVersion := EditedVersion;
   finally
     Binder.Free;
   end;
@@ -538,7 +546,7 @@ begin
       RunInteractive(Tokens)
     else
     begin
-      Command := ParseCommand(Tokens, CommandIndex, Definition(Tokens[CommandIndex]), False);
+      Command := ParseCommand(Tokens, CommandIndex, Definition(Tokens[CommandIndex]), False, IsTerminalInput);
       try
         ExecuteCommand(Command);
       finally

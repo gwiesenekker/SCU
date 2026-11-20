@@ -22,10 +22,44 @@ scu help
 make test
 ```
 
-The integration tests use Python 3 with SQLite JSON functions. Keep
-`commands.json` beside the executable when copying it elsewhere. SCU reads
-it at startup for command names, ordered arguments, aliases, and
-help text.
+The integration tests use Python 3 with SQLite JSON functions. Both executables
+embed the command catalog, including argument definitions, aliases and full help.
+`commands.json` is optional when deploying SCU; the required runtime libraries
+remain necessary.
+
+### Embedded command catalog
+
+The CLI and GUI use their compiled-in catalog when no `commands.json` exists
+beside the executable. An adjacent file overrides the entire embedded catalog,
+retaining support for customized commands/help. The current working directory
+is not searched. An existing invalid, unreadable or non-file override reports
+an error; it is never silently replaced with embedded defaults. External
+`help_file` paths remain relative to the catalog directory.
+
+`commands.json` remains the source of truth. `make` and the Windows build driver
+compile `src/scucommands.rc` into `src/scucommands.res` using FPC's `fpcres` tool
+before compilation when needed. The script contains:
+
+```rc
+SCU_COMMANDS RCDATA "../commands.json"
+```
+
+`ScuEmbeddedCommands` links the binary resource with `{$R scucommands.res}` and
+reads its exact bytes through `TResourceStream` and `RT_RCDATA`. The resource is
+checked in for direct Free Pascal/Lazarus builds; there is no Pascal byte-array
+include or runtime extraction. After editing the catalog, rebuild both executables; before a direct
+`fpc` or `lazbuild` build, run:
+
+```sh
+python3 tools/embed_commands.py
+```
+
+The resource compiler preserves the JSON bytes exactly. `make test` recompiles
+the resource to check freshness. `fpcres` is needed for building (normally included
+with FPC); use `FPCRES=PATH` with make or `--fpcres PATH` with the Windows build
+driver when it is not on PATH. No resource compiler or Python is needed at runtime. Standard builds still copy `commands.json` beside the
+executables for development and overrides; omit that file when distributing a
+bundle that should use the embedded defaults.
 
 ### Windows CLI build
 
@@ -58,7 +92,8 @@ Compiler failures and test failures produce a nonzero exit status. A conflicting
 DLL alias left by an earlier build is rejected; use a clean output directory
 when changing runtime distributions.
 
-Distribute the executable, `commands.json`, and all its required app-local DLLs
+Distribute the executable and all its required app-local DLLs
+(optionally including a `commands.json` override)
 from that directory together; the `units` subdirectory is only a build artifact.
 Add `--gui` to build `scu-gui.exe` with Lazarus/SynEdit and the native Windows
 widget set; add `--gui-test` to build and run the GUI integration checks. Use
@@ -495,7 +530,7 @@ checks editing, history, keys and signals. Use `tests/sqlite.py` with
 editor cleanup. `tests/dlls.py` with `dll_probe.exe` checks runtime loading and
 codec/storage compatibility. `tests/actors.py` with `actor_probe.exe` tests
 effective identities and the executor, and expects the matching `scu`/`scu.exe`
-and `commands.json` alongside the probe. `tests/export_names.py` with
+alongside the probe; `commands.json` is optional unless testing an override. `tests/export_names.py` with
 `export_names_probe.exe` and the matching CLI tests filename validation, manifest
 aliases/recovery, portable libraries and unchanged Linux byte names. An existing
 8.3-alias test skips when the filesystem does not generate an alias. These checks
@@ -542,7 +577,7 @@ library arguments, and backend execution.
 
 If you omit the command, SCU starts an interactive session for the selected
 library. At a terminal, SCU runs `display_library` before the first prompt if
-the library already exists. A known command or alias in the first position
+the library already exists. Use `disl json=yes` for the full JSON header including version history. A known command or alias in the first position
 takes precedence over a bare library filename. Use `ln=` to select a library
 with the same name as a command.
 An extensionless positional name followed by a known command is accepted,
@@ -720,11 +755,15 @@ scu display_deck main.pas limit=10
 scu display_deck_list
 ```
 
-Lock descriptions are required; interactive sessions prompt if omitted. Lock
-timestamps are recorded in UTC. `version_increment` defaults to `0.01`; explicit
-version labels may be supplied to `create_version`. `display_version` lists decks
-changed in that version; `display_deck_list` lists the visible snapshot. Use
-`display_version_history limit=0 display_description=full` for complete history.
+To undo an accidental `crev 8.1307`, enter `delv 8.1307`. This returns to the preceding locked version if 8.1307 is still open and has no deck revisions of its own. Inherited decks are safe.
+
+Lock descriptions are required. To write a multiline description in the configured editor, enter `locv` at the SCU prompt or run `scu ln=project.sqlite locv` from a terminal. Save and close to lock, or leave it empty to cancel. Batch input requires an explicit description. Lock
+timestamps are recorded in UTC. Deck and version listings display local time with the UTC offset in effect on the recorded date. `version_increment` defaults to `0.01`; explicit
+version labels may be supplied to `create_version`. `display_version` (`disv`) lists decks
+changed in one version. `display_version_history` (`disvh`) lists the ten most
+recent versions with their lock status, lock time, and description.
+The command `display_deck_list` lists the visible snapshot. Use
+`display_version_history limit=0 display_description=full` for complete history with each description printed below its version row.
 
 Extraction defaults to `version=scu$current_version`. Omit `revision` for the
 latest visible deck; combine `version=1.1 revision=0.001` or use the complete
@@ -739,10 +778,12 @@ Bulk extraction and publication select library versions only. The older
 current/previous library-version defaults. Both compare original stored source,
 ignore changes in whitespace amount by default (`diff -b` semantics), and produce
 normal diff output. Use `ignore_space_changes=no` or `output_format=unified` to
-change that behavior. Textual unified version diffs use `a/` and `b/` source
+change that behavior. By default, `disvd` ignores changes to text lines starting with the deck
+comment prefix followed by the literal ` SCU REVISION `. Decks differing only in
+those lines disappear from the diff. Line numbers refer to the original decks,
+and unified context can show the original header. Use `ilsh=no` to include them. Textual unified version diffs use `a/` and `b/` source
 filenames, with versions in tab-separated metadata. To produce an exact textual
-patch for `patch -p1`, specify **both** `output_format=unified` and
-`ignore_space_changes=no`. The default whitespace-insensitive comparison is for
+patch for `patch -p1`, specify `output_format=unified ignore_space_changes=no ignore_legacy_scu_header=no`. The default whitespace-insensitive comparison is for
 review; it may omit changes and does not guarantee the target bytes. Patch
 application covers textual content at stable filenames; filename changes and
 empty-file lifecycle require separate handling. Diff search is bounded at 3,072 edits and 256 MiB of search work;
@@ -1096,7 +1137,7 @@ Canonical names are used when dispatching commands and recording the audit trail
 {
   "name": "display_deck",
   "aliases": ["disd"],
-  "summary": "List a deck's revisions with version and UTC modification time, newest first.",
+  "summary": "List a deck's revisions with version and local modification time, newest first.",
   "arguments": [
     {
       "name": "deck_name",
@@ -1107,7 +1148,7 @@ Canonical names are used when dispatching commands and recording the audit trail
       "completion": "deck"
     }
   ],
-  "help": "Show each revision of the named deck with its version and UTC modification timestamp."
+  "help": "Show each revision of the named deck with its version and local modification timestamp."
 }
 ```
 
@@ -1142,9 +1183,14 @@ Replacements retain the existing permission bits and group ownership.
 If SCU cannot retain the group, the replacement fails. Libraries and lock files
 are created with private permissions. Release macro expansion also enforces the output limit.
 
-SCU serializes library commands with a sibling `PATH.lock` file. The file stays
+SCU serializes library commands with a hidden sibling lock file (for example,
+`.SCU.sqlite.lock` for `SCU.sqlite`). New dot-prefixed locks also have the hidden
+attribute on Windows. SCU reuses an existing visible `SCU.sqlite.lock`. To switch
+an existing library on Linux, close all SCU sessions and builds, upgrade every
+client, then run `mv -n -- SCU.sqlite.lock .SCU.sqlite.lock` in the library
+directory. Use only updated clients once a library uses a hidden lock. The file stays
 on disk so concurrent commands use the same lock. SCU releases the lock when
-the command finishes. `show_history` reads a SQLite snapshot without taking
+the command finishes. `display_audit_trail` reads a SQLite snapshot without taking
 that lock. SQLite stores each revision in a separate row and keeps
 audit records in the database. A save commits library changes and the command's
 audit records in one transaction. If writing the successful outcome fails, SQLite rolls back
@@ -1154,7 +1200,7 @@ in-memory changes; correct the error and run the command again.
 The audit trail includes failed commands that reach an initialized log and
 can record their outcome. Help commands, command-line parsing errors, checks
 for missing or busy output directories,
-`show_history`, `verify_audit`, and interactive `quit_session` do not append
+`display_audit_trail`, `verify_audit_trail`, and interactive `quit_session` do not append
 records. Successful modifying commands are already saved when their outcomes
 are recorded. The log records arguments, the effective
 user ID, UTC timestamps, and outcomes. The begin record uses the command
@@ -1183,15 +1229,15 @@ space, and the exact JSON bytes. The chain detects changed records. Save a
 verified head somewhere independent of the library, then check it later.
 
 ```sh
-saved_head=$(scu verify_audit | sed 's/.*head=//')
-scu verify_audit --head "$saved_head"
+saved_head=$(scu verify_audit_trail | sed 's/.*head=//')
+scu verify_audit_trail --head "$saved_head"
 ```
 
 Verification accepts later entries as long as the saved head still appears in
 the verified chain. A person with write access to the entire log can rewrite
 the chain or remove complete entries from its end. An independently saved
 head detects changes to the chain through that checkpoint. New saves record
-SHA-256 digests of the header and newly saved deck revisions. `verify_audit`
+SHA-256 digests of the header and newly saved deck revisions. `verify_audit_trail`
 checks those digests against the library. SCU preserves the serialized field
 order and extra JSON fields when it loads headers and revisions into the
 typed library model. Older revisions without a recorded digest still have
@@ -1200,20 +1246,21 @@ their stored SHA-1 checked when extracted.
 SCU saves the audit head and record count in SQLite in the same transaction as
 each append. Ordinary commands check the tail against that state. Changes to
 audit rows through SQL invalidate it and make the next command scan the chain.
-`verify_audit` (`vera`) always scans the full chain and checks
+`verify_audit_trail` (`verat`) always scans the full chain and checks
 recorded deck and header digests.
 
-Run `show_history` to display the latest 20 audited command attempts in
+Run `display_audit_trail` to display the latest 20 audited command attempts in
 chronological order, with canonical names, named parameters, and a
 status in aligned `Command` and `Status` columns. Older audit records can still
 show `pending save` from sessions that used manual saving; new successful
 commands report `succeeded`. Pass a count
-as in `show_history 50` or `show_history number_of_lines=50`.
+as in `display_audit_trail 50` or `display_audit_trail number_of_lines=50`.
 The displayed parameters can include sensitive values recorded in the audit log.
 
 ## Frontend integration
 
-At startup the CLI loads and validates `commands.json` once. Command parsing,
+At startup the CLI loads and validates the embedded catalog or its adjacent
+`commands.json` override once. Command parsing,
 Tab completion, and help use the same typed definitions. Parsing and completion
 also share the tokenizer and argument binder. The CLI passes a read-only
 `TScuCommand` to `TScuExecutor.Execute`. Other Free Pascal frontends can
@@ -1231,6 +1278,9 @@ boundaries. Handlers resolve snapshot selectors and supply the resolved values
 for the executor to record in the audit outcome.
 
 ## Native GUI
+
+Read the [SCU user manual](MANUAL.md) online or open **Help → Manual** (F1) in the GUI.
+The GUI embeds the same Markdown as an RCDATA resource. After editing the manual, rebuild the GUI to update its Help window.
 
 The optional Lazarus frontend uses SynEdit with LCL/GTK2 on Linux and LCL/Win32
 on Windows (including Win64). On Linux, build it with Lazarus, its LCL GTK2
@@ -1261,7 +1311,8 @@ and capture build output. Their Windows Job Object retires the command and its
 descendants on exceptional shutdown; normal close still waits for active work.
 Build children also stay console-free when launched from a console-free CLI.
 
-Keep `scu-gui` (`scu-gui.exe` on Windows), `scu` (`scu.exe`) and `commands.json` together in the build directory. The GUI
+Keep `scu-gui` (`scu-gui.exe` on Windows) and `scu` (`scu.exe`) together in the
+build directory. `commands.json` is an optional override shared by both. The GUI
 opens existing `.sqlite` libraries; create a new library with the CLI first.
 The normal `make` and `make test` targets still need only the CLI dependencies.
 On Ubuntu, `Failed to load module "canberra-gtk-module"` means GTK2's optional
@@ -1352,6 +1403,7 @@ make test-gui
 
 This target requires a display; it leaves a test screenshot at
 `build/gui-check.png` and uses a temporary library and temporary preferences.
+It also repeats the workflow from a standalone bundle without `commands.json`.
 The checks deliberately change fonts, sizes and DPI while opening/resizing
 windows; use `xvfb-run -a make test-gui` on Linux to keep them off your desktop.
 The same checks run with native Windows widgets through `--gui-test`; the runner
@@ -1420,7 +1472,7 @@ Rebuild such an archive into a **new** library with the current importer
 
 ```sh
 python3 tools/import_versions.py ARCHIVE build/rebuilt.sqlite
-build/scu build/rebuilt.sqlite verify_audit
+build/scu build/rebuilt.sqlite verify_audit_trail
 build/scu build/rebuilt.sqlite release_version
 ```
 

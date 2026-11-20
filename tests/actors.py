@@ -115,7 +115,7 @@ class ActorTests(unittest.TestCase):
                 self.assertNotIn('actor', event)
                 self.assertNotIn('uid', event)
         self.check_chain()
-        self.cli('vera')
+        self.cli('verat')
 
     def test_executor_receives_full_command_and_audits_same_named_arguments(self):
         self.initialize()
@@ -153,7 +153,7 @@ class ActorTests(unittest.TestCase):
         with closing(sqlite3.connect(self.library)) as db:
             self.assertEqual(db.execute('SELECT count(*) FROM deck_revisions').fetchone()[0], 0)
         self.check_chain()
-        self.cli('vera')
+        self.cli('verat')
 
     def test_successful_and_failed_builds_record_parent_actor(self):
         self.initialize()
@@ -167,7 +167,7 @@ class ActorTests(unittest.TestCase):
             self.assertEqual(event['success'], succeeds)
             self.check_actor(event)
             self.check_chain()
-        self.cli('vera')
+        self.cli('verat')
 
     def test_legacy_uid_payload_bytes_are_accepted_and_not_rewritten(self):
         self.initialize()
@@ -182,7 +182,7 @@ class ActorTests(unittest.TestCase):
         with closing(sqlite3.connect(self.library)) as db, db:
             for sequence, line in enumerate(legacy, len(rows) + 1):
                 db.execute('INSERT INTO audit_records(sequence,line) VALUES (?,?)', (sequence, line.decode()))
-        self.cli('vera')
+        self.cli('verat')
         self.cli('disl')
         self.assertEqual(self.rows()[:len(rows) + 2], rows + legacy)
         self.check_actor(self.events()[-2])
@@ -198,7 +198,7 @@ class ActorTests(unittest.TestCase):
             else:
                 event['uid'] += 1
             db.execute('UPDATE audit_records SET line=? WHERE sequence=1', (line[:65] + json.dumps(event),))
-        self.cli('vera', error=b'Audit digest mismatch')
+        self.cli('verat', error=b'Audit digest mismatch')
 
     def recovery_document(self):
         self.initialize()
@@ -219,7 +219,7 @@ class ActorTests(unittest.TestCase):
         self.assertEqual(len(self.rows(restored)), 2)
         self.check_actor(self.events(restored)[0])
         self.check_chain(restored)
-        self.cli('vera', library=restored)
+        self.cli('verat', library=restored)
 
     def test_recovery_stream_preserves_binary_data_and_long_paths(self):
         directory = self.root / ('a' * 120) / ('b' * 120) / '日本'
@@ -256,7 +256,7 @@ class ActorTests(unittest.TestCase):
         self.assertNotIn('must_not_be_logged', [e.get('command') for e in events])
         self.check_actor(events[-2])
         self.check_chain()
-        self.cli('vera')
+        self.cli('verat')
 
     @unittest.skipUnless(WINDOWS, 'Windows token-handle lifetime')
     def test_repeated_queries_release_token_handles(self):
@@ -270,7 +270,7 @@ class ActorTests(unittest.TestCase):
         environment = None if WINDOWS else dict(os.environ, TMPDIR=str(temporary))
         self.probe(*mode, restored, 'recover_library', 'recovery_file=' + argument(recovery), env=environment)
         self.assertEqual(list(temporary.iterdir()), [])
-        self.cli('vera', library=restored)
+        self.cli('verat', library=restored)
         document = json.loads(recovery.read_text(encoding='utf-8'))
         document['revisions'][0]['sha1'] = '0' * 40
         recovery.write_text(json.dumps(document), encoding='utf-8')

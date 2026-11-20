@@ -31,6 +31,10 @@ def configure(executable, wine=False):
 
 
 class PortableCliTests(unittest.TestCase):
+    @staticmethod
+    def local_stamp(value):
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone().isoformat(timespec="milliseconds")
+
     def argument(self, value):
         if WINE:
             if isinstance(value, Path):
@@ -158,7 +162,7 @@ class PortableCliTests(unittest.TestCase):
         self.assertEqual(self.run_scu(path, "inil", "v=0.003"), "Initialized version 0.003")
         self.run_scu(path, "cred", "main")
         self.assertEqual(self.table_data(self.run_scu(path, "disdl")), "main\t0.003-0.000")
-        self.run_scu(path, "verify_audit")
+        self.run_scu(path, "verify_audit_trail")
         self.run_scu(self.root / "invalid.sqlite", "inil", "v=invalid", error="Invalid version")
 
 
@@ -192,7 +196,7 @@ class PortableCliTests(unittest.TestCase):
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
         deletion = next(e for e in events if e.get("command") == "delete_deck")
         self.assertEqual(deletion["parameters"], {"deck_name": "MAIN.PAS"})
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_deleted_decks_stay_absent_until_recreated_and_follow_revision_numbering(self):
@@ -218,7 +222,7 @@ class PortableCliTests(unittest.TestCase):
         self.store("main", b"recreated by store\n")
         self.assertEqual(self.read_library()["revisions"][-1]["deck_revision"], "0.004")
         self.assertEqual(self.table_data(self.run_scu("disdl", "v=1.1")), "")
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_delete_and_recreate_require_a_new_version_at_revision_limit(self):
@@ -233,7 +237,7 @@ class PortableCliTests(unittest.TestCase):
         self.assertIn("revision 0.000", self.run_scu("deld", "main"))
         self.assertIn("revision 0.999", self.run_scu("cred", "main"))
         self.run_scu("deld", "main", error='has reached the revision limit')
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_deletion_and_recreation_diffs_use_missing_file_endpoints(self):
@@ -283,7 +287,7 @@ class PortableCliTests(unittest.TestCase):
             database.execute("DROP TRIGGER fail_deletion_audit")
         self.assertIn("main\t", self.table_data(self.run_scu("disdl")))
         self.run_scu("deld", "main")
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_full_audit_detects_tampered_deletion_index(self):
@@ -291,7 +295,7 @@ class PortableCliTests(unittest.TestCase):
         self.run_scu("deld", "main")
         with closing(sqlite3.connect(self.library, isolation_level=None)) as database:
             database.execute("UPDATE deck_revisions SET deleted = 0 WHERE sequence = 2")
-        self.run_scu("verify_audit", error="SQLite deletion flag does not match revision 2")
+        self.run_scu("verify_audit_trail", error="SQLite deletion flag does not match revision 2")
 
 
     def test_all_command_parameters_share_one_ordered_argument_list(self):
@@ -314,8 +318,8 @@ class PortableCliTests(unittest.TestCase):
         self.run_scu("extd", "main", "bad", "0.999", "version=1.0", error="has no deck version")
         self.assertFalse((self.root / "bad").exists())
         self.run_scu("conl", "true")
-        self.assertEqual(json.loads(self.run_scu("shol"))["build_command"], "true")
-        self.run_scu("verify_audit")
+        self.assertEqual(json.loads(self.run_scu("disl", "j=y"))["build_command"], "true")
+        self.run_scu("verify_audit_trail")
 
 
     def test_optional_arguments_are_absent_but_explicit_empty_values_and_defaults_are_audited(self):
@@ -333,7 +337,7 @@ class PortableCliTests(unittest.TestCase):
         self.assertNotIn("build", event["provided_arguments"])
         self.assertNotIn("revision", event["parameters"])
         self.assertEqual(event["parameters"]["version"], "scu$current_version")
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_deck_history_has_headers_deck_versions_and_aligned_status_columns(self):
@@ -350,17 +354,17 @@ class PortableCliTests(unittest.TestCase):
         self.assertEqual(result.splitlines()[0], 'Deck "main".')
         lines = result.splitlines()[1:]
         rows = [re.split(r" {2,}", line) for line in lines]
-        self.assertEqual(rows[0], ["Deck version", "Modified (UTC)", "Status"])
+        self.assertEqual(rows[0], ["Deck version", "Modified (local TZ)", "Status"])
         self.assertEqual([row[0] for row in rows[1:]],
                          ["123456789.1234567890-0.000", "1.0-0.002", "1.0-0.001", "1.0-0.000"])
         self.assertEqual([row[2] for row in rows[1:]], ["stored", "deleted", "stored", "stored"])
         for index, payload in enumerate(reversed(before["revisions"]), start=1):
-            self.assertEqual(rows[index][1], payload["modified_utc"])
+            self.assertEqual(rows[index][1], self.local_stamp(payload["modified_utc"]))
         for column in (1, 2):
             positions = [line.index(row[column]) for line, row in zip(lines, rows)]
             self.assertEqual(len(set(positions)), 1)
         self.assertEqual(self.read_library(), before)
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_display_version_lists_latest_changes_only_in_the_selected_version(self):
@@ -382,7 +386,7 @@ class PortableCliTests(unittest.TestCase):
         self.assertEqual(title, 'Version "1.1".')
         self.assertNotIn("\t", output)
         self.assertEqual(re.split(r" {2,}", table.splitlines()[0]),
-                         ["Deck name", "Deck version", "Modified (UTC)", "Status"])
+                         ["Deck name", "Deck version", "Modified (local TZ)", "Status"])
         rows = [row.split("\t") for row in self.table_data(table).splitlines()]
         self.assertEqual([(r[0], r[1], r[3]) for r in rows], [
             ("main", "1.1-0.001", "stored"),
@@ -393,7 +397,7 @@ class PortableCliTests(unittest.TestCase):
         ])
         for row in rows:
             revision = next(r for r in reversed(before["revisions"]) if r["deck"] == row[0])
-            self.assertEqual(row[2], revision["modified_utc"])
+            self.assertEqual(row[2], self.local_stamp(revision["modified_utc"]))
         for arguments in (("display_version", "1.1"), ("disv", "v=1.1"),
                           ("disv", "--version", "1.1")):
             self.assertEqual(self.run_scu(*arguments), output)
@@ -404,7 +408,7 @@ class PortableCliTests(unittest.TestCase):
         self.assertEqual(self.run_scu("disv", "1.1"), output)
         self.assertEqual(self.run_scu("disv", "v=scu$previous_version"), output)
         self.assertNotIn("inherited", self.run_scu("disv"))
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_create_version_canonical_name_abbreviation_and_retired_names(self):
@@ -423,7 +427,7 @@ class PortableCliTests(unittest.TestCase):
         self.assertEqual(len(creates), 2)
         self.assertEqual(creates[0]["parameters"], {"version": "1.1"})
         self.assertEqual(creates[1]["parameters"], {})
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_deck_history_identifies_explicit_default_and_deleted_decks(self):
@@ -436,7 +440,7 @@ class PortableCliTests(unittest.TestCase):
         self.assertEqual(history.splitlines()[0], 'Deck "main.pas".')
         self.assertIn("deleted", history)
         self.assertEqual(self.run_scu("disd", "missing", error='does not exist'), "")
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_deck_list_has_aligned_headers_inherited_versions_and_empty_snapshots(self):
@@ -458,7 +462,7 @@ class PortableCliTests(unittest.TestCase):
         inherited = self.run_scu("disdl", "v=1.0")
         self.assertIn("a                   1.0-0.000", inherited)
         self.assertNotIn("\t", result)
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_deck_history_limit_defaults_aliases_boundaries_and_auditing(self):
@@ -485,7 +489,7 @@ class PortableCliTests(unittest.TestCase):
         event = json.loads(self.audit_lines()[-2].split(b" ", 1)[1])
         self.assertEqual(event["parameters"], {"deck_name": "scu$last_modified_deck", "limit": "10"})
         self.assertNotIn("limit", event["provided_arguments"])
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_extract_reports_the_resolved_root_deck_name(self):
@@ -499,8 +503,39 @@ class PortableCliTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(result.stderr,
                                      'Using library version 1.0, deck "main", deck_version 1.0-0.000.\n')
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
+
+    def standalone_cli(self):
+        directory = self.root / 'standalone'
+        directory.mkdir()
+        executable = directory / SCU.name
+        shutil.copy2(SCU, executable)
+        return executable
+
+    def test_embedded_catalog_runs_without_adjacent_json_and_ignores_cwd_catalog(self):
+        executable = self.standalone_cli()
+        expected = self.run_scu('help')
+        (self.root / 'commands.json').write_text('{malformed cwd override')
+        self.assertEqual(self.run_scu('help', executable=executable), expected)
+        self.assertEqual(self.run_scu('disc', 'extv', executable=executable), self.run_scu('disc', 'extv'))
+        self.assertFalse(executable.with_name('commands.json').exists())
+
+    def test_adjacent_catalog_overrides_embedded_help_and_invalid_override_is_not_ignored(self):
+        executable = self.standalone_cli()
+        catalog = json.loads(SCU.with_name('commands.json').read_bytes())
+        command = next(c for c in catalog['commands'] if c['name'] == 'display_deck')
+        command['help'] = 'External override with Unicode 日本 and quotes "kept".'
+        path = executable.with_name('commands.json')
+        path.write_text(json.dumps(catalog, ensure_ascii=False), encoding='utf-8')
+        self.assertIn(command['help'], self.run_scu('disc', 'disd', executable=executable))
+        path.write_text('{invalid override')
+        self.run_scu('help', executable=executable, error='Could not load command catalog')
+        path.unlink()
+        path.mkdir()
+        self.run_scu('help', executable=executable, error='Could not load command catalog')
+        path.rmdir()
+        self.assertEqual(self.run_scu('help', executable=executable), self.run_scu('help'))
 
     def test_shipped_argument_aliases_use_initials_and_help_matches_catalog(self):
         catalog = json.loads(SCU.with_name('commands.json').read_bytes())
@@ -538,6 +573,33 @@ class PortableCliTests(unittest.TestCase):
             self.run_scu('extv', option, error='Unknown argument')
         self.assertNotIn('replace (', self.run_scu('disc', 'extv'))
 
+    def test_delete_only_an_empty_open_successor(self):
+        self.run_scu("delv", "1.0", error="only library version")
+        self.store("main", b"preserved")
+        self.run_scu("locv", "Baseline")
+        original = json.loads(self.run_scu("disl", "j=y"))
+        self.run_scu("crev", "8.1307")
+        self.run_scu("conl", "cp=#")
+        self.run_scu("delv", "1.0", error="Only the current version")
+        self.run_scu("delete_version", "v=8.1307")
+        self.assertEqual(json.loads(self.run_scu("disl", "j=y")), original)
+        self.assertIn("main", self.run_scu("disdl"))
+        self.assertIn("delete_version version=8.1307", self.run_scu("disat"))
+        self.run_scu("crev", "8.1307")
+        self.store("main", b"edited")
+        self.run_scu("delv", "8.1307", error="contains deck revisions")
+        self.run_scu("locv", "Release")
+        self.run_scu("delv", "8.1307", error="is locked")
+        self.run_scu("verat")
+
+    def test_library_json_switch_and_audit_verification_abbreviation(self):
+        summary = self.run_scu("disl")
+        self.assertEqual(self.run_scu("disl", "json=false"), summary)
+        header = json.loads(self.run_scu("disl", "json=true"))
+        self.assertEqual(header["current_version"], "1.0")
+        self.assertIn("versions", header)
+        self.assertEqual(self.run_scu("verat"), self.run_scu("verify_audit_trail"))
+
     def test_only_nos_command_abbreviations_and_documented_convenience_aliases_are_shipped(self):
         catalog = json.loads(SCU.with_name("commands.json").read_bytes())
         for command in catalog["commands"]:
@@ -547,7 +609,7 @@ class PortableCliTests(unittest.TestCase):
             self.assertEqual(command["aliases"], sorted(expected), command["name"])
         before = self.audit_lines()
         for spelling in ("dd", "deck_history", "ddl", "list_decks", "init", "configure", "modify_library",
-                         "q", "verify_audit_trail", "--help", "-h"):
+                         "q", "show_library", "shol", "verify_audit", "vera", "--help", "-h"):
             with self.subTest(spelling=spelling):
                 self.run_scu(spelling, error=f'Unknown command "{spelling}"')
         self.assertEqual(self.audit_lines(), before)
@@ -644,7 +706,7 @@ class PortableCliTests(unittest.TestCase):
         creates = [event["parameters"] for event in events if event.get("command") == "create_deck"]
         self.assertEqual(creates[:2], [{"deck_name": "Empty.pas"},
                                       {"deck_name": "Imported.pas", "from_file": "initial source"}])
-        self.assertIn("interrupted=0", self.run_scu("verify_audit"))
+        self.assertIn("interrupted=0", self.run_scu("verify_audit_trail"))
 
 
     def test_library_version_selectors_work_consistently_across_commands(self):
@@ -669,7 +731,7 @@ class PortableCliTests(unittest.TestCase):
             self.assertIn("version=1.1 revision=0.001", help_text)
         for command in ("disdl", "disv", "verd"):
             self.assertNotIn("revision (r)", self.run_scu("disc", command))
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_extract_version_lists_the_complete_snapshot_with_latest_deck_versions(self):
@@ -696,7 +758,7 @@ class PortableCliTests(unittest.TestCase):
         self.run_scu("locv", "d=Second")
         self.run_scu("crev", "1.2")
         self.assertIn("Wrote 3 deck(s) for version 1.2", self.run_scu("extv"))
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_verify_decks_flags_older_root_revision_and_honors_selected_version(self):
@@ -750,7 +812,7 @@ class PortableCliTests(unittest.TestCase):
         self.assertEqual(event["command"], "import_deck")
         self.assertEqual(event["parameters"]["deck_name"], "main.pas")
         self.assertEqual(source.read_bytes(), b"new\0\xff\n#SCU_COPY part\n")
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_version_and_deck_revision_select_independently_with_inheritance(self):
@@ -777,7 +839,7 @@ class PortableCliTests(unittest.TestCase):
         self.store("main", b"current")
         self.run_scu("extd", "main", "current", "r=0.000")
         self.assertEqual((self.root / "current").read_bytes(), b"current")
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_deck_revision_validation_and_tombstones_preserve_output(self):
@@ -798,7 +860,7 @@ class PortableCliTests(unittest.TestCase):
         self.assertEqual(output.read_bytes(), b"original")
         self.run_scu("extd", "main", "result", "r=0.002")
         self.assertEqual(output.read_bytes(), b"")
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_version_history_accepts_positional_named_and_mixed_parameters(self):
@@ -820,7 +882,7 @@ class PortableCliTests(unittest.TestCase):
         self.run_scu("disvh", "s", "0", "extra", error="Too many arguments")
         self.run_scu("disvh", "short", "dd=f", error="Duplicate argument display_description")
         self.run_scu("disvh", "short", "0", "l=1", error="Duplicate argument limit")
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_version_history_limit_selects_recent_versions_including_current(self):
@@ -840,26 +902,26 @@ class PortableCliTests(unittest.TestCase):
         self.assertEqual(names(self.run_scu("disvh", "limit=100")), expected)
         self.assertEqual(names(self.run_scu("disvh", "limit=9223372036854775807")), expected)
         full = self.run_scu("disvh", "limit=2", "dd=f")
-        self.assertEqual(names(full), expected[-2:])
-        self.assertIn("Release 11\\nMore detail", full)
+        self.assertEqual(re.findall(r"^(1\.\d+)  +", full, re.M), expected[-2:])
+        self.assertIn("\nRelease 11\nMore detail\n", full)
         self.assertEqual(self.read_library()["header"]["versions"], entries)
         self.run_scu("locv", "d=Current is locked")
         self.assertEqual(names(self.run_scu("disvh", "limit=1")), expected[-1:])
         self.assertIn("locked", self.run_scu("disvh", "limit=1").splitlines()[-1])
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_version_history_defaults_to_first_description_line_and_can_show_full_text(self):
         description = 'First line\nSecond line\n\nLast line with "quotes"'
         self.run_scu("locv", "description=" + description)
         entry = self.read_library()["header"]["versions"][0]
-        prefix = f'{"1.0":<7}  {"locked":<6}  {entry["locked_utc"]}  '
-        expected = f'{"Version":<7}  {"Status":<6}  {"Locked (UTC)":<24}  Description\n' + prefix + "First line"
+        prefix = f'{"1.0":<7}  {"locked":<6}  {self.local_stamp(entry["locked_utc"])}  '
+        expected = f'{"Version":<7}  {"Status":<6}  {"Locked (local TZ)":<29}  Description\n' + prefix + "First line"
         self.assertEqual(self.run_scu("disvh"), expected)
         self.assertEqual(self.run_scu("disvh", "display_description=short"), expected)
         self.assertEqual(self.run_scu("disvh", "dd=SHORT"), expected)
         full = self.run_scu("disvh", "display_description=full")
-        self.assertEqual(full.splitlines()[-1], prefix + 'First line\\nSecond line\\n\\nLast line with \\"quotes\\"')
+        self.assertEqual(full.split("\n", 2)[2], description)
         self.assertEqual(self.run_scu("disvh", "--dd", "FULL"), full)
         self.assertEqual(self.read_library()["header"]["versions"][0], entry)
         audit = self.audit_lines()
@@ -869,7 +931,7 @@ class PortableCliTests(unittest.TestCase):
         self.assertIn("display_description (dd) : enum [short (s), full (f)] = short", help_text)
         self.run_scu("crev", "1.1")
         self.assertEqual(re.split(r" {2,}", self.run_scu("disvh").splitlines()[-1]), ["1.1", "open", "None"])
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_version_history_short_handles_crlf_and_empty_first_lines(self):
@@ -880,7 +942,7 @@ class PortableCliTests(unittest.TestCase):
                 self.run_scu("crev", version)
             self.run_scu("locv", "description=" + description)
             self.assertEqual(re.split(r" {2,}", self.run_scu("disvh").splitlines()[-1], maxsplit=3)[3:], [first] if first else [])
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_lock_version_records_description_and_utc_time(self):
@@ -893,8 +955,8 @@ class PortableCliTests(unittest.TestCase):
         self.assertLessEqual(before.timestamp() - 0.001, stamp.timestamp())
         self.assertLessEqual(stamp.timestamp(), after.timestamp() + 0.001)
         self.assertEqual(self.run_scu("disvh").splitlines(), [
-            f'{"Version":<7}  {"Status":<6}  {"Locked (UTC)":<24}  Description',
-            f'{"1.0":<7}  {"locked":<6}  {entry["locked_utc"]}  First stable release',
+            f'{"Version":<7}  {"Status":<6}  {"Locked (local TZ)":<29}  Description',
+            f'{"1.0":<7}  {"locked":<6}  {self.local_stamp(entry["locked_utc"])}  First stable release',
         ])
         self.run_scu("create_version", "1.1")
         self.assertEqual(re.split(r" {2,}", self.run_scu("display_version_history").splitlines()[-1]), ["1.1", "open", "None"])
@@ -905,11 +967,11 @@ class PortableCliTests(unittest.TestCase):
         self.assertEqual(latest["description"], "Second release")
         self.assertTrue(latest["locked_utc"].endswith("Z"))
         self.assertEqual(self.run_scu("disvh").splitlines()[-1],
-                         f'{"1.1":<7}  {"locked":<6}  {latest["locked_utc"]}  Second release')
+                         f'{"1.1":<7}  {"locked":<6}  {self.local_stamp(latest["locked_utc"])}  Second release')
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
         attempt = next(event for event in events if event.get("command") == "lock_version")
         self.assertEqual(attempt["parameters"], {"description": "First stable release"})
-        self.assertIn("interrupted=0", self.run_scu("verify_audit"))
+        self.assertIn("interrupted=0", self.run_scu("verify_audit_trail"))
 
 
     def test_library_names_append_sqlite_for_positional_and_named_forms(self):
@@ -929,7 +991,7 @@ class PortableCliTests(unittest.TestCase):
                 result = self.invoke([SCU, name], cwd=self.root, input="quit\n",
                                         capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.run_scu(name, "verify_audit")
+                self.run_scu(name, "verify_audit_trail")
         self.run_scu("upper.SQLITE", "inil")
         self.assertTrue((self.root / "upper.SQLITE").exists())
         self.assertFalse((self.root / "upper.SQLITE.sqlite").exists())
@@ -997,12 +1059,12 @@ class PortableCliTests(unittest.TestCase):
             self.run_scu(database, "inil")
             source.write_bytes(contents)
             self.run_scu(database, "import_deck", "main", source.name)
-        head = self.run_scu(original_db, "verify_audit").split("head=")[1]
+        head = self.run_scu(original_db, "verify_audit_trail").split("head=")[1]
         with closing(sqlite3.connect(replacement_db)) as connection:
             payload, = connection.execute("SELECT payload FROM deck_revisions").fetchone()
         with closing(sqlite3.connect(original_db, isolation_level=None)) as connection:
             connection.execute("UPDATE deck_revisions SET payload = ? WHERE sequence = 1", (payload,))
-        self.run_scu(original_db, "verify_audit", "head=" + head,
+        self.run_scu(original_db, "verify_audit_trail", "head=" + head,
                      error="Library revision 1 does not match the audit log")
         with closing(sqlite3.connect(original_db, isolation_level=None)) as connection:
             connection.execute("UPDATE deck_revisions SET payload = json_set(?, '$.size', 1)", (payload,))
@@ -1045,7 +1107,7 @@ class PortableCliTests(unittest.TestCase):
         path = self.root / "project.sqlite"
         self.run_scu(path, "initialize_library")
         self.run_scu(path, "create_deck", "existing")
-        before_head = self.run_scu(path, "verify_audit")
+        before_head = self.run_scu(path, "verify_audit_trail")
         with closing(sqlite3.connect(path, isolation_level=None)) as database:
             before = self.sqlite_state(database)
             state = database.execute("SELECT * FROM audit_state").fetchall()
@@ -1054,7 +1116,7 @@ class PortableCliTests(unittest.TestCase):
                          error="injected audit write failure")
             self.assertEqual(self.sqlite_state(database), before)
             self.assertEqual(database.execute("SELECT * FROM audit_state").fetchall(), state)
-            self.assertEqual(self.run_scu(path, "verify_audit"), before_head)
+            self.assertEqual(self.run_scu(path, "verify_audit_trail"), before_head)
             database.execute("DROP TRIGGER reject_audit_outcome")
             self.run_scu(path, "create_deck", "staged")
             metadata, revisions, audit = self.sqlite_state(database)
@@ -1062,7 +1124,7 @@ class PortableCliTests(unittest.TestCase):
             self.assertEqual([row[1] for row in revisions], ["existing", "staged"])
             self.assertEqual(audit[:-2], before[2])
             self.assertEqual(len(audit), len(before[2]) + 2)
-            self.run_scu(path, "verify_audit", "--head", before_head.split("head=")[1])
+            self.run_scu(path, "verify_audit_trail", "--head", before_head.split("head=")[1])
 
 
     def test_deck_history_and_aliases_use_canonical_audit_names(self):
@@ -1075,9 +1137,9 @@ class PortableCliTests(unittest.TestCase):
         self.run_scu("create_version", "1.2")
         self.store("main.pas", b"third")
         revisions = self.read_library()["revisions"]
-        expected = ['Deck "main.pas".', "Deck version  Modified (UTC)            Status"] + [
+        expected = ['Deck "main.pas".', "Deck version  Modified (local TZ)            Status"] + [
             f"{version + '-' + revisions[number - 1]['deck_revision']:<12}  "
-            f"{revisions[number - 1]['modified_utc']}  stored"
+            f"{self.local_stamp(revisions[number - 1]['modified_utc'])}  stored"
             for number, version in ((4, "1.2"), (3, "1.0"), (1, "1.0"))
         ]
         for arguments in (
@@ -1100,7 +1162,7 @@ class PortableCliTests(unittest.TestCase):
                          [{"deck_name": "main.pas", "limit": "10"}] * 4 + [{"deck_name": "missing", "limit": "10"}])
         lists = [event for event in records if event.get("command") == "display_deck_list"]
         self.assertEqual([event["parameters"] for event in lists], [{"version": "1.1"}] * 3)
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_diff_default_uses_prior_deck_revision_in_first_version(self):
@@ -1198,7 +1260,7 @@ class PortableCliTests(unittest.TestCase):
         self.store("binary", b"\x00new")
         self.assertIn("Binary files binary@1.2-0.000 and binary@1.2-0.001 differ",
                       self.run_scu("display_deck_diff", "binary", "1.2-0.000", "1.2-0.001", "output_format=unified"))
-        self.assertIn("interrupted=0", self.run_scu("verify_audit"))
+        self.assertIn("interrupted=0", self.run_scu("verify_audit_trail"))
 
 
     def test_diff_ignores_whitespace_amount_changes_but_not_added_separators(self):
@@ -1225,7 +1287,7 @@ class PortableCliTests(unittest.TestCase):
                 self.assertEqual(bool(self.run_scu("disdd", deck)), not equal)
                 exact = self.run_scu("disdd", deck, "isc=n")
                 self.assertTrue(exact)
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_normal_diff_reports_add_delete_and_change_ranges_without_context(self):
@@ -1254,7 +1316,7 @@ class PortableCliTests(unittest.TestCase):
                                         env=self.diff_environment())
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout, expected)
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_normal_version_diff_labels_changed_decks_and_missing_sides(self):
@@ -1272,7 +1334,7 @@ class PortableCliTests(unittest.TestCase):
                          "diff removed@1.0-0.000 /dev/null\n1d0\n< gone")
         outcome = json.loads(self.audit_lines()[-2].split(b" ", 1)[1])
         self.assertEqual(outcome["parameters"]["output_format"], "normal")
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_native_diff_handles_context_line_endings_and_empty_decks(self):
@@ -1349,7 +1411,7 @@ class PortableCliTests(unittest.TestCase):
                 events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
                 self.assertFalse(any(e.get("parameters", {}).get("deck_name") == f"after{index}"
                                      for e in events))
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
     def test_batch_continue_option_aliases_boolean_validation_and_exit_status(self):
@@ -1395,7 +1457,7 @@ class PortableCliTests(unittest.TestCase):
         self.assertEqual([e["parameters"]["deck_name"] for e in creates],
                          ["parent", "nested"])
         self.assertFalse(any(e.get("command", "").startswith("!") for e in events))
-        self.run_scu("verify_audit")
+        self.run_scu("verify_audit_trail")
 
 
 
@@ -1414,7 +1476,7 @@ class PortableCliTests(unittest.TestCase):
         self.run_scu(library, 'relv')
         self.assertEqual((directory / 'release' / name).read_bytes(), data.replace(b'SCU$VERSION', b'1.0'))
         self.assertIn('No errors were found', self.run_scu(library, 'verd'))
-        self.run_scu(library, 'vera')
+        self.run_scu(library, 'verat')
         events = [json.loads(line.split(b' ', 1)[1]) for line in self.audit_lines(library)]
         creation = next(e for e in events if e.get('command') == 'create_deck')
         self.assertEqual(creation['parameters']['from_file'], self.argument(str(directory / name)))
@@ -1429,7 +1491,7 @@ class PortableCliTests(unittest.TestCase):
         builds = [e for e in events if e.get('phase') == 'build']
         self.assertEqual([e['success'] for e in builds], [True, False])
         self.assertEqual((self.root / 'main.c').read_bytes(), b'int main(void) { return 0; }\n')
-        self.run_scu('vera')
+        self.run_scu('verat')
 
 if __name__ == '__main__':
     import argparse

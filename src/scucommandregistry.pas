@@ -21,7 +21,7 @@ type
   end;
 
 const
-  Registrations: array[0..26] of TCommandRegistration = (
+  Registrations: array[0..25] of TCommandRegistration = (
     (Name: 'configure_library'; Handler: (Mode: cmLibrary; Run: @ConfigureLibrary;
       ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
     (Name: 'create_deck'; Handler: (Mode: cmLibrary; Run: @CreateDeck;
@@ -29,6 +29,10 @@ const
     (Name: 'create_version'; Handler: (Mode: cmLibrary; Run: @CreateVersion;
       ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
     (Name: 'delete_deck'; Handler: (Mode: cmLibrary; Run: @DeleteDeck;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'delete_version'; Handler: (Mode: cmLibrary; Run: @DeleteVersion;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'display_audit_trail'; Handler: (Mode: cmHistory; Run: @DisplayAuditTrail;
       ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
     (Name: 'display_deck'; Handler: (Mode: cmLibrary; Run: @DisplayDeck;
       ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
@@ -56,8 +60,6 @@ const
       ResolveOutputDirectory: @WorkingDirectory; ReportCommitted: @RefreshImportedFiles; OutputLockPolicy: olReuseBuild)),
     (Name: 'initialize_library'; Handler: (Mode: cmInitialize; Run: @InitializeLibrary;
       ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
-    (Name: 'list_versions'; Handler: (Mode: cmLibrary; Run: @ListVersions;
-      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
     (Name: 'lock_version'; Handler: (Mode: cmLibrary; Run: @LockVersion;
       ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
     (Name: 'quit_session'; Handler: (Mode: cmLibrary; Run: @SaveLibrary;
@@ -68,11 +70,7 @@ const
       ResolveOutputDirectory: @VersionOutputDirectory; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
     (Name: 'save_library'; Handler: (Mode: cmLibrary; Run: @SaveLibrary;
       ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
-    (Name: 'show_history'; Handler: (Mode: cmHistory; Run: @ShowHistory;
-      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
-    (Name: 'show_library'; Handler: (Mode: cmLibrary; Run: @ShowLibrary;
-      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
-    (Name: 'verify_audit'; Handler: (Mode: cmVerifyAudit; Run: nil;
+    (Name: 'verify_audit_trail'; Handler: (Mode: cmVerifyAudit; Run: nil;
       ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
     (Name: 'verify_decks'; Handler: (Mode: cmLibrary; Run: @VerifyDecks;
       ResolveOutputDirectory: @VerificationDirectory; ReportCommitted: nil; OutputLockPolicy: olReuseBuild))

@@ -1,7 +1,7 @@
 unit ScuGuiMain;
 {$mode objfpc}{$H+}
 interface
-uses Classes, SysUtils, Contnrs, Forms, Controls, ExtCtrls, Menus, ComCtrls, ScuCommand,
+uses uManualForm, Classes, SysUtils, Contnrs, Forms, Controls, ExtCtrls, Menus, ComCtrls, ScuCommand,
   ScuCommands, Graphics, FPJSON, ScuGuiLayout, ScuGuiProcess, ScuGuiTab, ScuGuiPreferences, ScuGuiLiveDiff;
 type
   TGuiJobKind = (gjCommand, gjSave, gjDiff);
@@ -28,6 +28,7 @@ type
     FUpdating, FDiffPending, FAfterClose, FQuitAfterClose: Boolean;
     FOpenAfterClose: string;
     FCloseTabAfter: TScuEditorTab;
+    FManual: TManualForm;
     FOpenMenu, FCloseMenu, FCreateMenu, FPublishMenu, FQuitMenu: TMenuItem;
     FLogMenu: TPopupMenu;
     FLogCopy, FLogSelectAll: TMenuItem;
@@ -67,6 +68,7 @@ type
     procedure CloseDocument(Document: TScuEditorTab);
     procedure TabCloseRequested(Sender: TObject; Page: TTabSheet);
     procedure DocumentChanged(Sender: TObject);
+    procedure ManualClick(Sender: TObject);
     procedure OpenClick(Sender: TObject);
     procedure CloseClick(Sender: TObject);
     procedure PublishClick(Sender: TObject);
@@ -113,11 +115,11 @@ begin
   Result.ShortCut := TextToShortCut(Shortcut); Result.OnClick := Handler; Parent.Add(Result);
 end;
 constructor TScuMainForm.Create(AOwner: TComponent);
-var EditMenu: TMenuItem;
+var EditMenu, HelpMenu: TMenuItem;
 begin
   inherited Create(AOwner);
   FExecutable := IncludeTrailingPathDelimiter(ExtractFileDir(InvocationExecutablePath)) + ExecutableName('scu');
-  FCatalog := TCommandCatalog.Create(IncludeTrailingPathDelimiter(ExtractFileDir(FExecutable)) + 'commands.json');
+  FCatalog := TCommandCatalog.Create(IncludeTrailingPathDelimiter(ExtractFileDir(FExecutable)) + 'commands.json', True);
   FJobs := TObjectList.Create(True); FCloseRequests := TList.Create;
   FProcess := TGuiCommandProcess.Create;
   FProcess.OnOutput := @OutputReceived; FProcess.OnFinished := @CommandFinished;
@@ -130,6 +132,8 @@ begin
   FQuitMenu := MenuEntry(Self, FFileMenu, '&Quit', 'Ctrl+Q', @QuitClick);
   EditMenu := TMenuItem.Create(Self); EditMenu.Caption := '&Edit'; Menu.Items.Add(EditMenu);
   MenuEntry(Self, EditMenu, '&Preferences…', '', @PreferencesClick);
+  HelpMenu := TMenuItem.Create(Self); HelpMenu.Caption := '&Help'; Menu.Items.Add(HelpMenu);
+  MenuEntry(Self, HelpMenu, '&Manual', 'F1', @ManualClick);
   FLogMenu := TPopupMenu.Create(Self); FLogMenu.OnPopup := @LogPopup;
   FLogCopy := TMenuItem.Create(Self); FLogCopy.Caption := 'Copy'; FLogCopy.OnClick := @LogCopy; FLogMenu.Items.Add(FLogCopy);
   FLogSelectAll := TMenuItem.Create(Self); FLogSelectAll.Caption := 'Select All'; FLogSelectAll.OnClick := @LogSelectAll;
@@ -582,6 +586,13 @@ begin
   try Document.Free; finally FUpdating := False; end;
   FTabBar.ShowActiveTab; RefreshVersions; RequestDiff; RefreshActions;
 end;
+procedure TScuMainForm.ManualClick(Sender: TObject);
+begin
+  if FManual = nil then FManual := TManualForm.Create(Self);
+  FManual.Show;
+  FManual.BringToFront;
+end;
+
 procedure TScuMainForm.OpenClick(Sender: TObject);
 var Dialog: TOpenDialog;
 begin

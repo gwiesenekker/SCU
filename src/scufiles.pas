@@ -19,6 +19,7 @@ const
 
 function CanonicalFile(const Path: string): string;
 function CanonicalDirectory(const Path: string): string;
+function FileEntryExists(const Path: string): Boolean;
 function RegularFileExists(const Path: string): Boolean;
 function IsSQLiteFile(const Path: string): Boolean;
 function IsSQLiteCompanion(const Path: string): Boolean;
@@ -54,6 +55,11 @@ end;
 function CanonicalDirectory(const Path: string): string;
 begin
   Result := PlatformCanonicalDirectory(Path);
+end;
+
+function FileEntryExists(const Path: string): Boolean;
+begin
+  Result := FileBackend.FileEntryExists(Path);
 end;
 
 function RegularFileExists(const Path: string): Boolean;
@@ -108,8 +114,11 @@ end;
 
 function IsSQLiteCompanion(const Path: string): Boolean;
 const Suffixes: array[0..3] of string = ('.lock', '-journal', '-wal', '-shm');
-var Suffix: string;
+var Suffix, Name: string;
 begin
+  Name := ExtractFileName(Path);
+  if (Copy(Name, 1, 1) = '.') and SameStoragePath(ExtractFileExt(Name), '.lock') and
+    IsSQLiteFile(ExtractFilePath(Path) + Copy(Name, 2, Length(Name) - 6)) then Exit(True);
   for Suffix in Suffixes do
     if SameStoragePath(Copy(Path, Length(Path) - Length(Suffix) + 1, MaxInt), Suffix) and
       IsSQLiteFile(Copy(Path, 1, Length(Path) - Length(Suffix))) then Exit(True);

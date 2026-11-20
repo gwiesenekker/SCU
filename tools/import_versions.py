@@ -211,7 +211,7 @@ def stage_files(snapshot, names, inputs, previous_files):
 
 
 def require_new_destination(output):
-    for path in (output, *(Path(str(output) + suffix) for suffix in ("-wal", "-shm", "-journal", ".lock"))):
+    for path in (output, output.with_name("." + output.name + ".lock"), *(Path(str(output) + suffix) for suffix in ("-wal", "-shm", "-journal", ".lock"))):
         if os.path.lexists(path):
             raise ImportFailure(f"Destination already exists: {path}")
 
@@ -255,7 +255,7 @@ def import_snapshots(snapshots, names, archive, output, executable, prefix, time
             for source in current_files.values():
                 source.rename(previous_directory / source.name)
             previous_files = {deck: previous_directory / file.name for deck, file in current_files.items()}
-        verification = runner.run("verify_audit")
+        verification = runner.run("verify_audit_trail")
         # A hard link publishes a completed database atomically and never overwrites a target.
         require_new_destination(output)
         os.link(library, output)

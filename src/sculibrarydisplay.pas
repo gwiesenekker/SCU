@@ -15,7 +15,7 @@ type
 
 // Configuration is borrowed; rendering never changes the library header.
 procedure WriteLibraryConfiguration(Configuration: TJSONObject; Sink: TScuOutput; Columns: SizeInt);
-procedure WriteVersionHistoryRows(const Rows: TVersionHistoryDisplayRows; Sink: TScuOutput);
+procedure WriteVersionHistoryRows(const Rows: TVersionHistoryDisplayRows; Sink: TScuOutput; Full: Boolean);
 procedure WriteDeckList(const Rows: TDeckListEntries; Sink: TScuOutput);
 procedure WriteVersionDecks(const Rows: TVersionDeckEntries; Sink: TScuOutput);
 procedure WriteDeckHistory(const Rows: TDeckHistoryEntries; Sink: TScuOutput);
@@ -23,9 +23,9 @@ procedure WriteDeckHistory(const Rows: TDeckHistoryEntries; Sink: TScuOutput);
 implementation
 
 uses
-  SysUtils, ScuSignals, ScuTable, ScuTerminal;
+  SysUtils, ScuClock, ScuSignals, ScuTable, ScuTerminal;
 
-function DisplayText(const Text: string): string;
+function DisplayText(const Text: string; KeepLineBreaks: Boolean = False): string;
 var
   Character: Char;
 begin
@@ -33,7 +33,7 @@ begin
   for Character in Text do
     case Character of
       #9: Result := Result + '\t';
-      #10: Result := Result + '\n';
+      #10: if KeepLineBreaks then Result := Result + #10 else Result := Result + '\n';
       #13: Result := Result + '\r';
       #0..#8, #11, #12, #14..#31, #127:
         Result := Result + '\x' + IntToHex(Ord(Character), 2);
@@ -108,17 +108,21 @@ begin
   end;
 end;
 
-procedure WriteVersionHistoryRows(const Rows: TVersionHistoryDisplayRows; Sink: TScuOutput);
+procedure WriteVersionHistoryRows(const Rows: TVersionHistoryDisplayRows; Sink: TScuOutput; Full: Boolean);
 var
   Table: TScuTable;
   Row: TVersionHistoryDisplayRow;
 begin
-  Table := TScuTable.Create(['Version', 'Status', 'Locked (UTC)', 'Description'], 3);
+  if Full then Table := TScuTable.Create(['Version', 'Status', 'Locked (local TZ)'])
+  else Table := TScuTable.Create(['Version', 'Status', 'Locked (local TZ)', 'Description'], 3);
   try
     for Row in Rows do
     begin
       CheckSessionInterrupt;
-      Table.AddRow([Row.Version, Row.Status, Row.LockedUTC, Row.Description]);
+      if Full then
+        Table.AddRow([Row.Version, Row.Status, LocalTimestamp(Row.LockedUTC)],
+          DisplayText(AdjustLineBreaks(Row.Description, tlbsLF), True))
+      else Table.AddRow([Row.Version, Row.Status, LocalTimestamp(Row.LockedUTC), Row.Description]);
     end;
     Table.WriteTo(Sink, Sink.Columns);
   finally
@@ -150,7 +154,7 @@ var
   Row: TVersionDeckEntry;
   Status: string;
 begin
-  Table := TScuTable.Create(['Deck name', 'Deck version', 'Modified (UTC)', 'Status']);
+  Table := TScuTable.Create(['Deck name', 'Deck version', 'Modified (local TZ)', 'Status']);
   try
     for Row in Rows do
     begin
@@ -158,7 +162,7 @@ begin
       Status := 'stored';
       if Row.Deleted then
         Status := 'deleted';
-      Table.AddRow([DisplayText(Row.Name), Row.DeckVersion, Row.ModifiedUTC, Status]);
+      Table.AddRow([DisplayText(Row.Name), Row.DeckVersion, LocalTimestamp(Row.ModifiedUTC), Status]);
     end;
     Table.WriteTo(Sink, Sink.Columns);
   finally
@@ -172,7 +176,7 @@ var
   Row: TDeckHistoryEntry;
   Status: string;
 begin
-  Table := TScuTable.Create(['Deck version', 'Modified (UTC)', 'Status']);
+  Table := TScuTable.Create(['Deck version', 'Modified (local TZ)', 'Status']);
   try
     for Row in Rows do
     begin
@@ -180,7 +184,7 @@ begin
       Status := 'stored';
       if Row.Deleted then
         Status := 'deleted';
-      Table.AddRow([Row.DeckVersion, Row.ModifiedUTC, Status]);
+      Table.AddRow([Row.DeckVersion, LocalTimestamp(Row.ModifiedUTC), Status]);
     end;
     Table.WriteTo(Sink, Sink.Columns);
   finally

@@ -158,6 +158,7 @@ class FileTests(unittest.TestCase):
         self.assertEqual(self.probe('sqlite', database).stdout.strip(), b'1')
         for suffix in ('.lock', '-journal', '-wal', '-shm'):
             self.assertEqual(self.probe('companion', Path(str(database) + suffix)).stdout.strip(), b'1')
+        self.assertEqual(self.probe('companion', self.root / '.data.sqlite.lock').stdout.strip(), b'1')
         if WINDOWS:
             self.assertEqual(self.probe('companion', Path(str(database) + '.LOCK')).stdout.strip(), b'1')
         database.write_bytes(b'SQLite format 3')

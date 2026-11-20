@@ -162,6 +162,37 @@
       ]
     },
     {
+      "name": "delete_version",
+      "aliases": ["delv"],
+      "summary": "Undo creation of an empty open version.",
+      "arguments": [
+        {
+          "name": "version",
+          "type": "string",
+          "aliases": ["v"],
+          "value": "scu$required",
+          "description": "Exact name of the current open version to remove."
+        }
+      ],
+      "help": "Return to the preceding locked version. The current version must have no deck revisions of its own. Inherited decks are preserved. The only version in a library cannot be deleted."
+    },
+    {
+      "name": "display_audit_trail",
+      "aliases": ["disat"],
+      "summary": "Show recent commands from the library audit trail.",
+      "arguments": [
+        {
+          "name": "number_of_lines",
+          "type": "integer",
+          "aliases": ["nol"],
+          "value": 20,
+          "prompt_for_default": false,
+          "description": "Maximum number of recent command attempts to display."
+        }
+      ],
+      "help": "Show recent audited commands in chronological order, with their canonical names and named arguments, in aligned Command and Status columns separated by at least two spaces."
+    },
+    {
       "name": "display_command",
       "aliases": ["disc"],
       "summary": "Show a command's help and its arguments and options.",
@@ -187,7 +218,7 @@
     {
       "name": "display_deck",
       "aliases": ["disd"],
-      "summary": "Show deck versions, UTC modification times, and stored/deleted status.",
+      "summary": "Show deck versions, local modification times, and stored/deleted status.",
       "arguments": [
         {
           "name": "deck_name",
@@ -207,7 +238,7 @@
           "description": "Number of most recent deck history entries to show. Default 10; use 0 for the complete history."
         }
       ],
-      "help": "Show the resolved deck name above its history, newest first, in aligned Deck version, Modified (UTC), and Status columns. A deck version identifies its library version and per-deck revision; internal library-wide snapshot numbers are omitted. Default limit is 10 most recent entries; use limit=0 for the complete history. Long cells wrap to the terminal width without truncation; redirected output remains unwrapped.",
+      "help": "Show the resolved deck name above its history, newest first, in aligned Deck version, Modified (local TZ), and Status columns. A deck version identifies its library version and per-deck revision; internal library-wide snapshot numbers are omitted. Default limit is 10 most recent entries; use limit=0 for the complete history. Long cells wrap to the terminal width without truncation; redirected output remains unwrapped.",
       "examples": [
         {
           "command": "scu display_deck",
@@ -334,8 +365,27 @@
       "name": "display_library",
       "aliases": ["disl"],
       "summary": "Show the library summary and configuration in attribute/value columns.",
-      "arguments": [],
-      "help": "Show the library path, followed by aligned configuration attributes and values, including current_version, previous_locked_version, editor, and build_command. Omit the versions array; use display_version_history for history. SCU also runs this command when opening an existing library at a terminal. Use show_library for the complete JSON header."
+      "arguments": [
+        {
+          "name": "json",
+          "type": "enum",
+          "aliases": ["j"],
+          "value": "no",
+          "prompt_for_default": false,
+          "description": "Print the complete library header as JSON, including version history.",
+          "values": [
+            {
+              "name": "yes",
+              "aliases": ["true", "y"]
+            },
+            {
+              "name": "no",
+              "aliases": ["false", "n"]
+            }
+          ]
+        }
+      ],
+      "help": "Show the library path, followed by aligned configuration attributes and values, including current_version, previous_locked_version, editor, and build_command. Omit the versions array; use display_version_history for history. SCU also runs this command when opening an existing library at a terminal. Use json=yes for the complete JSON header."
     },
     {
       "name": "display_version",
@@ -352,7 +402,7 @@
           "completion": "library_version"
         }
       ],
-      "help": "Show the selected library version and an alphabetically sorted table of decks stored, edited, deleted, or recreated in that version. Show each deck once, using its latest revision within the selected version, with Deck name, Deck version, Modified (UTC), and Status columns. Omit inherited decks that were not changed in that version. Interactive edits are saved automatically. Default to scu$current_version without prompting. Long cells wrap to the terminal width without truncation; redirected output remains unwrapped.",
+      "help": "Show the selected library version and an alphabetically sorted table of decks stored, edited, deleted, or recreated in that version. Show each deck once, using its latest revision within the selected version, with Deck name, Deck version, Modified (local TZ), and Status columns. Omit inherited decks that were not changed in that version. Interactive edits are saved automatically. Default to scu$current_version without prompting. Long cells wrap to the terminal width without truncation; redirected output remains unwrapped.",
       "examples": [
         {
           "command": "scu display_version",
@@ -413,9 +463,27 @@
           "prompt_for_default": false,
           "description": "Diff output format: normal shows changed lines only; unified shows three lines of unchanged context. Default normal.",
           "values": ["normal", "unified"]
+        },
+        {
+          "name": "ignore_legacy_scu_header",
+          "type": "enum",
+          "aliases": ["ilsh"],
+          "value": "yes",
+          "prompt_for_default": false,
+          "description": "Skip text lines starting with the deck comment prefix followed by ' SCU REVISION '. Set no to include them.",
+          "values": [
+            {
+              "name": "yes",
+              "aliases": ["y"]
+            },
+            {
+              "name": "no",
+              "aliases": ["n"]
+            }
+          ]
         }
       ],
-      "help": "Show source diffs for all decks whose contents differ between the selected versions. Include inherited decks and represent added or removed source with /dev/null. Added or removed empty decks have an explicit notice. By default ignore whitespace amount changes and trailing whitespace, like diff -b. Set ignore_space_changes=no for exact comparison. Default to normal diff output; use output_format=unified for unified output with three context lines. Unified textual output uses quoted a/ and b/ recorded filenames and tab-separated versions, suitable for patch -p1. Search limits fall back to complete replacements rather than minimal hunks. For an exact textual patch suitable for patch -p1, set output_format=unified ignore_space_changes=no. The default ignore_space_changes=yes is for review and can omit whitespace-only changes; it does not guarantee reconstruction of the target bytes.",
+      "help": "Show source diffs for all decks whose contents differ between the selected versions. Include inherited decks and represent added or removed source with /dev/null. Added or removed empty decks have an explicit notice. By default ignore whitespace amount changes and trailing whitespace, like diff -b. Legacy SCU header lines are skipped by default. Default to normal diff output; use output_format=unified for unified output with three context lines. Unified textual output uses quoted a/ and b/ recorded filenames and tab-separated versions, suitable for patch -p1. Search limits fall back to complete replacements rather than minimal hunks. For an exact textual patch suitable for patch -p1, set output_format=unified ignore_space_changes=no ignore_legacy_scu_header=no. The default ignore_space_changes=yes is for review and can omit whitespace-only changes; it does not guarantee reconstruction of the target bytes.",
       "examples": [
         {
           "command": "scu display_version_diff",
@@ -467,11 +535,11 @@
           "description": "Number of most recent versions to show, including the current version. Default 10; use 0 for all versions."
         }
       ],
-      "help": "Display the most recent library versions in chronological order, including the current version. The default limit is 10; use limit=0 for every version. Show each version with its lock status, UTC lock timestamp, and description. Older versions without a recorded timestamp show None. By default show only the first line of each description. Use display_description=full to include the complete description; embedded line breaks are escaped so each version stays on one output line. Positional arguments are display_description followed by limit; named arguments and aliases may be mixed with positional values. Wrap descriptions first, preserving full UTC timestamps when space permits; use labelled fields on very narrow terminals.",
+      "help": "Display the most recent library versions in chronological order, including the current version. The default limit is 10; use limit=0 for every version. Show each version with its lock status, local lock timestamp, and description. Older versions without a recorded timestamp show None. By default show only the first line of each description. Use display_description=full to print the complete description below each version row, preserving paragraphs and using the full available width. Positional arguments are display_description followed by limit; named arguments and aliases may be mixed with positional values. Wrap descriptions first, preserving full local timestamps when space permits; use labelled fields on very narrow terminals.",
       "examples": [
         {
           "command": "scu display_version_history display_description=full",
-          "description": "Show all description lines, with escaped line breaks."
+          "description": "Show each full description below its version, with real line breaks."
         },
         {
           "command": "scu display_version_history limit=5",
@@ -750,13 +818,6 @@
       "help": "Initialize the selected library with an open version. The default initial version is 1.0."
     },
     {
-      "name": "list_versions",
-      "aliases": ["lisv"],
-      "summary": "List versions and their snapshot boundaries.",
-      "arguments": [],
-      "help": "Show aligned Version and Status columns, separated by at least two spaces. Internal library revision numbers are not part of this listing."
-    },
-    {
       "name": "lock_version",
       "aliases": ["locv"],
       "summary": "Lock the current version against further changes.",
@@ -766,7 +827,7 @@
           "type": "string",
           "aliases": ["d"],
           "value": "scu$required",
-          "description": "Describe the changes completed in this version."
+          "description": "Describe the changes completed in this version. Omit this argument at the SCU prompt or in a terminal invocation to write a multiline description in the configured editor."
         }
       ],
       "help": "Lock the current version with a required description and record the lock date and time in UTC. This locks stored revisions only; import external edits first if they should belong to the release.",
@@ -870,31 +931,8 @@
       "help": "The library is saved automatically after every successful modifying command. This command confirms the saved state without leaving the session."
     },
     {
-      "name": "show_history",
-      "aliases": ["shoh"],
-      "summary": "Show recent commands from the library audit trail.",
-      "arguments": [
-        {
-          "name": "number_of_lines",
-          "type": "integer",
-          "aliases": ["nol"],
-          "value": 20,
-          "prompt_for_default": false,
-          "description": "Maximum number of recent command attempts to display."
-        }
-      ],
-      "help": "Show recent audited commands in chronological order, with their canonical names and named arguments, in aligned Command and Status columns separated by at least two spaces."
-    },
-    {
-      "name": "show_library",
-      "aliases": ["shol"],
-      "summary": "Show the library header as JSON.",
-      "arguments": [],
-      "help": "Display the library header, including version history, the editor, and the build command, in JSON."
-    },
-    {
-      "name": "verify_audit",
-      "aliases": ["vera"],
+      "name": "verify_audit_trail",
+      "aliases": ["verat"],
       "summary": "Verify the audit chain and optionally check for a saved head.",
       "arguments": [
         {

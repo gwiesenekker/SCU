@@ -14,15 +14,17 @@ type
   TScuTable = class
   private
     FRows: array of TStringArray;
+    FDetails: TStringArray;
     FWidths: TColumnWidths;
     FFlexibleColumn: SizeInt;
     FWrapWords: Boolean;
+    procedure WriteDetail(Sink: TScuOutput; Row, Columns: SizeInt);
     function FitWidths(Columns: SizeInt): TColumnWidths;
     procedure WriteRow(Sink: TScuOutput; const Cells: TStringArray; const Widths: TColumnWidths);
     procedure WriteStacked(Sink: TScuOutput; Columns: SizeInt);
   public
     constructor Create(const Headers: array of string; FlexibleColumn: SizeInt = -1);
-    procedure AddRow(const Cells: array of string);
+    procedure AddRow(const Cells: array of string; const Detail: string = '');
     procedure AddDelimitedRow(const Row: string);
     procedure WriteTo(Sink: TScuOutput; Columns: SizeInt = -1);
     property WrapWords: Boolean read FWrapWords write FWrapWords;
@@ -44,7 +46,7 @@ begin
   AddRow(Headers);
 end;
 
-procedure TScuTable.AddRow(const Cells: array of string);
+procedure TScuTable.AddRow(const Cells: array of string; const Detail: string);
 var
   RowIndex, Column, Width: SizeInt;
 begin
@@ -52,6 +54,11 @@ begin
     raise EArgumentException.Create('Table row does not match its headers.');
   RowIndex := Length(FRows);
   SetLength(FRows, RowIndex + 1);
+  if Detail <> '' then
+  begin
+    SetLength(FDetails, RowIndex + 1);
+    FDetails[RowIndex] := Detail;
+  end;
   SetLength(FRows[RowIndex], Length(Cells));
   for Column := 0 to High(Cells) do
   begin
@@ -145,6 +152,16 @@ begin
   until Start >= Length(Text);
 end;
 
+procedure TScuTable.WriteDetail(Sink: TScuOutput; Row, Columns: SizeInt);
+var
+  Line, Part: string;
+begin
+  if (Row >= Length(FDetails)) or (FDetails[Row] = '') then Exit;
+  for Line in FDetails[Row].Split([#10]) do
+    for Part in SplitCell(Line, Columns, True) do Sink.WriteLine(Part);
+  Sink.WriteLine('');
+end;
+
 procedure TScuTable.WriteRow(Sink: TScuOutput; const Cells: TStringArray; const Widths: TColumnWidths);
 var
   Parts: array of TStringArray;
@@ -186,7 +203,7 @@ begin
     First := 0;
   for Row := First to High(FRows) do
   begin
-    if Row > First then
+    if (Row > First) and ((Row - 1 >= Length(FDetails)) or (FDetails[Row - 1] = '')) then
       Sink.WriteLine('');
     for Column := 0 to High(FWidths) do
     begin
@@ -206,12 +223,13 @@ begin
         Sink.WriteLine(Part);
       end;
     end;
+    WriteDetail(Sink, Row, Columns);
   end;
 end;
 
 procedure TScuTable.WriteTo(Sink: TScuOutput; Columns: SizeInt);
 var
-  Cells: TStringArray;
+  Row: SizeInt;
   Widths: TColumnWidths;
   MinimumWidth, Column: SizeInt;
 begin
@@ -234,8 +252,11 @@ begin
     Exit;
   end;
   Widths := FitWidths(Columns);
-  for Cells in FRows do
-    WriteRow(Sink, Cells, Widths);
+  for Row := 0 to High(FRows) do
+  begin
+    WriteRow(Sink, FRows[Row], Widths);
+    WriteDetail(Sink, Row, Columns);
+  end;
 end;
 
 end.

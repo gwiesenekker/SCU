@@ -15,15 +15,17 @@ implementation
 uses SysUtils, ScuErrors, ScuPlatformPathsWindows, ScuPlatformFileSecurityWindows;
 
 function OpenLockHandle(const Path: string): THandle;
-var Attributes: TSecurityAttributes; Descriptor: PSecurityDescriptor; Info: TByHandleFileInformation;
+var Attributes: TSecurityAttributes; Descriptor: PSecurityDescriptor; Info: TByHandleFileInformation; Flags: DWORD;
 begin
   PrivateSecurity(Attributes, Descriptor);
   try
     // Deny deletion/replacement of the sidecar while any participant is using
     // it. Creating a fresh inode here would split the lock into two domains.
+    Flags := FILE_ATTRIBUTE_NORMAL;
+    if Copy(ExtractFileName(Path), 1, 1) = '.' then Flags := FILE_ATTRIBUTE_HIDDEN;
     Result := CreateFileW(PWideChar(NativeFilePath(Path)), GENERIC_READ or GENERIC_WRITE,
       FILE_SHARE_READ or FILE_SHARE_WRITE, @Attributes, OPEN_ALWAYS,
-      FILE_ATTRIBUTE_NORMAL or OpenReparsePoint or FILE_FLAG_BACKUP_SEMANTICS, 0);
+      Flags or OpenReparsePoint or FILE_FLAG_BACKUP_SEMANTICS, 0);
     if Result = INVALID_HANDLE_VALUE then RaiseSystemError('Could not open lock file "' + Path + '"', GetLastError);
     try
       if not GetFileInformationByHandle(Result, Info) then

@@ -6,6 +6,7 @@ interface
 
 uses Classes, SysUtils, ScuFileTypes;
 
+function FileEntryExists(const Path: string): Boolean;
 function RegularFileExists(const Path: string): Boolean;
 function IsSQLiteFile(const Path: string): Boolean;
 procedure CleanupStaleAtomicFiles(const Directory: string);
@@ -41,6 +42,16 @@ begin
   UniqueString(Result);
   if mkdtemp(PChar(Result)) = nil then
     RaiseSystemError('Could not create export staging directory in "' + Directory + '"', cerrno);
+end;
+
+function FileEntryExists(const Path: string): Boolean;
+var Info: Stat; Error: cint;
+begin
+  if Path = '' then Exit(False);
+  if fpLStat(Path, Info) = 0 then Exit(True);
+  Error := fpGetErrNo;
+  if Error <> ESysENOENT then RaiseSystemError('Could not inspect "' + Path + '"', Error);
+  Result := False;
 end;
 
 function RegularFileExists(const Path: string): Boolean;

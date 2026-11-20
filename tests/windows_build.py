@@ -33,6 +33,8 @@ class WindowsBuildTests(unittest.TestCase):
             test=False, wine=False)
 
     def compile(self, command, **kwargs):
+        if str(command[1]).endswith('embed_commands.py'):
+            return
         output = next(arg[2:] for arg in command if arg.startswith('-o'))
         Path(output).write_bytes(b'compiled')
 
@@ -70,11 +72,14 @@ class WindowsBuildTests(unittest.TestCase):
 
     def test_compiler_failure_stops_before_catalog_and_test_execution(self):
         self.args.test = True
-        with patch.object(builder.subprocess, 'run', side_effect=subprocess.CalledProcessError(7, ['fpc'])) as run:
+        def fail_compiler(command, **kwargs):
+            if command[0] == self.args.fpc:
+                raise subprocess.CalledProcessError(7, command)
+        with patch.object(builder.subprocess, 'run', side_effect=fail_compiler) as run:
             with self.assertRaises(subprocess.CalledProcessError) as error:
                 builder.build(self.args)
         self.assertEqual(error.exception.returncode, 7)
-        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_count, 2)
         self.assertFalse((self.args.output / 'commands.json').exists())
 
     def test_success_without_executable_is_an_error(self):
@@ -87,7 +92,9 @@ class WindowsBuildTests(unittest.TestCase):
         calls = []
         def run(command, **kwargs):
             calls.append(command)
-            if len(calls) == 1:
+            if str(command[1]).endswith('embed_commands.py'):
+                return
+            if command[0] == self.args.fpc:
                 return self.compile(command)
             self.assertTrue((self.args.output / 'commands.json').is_file())
             for name in builder.DLL_NAMES:
@@ -97,7 +104,7 @@ class WindowsBuildTests(unittest.TestCase):
         with patch.object(builder.subprocess, 'run', side_effect=run):
             with self.assertRaises(subprocess.CalledProcessError):
                 builder.build(self.args)
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 3)
 
     def test_runtime_aliases_follow_loader_names_without_renaming_vendor_dlls(self):
         (self.dlls / 'libzstd.dll').rename(self.dlls / 'zstd.dll')
@@ -151,7 +158,7 @@ class WindowsBuildTests(unittest.TestCase):
                 target.write_bytes(b'GUI executable')
         with patch.object(builder.subprocess, 'run', side_effect=run):
             builder.build(self.args)
-        self.assertEqual(len(calls), 4)
+        self.assertEqual(len(calls), 6)
         self.assertEqual(Path(calls[-1][1]), builder.ROOT / 'tests/gui_integration.py')
         self.assertIn('--gui-check', calls[-1])
         for name, content in templates.items():
@@ -169,12 +176,12 @@ class WindowsBuildTests(unittest.TestCase):
         def run(command, **kwargs):
             if command[0] == self.args.fpc:
                 self.compile(command)
-            else:
+            elif command[0] == self.args.lazbuild:
                 raise subprocess.CalledProcessError(8, command)
         with patch.object(builder.subprocess, 'run', side_effect=run) as execute:
             with self.assertRaises(subprocess.CalledProcessError):
                 builder.build(self.args)
-        self.assertEqual(execute.call_count, 2)
+        self.assertEqual(execute.call_count, 4)
 
     def test_wine_without_test_is_rejected(self):
         self.args.wine = True
@@ -184,10 +191,10 @@ class WindowsBuildTests(unittest.TestCase):
     def test_build_can_reuse_app_local_runtime_without_copying_onto_itself(self):
         self.args.output = self.dlls
         self.args.test = True
-        with patch.object(builder.subprocess, 'run', side_effect=[None, None]) as run:
+        with patch.object(builder.subprocess, 'run', side_effect=[None, None, None]) as run:
             (self.dlls / 'scu.exe').write_bytes(b'previous compiler output')
             builder.build(self.args)
-        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_count, 3)
         self.assertEqual((self.dlls / 'sqlite3.dll').read_bytes(), b'sqlite3.dll')
 
 

@@ -122,13 +122,15 @@ type
   TCommandCatalog = class
   private
     FCommands: TCommandDefinitions;
+    FSourceName: string;
     FLibraryArgument: TParameterDefinition;
     FLibraryDefault: string;
     FBatchArgument: TParameterDefinition;
   public
-    constructor Create(const Path: string);
+    constructor Create(const Path: string; UseEmbeddedIfMissing: Boolean = False);
     destructor Destroy; override;
     property Commands: TCommandDefinitions read FCommands;
+    property SourceName: string read FSourceName;
     property LibraryArgument: TParameterDefinition read FLibraryArgument;
     property BatchArgument: TParameterDefinition read FBatchArgument;
     property LibraryDefault: string read FLibraryDefault;
@@ -139,7 +141,7 @@ function TryParseYesNo(const Value: string; out Parsed: Boolean): Boolean;
 implementation
 
 uses
-  SysUtils, Math, FPJSON, ScuErrors, ScuFiles, ScuJSON;
+  SysUtils, Math, FPJSON, ScuErrors, ScuFiles, ScuJSON, ScuEmbeddedCommands;
 
 const
   ParameterKinds: array[TParameterKind] of string = ('string', 'integer', 'float', 'enum');
@@ -665,16 +667,24 @@ begin
   end;
 end;
 
-constructor TCommandCatalog.Create(const Path: string);
+constructor TCommandCatalog.Create(const Path: string; UseEmbeddedIfMissing: Boolean);
 var
   Definitions, LibraryEntry: TJSONObject;
   Entries: TJSONArray;
   Index: Integer;
+  Bytes: RawByteString;
 begin
   inherited Create;
+  FSourceName := Path;
   FCommands := TCommandDefinitions.Create;
   try
-    Definitions := ParseObject(ReadBytes(Path, 1024 * 1024));
+    if UseEmbeddedIfMissing and not FileEntryExists(Path) then
+    begin
+      FSourceName := 'embedded commands.json';
+      Bytes := EmbeddedCommandsJSON;
+    end
+    else Bytes := ReadBytes(Path, 1024 * 1024);
+    Definitions := ParseObject(Bytes);
     try
       if IntegerField(Definitions, 'format') <> 4 then
         raise EScuError.Create('Unsupported commands.json format. Expected format 4.');
@@ -691,8 +701,9 @@ begin
       Definitions.Free;
     end;
   except
+    on E: ECommandCancelled do raise;
     on E: Exception do
-      raise EScuError.CreateFmt('Could not load command catalog "%s": %s', [Path, E.Message]);
+      raise EScuError.CreateFmt('Could not load command catalog "%s": %s', [FSourceName, E.Message]);
   end;
 end;
 

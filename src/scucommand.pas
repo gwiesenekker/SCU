@@ -13,7 +13,7 @@ type
 
   TScuCommand = class
   private
-    FName: string;
+    FName, FExpectedVersion: string;
     FArguments: TScuArguments;
     function FindArgument(const Key: string): Integer;
     function GetArgument(Index: Integer): TScuArgument;
@@ -27,6 +27,8 @@ type
     constructor CreateSessionExit;
     function HasArgument(const Key: string): Boolean;
     function Argument(const Key: string; const Default: string = ''): string;
+    // Guard a lock description composed outside the write transaction.
+    property ExpectedVersion: string read FExpectedVersion write FExpectedVersion;
     property Name: string read FName;
     property ArgumentCount: Integer read GetArgumentCount;
     property Arguments[Index: Integer]: TScuArgument read GetArgument;

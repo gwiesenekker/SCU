@@ -199,7 +199,7 @@ class ExportNamesTests(unittest.TestCase):
         self.assertFalse(self.manifest.exists())
         with closing(sqlite3.connect(restored)) as db:
             self.assertEqual(list(db.execute('SELECT payload FROM deck_revisions ORDER BY sequence')), before)
-        self.cli('vera', library=restored)
+        self.cli('verat', library=restored)
 
     @unittest.skipUnless(WINDOWS, 'Windows portable-library source rules')
     def test_unsafe_recorded_source_rejected_without_export(self):
@@ -293,7 +293,7 @@ class ExportNamesTests(unittest.TestCase):
         files = json.loads(self.manifest.read_text())['files']
         self.assertEqual({bytes.fromhex(e['file_bytes']) for e in files}, set(names))
         self.cli('verd', 'output_directory=' + argument(self.output))
-        self.cli('vera')
+        self.cli('verat')
 
 
 if __name__ == '__main__':

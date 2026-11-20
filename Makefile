@@ -1,11 +1,19 @@
 FPC ?= fpc
 FPCFLAGS ?= -O2
 LAZBUILD ?= lazbuild
+FPCRES ?= fpcres
 
 .PHONY: all test test-portable gui test-gui format-commands clean
 all: build/scu build/commands.json
 
-build/scu: $(wildcard src/*.pas) | build
+src/scucommands.res: commands.json src/scucommands.rc tools/embed_commands.py
+	python3 tools/embed_commands.py --fpcres "$(FPCRES)"
+
+# FPC links resources from the unit output directory on incremental builds.
+build/scucommands.res: src/scucommands.res | build
+	cp $< $@
+
+build/scu: $(wildcard src/*.pas) build/scucommands.res | build
 	$(FPC) $(FPCFLAGS) -Fu./src -FU./build -FE./build src/scu.pas
 
 build/commands.json: commands.json | build
@@ -54,6 +62,8 @@ build/gui_process_probe: tests/gui_process_probe.pas $(wildcard gui/*.pas) build
 	$(FPC) $(FPCFLAGS) -Fu./src -Fu./gui -FU./build -FE./build tests/gui_process_probe.pas
 
 test: all build/executor_probe build/platform_probe build/files_probe build/locks_probe build/process_probe build/terminal_probe build/sqlite_probe build/scan_probe build/cleanup_probe build/dll_probe build/actor_probe build/export_names_probe build/gui_process_probe
+	python3 tools/embed_commands.py --check --fpcres "$(FPCRES)"
+	python3 tests/embedded_commands.py
 	python3 tests/gui_process.py ./build/gui_process_probe
 	python3 tests/windows_build.py
 	python3 tests/export_names.py ./build/export_names_probe
@@ -79,9 +89,13 @@ clean:
 	rm -rf build
 
 # Optional native frontend; the CLI build has no Lazarus dependency.
-gui: all
-	$(LAZBUILD) --widgetset=gtk2 gui/scu_gui.lpi
+gui/scumanual.res: gui/scumanual.rc MANUAL.md
+	$(FPCRES) -of res $< -o $@
+
+gui: all gui/scumanual.res
+	$(LAZBUILD) $(shell test build/scu-gui -nt gui/scumanual.res || echo --build-all) --widgetset=gtk2 gui/scu_gui.lpi
 
 test-gui: gui
-	$(LAZBUILD) --widgetset=gtk2 tests/gui_check.lpi
+	$(LAZBUILD) $(shell test build/gui-check -nt gui/scumanual.res || echo --build-all) --widgetset=gtk2 tests/gui_check.lpi
 	python3 tests/gui_integration.py
+	python3 tests/gui_integration.py --embedded-catalog

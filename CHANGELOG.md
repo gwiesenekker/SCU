@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Display full version descriptions below each metadata row, preserving line and paragraph breaks.
+
+- Create hidden library lock files and continue to honor existing visible locks.
+
+- Add `delete_version` (`delv`) to undo creation of an empty open version.
+
+- Open the configured editor for a missing lock description for interactive and one-shot terminal invocations of `lock_version`.
+
+- Display deck modification and version lock times in the system time zone with a numeric offset.
+
+- Replace `show_library` with `disl json=yes` and rename `verify_audit` to `verify_audit_trail` (`verat`).
+
+- Rename `show_history` (`shoh`) to `display_audit_trail` (`disat`).
+
+- Embed the SCU Markdown user manual in the GUI and add a searchable, resizable SynEdit reader under Help → Manual (F1).
+
+- Remove `list_versions` (`lisv`). Use `disvh limit=0` to list all library versions.
+
+- Skip legacy SCU revision header lines in display_version_diff by default. Use ilsh=no to include them.
+- Embed the full commands.json catalog and help in the CLI and GUI. Use embedded defaults when the adjacent file is absent; retain explicit external overrides and fail on invalid or unreadable overrides. Preserve relative help files and avoid working-directory catalog discovery.
+- Compile commands.json into a standard RCDATA resource using fpcres, link it with {$R} and read it through TResourceStream on Linux and Windows. Check resource freshness in the test suite. Add standalone CLI/GUI, override/error, symlink/permission and generator regressions; document optional deployment of the JSON file.
+
 - Make archive imports ignore only an initial // SCU REVISION line when detecting modified decks. Header-only changes, additions and removals remain inherited; preserve all stored source bytes and original archive checksums, and record the comparison rule in provenance manifests.
 - Add importer regressions for header line endings, binary/empty files, near-matching or later headers, substantive/whitespace edits, inherited deck versions and deletion/recreation across multiple snapshots.
 

@@ -29,12 +29,12 @@ type
   public
     constructor Create(Entries: TJSONArray; Latest: Integer);
     procedure Lock(const Description: string);
+    procedure DeleteEmpty(const Name: string; Latest: Integer);
     procedure Start(const Name, Prefix: string; Latest: Integer);
     function NextVersion(Increment: Int64): string;
     function CommentPrefix(const Name: string): string;
     procedure SetCommentPrefix(const Prefix: string; Latest: Integer);
     procedure Bounds(const Name: string; Latest: Integer; out Base, Last: Integer);
-    procedure List(Latest: Integer; Dest: TStrings);
     procedure ListNames(Latest, MinimumRevision: Integer; Dest: TStrings);
     function AtRevision(Revision: Integer): string;
     function TryPrevious(out Name: string; out Last: Integer): Boolean;
@@ -308,21 +308,6 @@ begin
   FEntries[Index].CommentPrefix := Prefix;
 end;
 
-procedure TVersionHistory.List(Latest: Integer; Dest: TStrings);
-var
-  Index: Integer;
-  State: string;
-begin
-  for Index := 0 to Length(FEntries) - 1 do
-  begin
-    if FEntries[Index].Locked then
-      State := 'locked'
-    else
-      State := 'open';
-    Dest.Add(FEntries[Index].Name + #9 + State);
-  end;
-end;
-
 procedure TVersionHistory.ListNames(Latest, MinimumRevision: Integer; Dest: TStrings);
 var
   Index: Integer;
@@ -348,6 +333,20 @@ begin
       Last := Middle - 1;
   end;
   Result := FEntries[First].Name;
+end;
+
+procedure TVersionHistory.DeleteEmpty(const Name: string; Latest: Integer);
+begin
+  if Name <> Current then
+    raise EScuError.CreateFmt('Only the current version (%s) can be deleted.', [Current]);
+  if Count = 1 then
+    raise EScuError.Create('Cannot delete the only library version.');
+  if Locked then
+    raise EScuError.CreateFmt('Version %s is locked.', [Name]);
+  if BaseRevision(Count - 1) <> Latest then
+    raise EScuError.CreateFmt('Version %s contains deck revisions and cannot be deleted.', [Name]);
+  FSerialized.Delete(Count - 1);
+  SetLength(FEntries, Count - 1);
 end;
 
 end.

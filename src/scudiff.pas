@@ -14,7 +14,7 @@ function ParseDiffFormat(const Value: string): TDiffFormat;
 
 procedure WriteDeckDiff(const OldSource, NewSource: RawByteString; const OldLabel, NewLabel: string;
   Output: TScuOutput; IgnoreSpaceChanges: Boolean = True; Format: TDiffFormat = dfNormal;
-  ShowNormalLabels: Boolean = False);
+  ShowNormalLabels: Boolean = False; const OldMarker: string = ''; const NewMarker: string = '');
 
 implementation
 
@@ -75,7 +75,24 @@ begin
     Dec(Position.Offset);
 end;
 
-function IndexLines(const Source: RawByteString; IgnoreSpaceChanges: Boolean): TLineIndex;
+function IsHeader(const Source, Marker: RawByteString; Offset: Integer): Boolean;
+begin
+  Result := (Marker <> '') and (Length(Source) - Offset >= Length(Marker)) and
+    CompareMem(@Source[Offset + 1], Pointer(Marker), Length(Marker));
+end;
+
+function LinesMatch(const OldSource, NewSource, OldMarker, NewMarker: RawByteString;
+  OldOffset, NewOffset, OldEnd, NewEnd: Integer; IgnoreSpaceChanges: Boolean): Boolean;
+var
+  OldHeader, NewHeader: Boolean;
+begin
+  OldHeader := IsHeader(OldSource, OldMarker, OldOffset);
+  NewHeader := IsHeader(NewSource, NewMarker, NewOffset);
+  if OldHeader or NewHeader then Exit(OldHeader and NewHeader);
+  Result := SameDiffLine(OldSource, NewSource, OldOffset, NewOffset, OldEnd, NewEnd, IgnoreSpaceChanges);
+end;
+
+function IndexLines(const Source, Marker: RawByteString; IgnoreSpaceChanges: Boolean): TLineIndex;
 var
   Count, Offset, Index, Ending: Integer;
 begin
@@ -95,12 +112,13 @@ begin
   begin
     Ending := LineEnd(Source, Offset);
     Result[Index].Ending := Ending;
-    Result[Index].Hash := DiffLineHash(Source, Offset, Ending, IgnoreSpaceChanges);
+    if IsHeader(Source, Marker, Offset) then Result[Index].Hash := 0
+    else Result[Index].Hash := DiffLineHash(Source, Offset, Ending, IgnoreSpaceChanges);
     Offset := Ending;
   end;
 end;
 
-function FindChanges(const OldSource, NewSource: RawByteString; out Changes: TChanges;
+function FindChanges(const OldSource, NewSource, OldMarker, NewMarker: RawByteString; out Changes: TChanges;
   out Prefix: TPosition; IgnoreSpaceChanges: Boolean): Boolean;
 var
   Frontier: array[0..1] of array of TPosition;
@@ -133,7 +151,7 @@ var
         NewEnd := LineEnd(NewSource, Position.NewLine.Offset);
         Dec(Budget, (OldEnd - Position.OldLine.Offset) + (NewEnd - Position.NewLine.Offset));
       end;
-      if not SameDiffLine(OldSource, NewSource, Position.OldLine.Offset, Position.NewLine.Offset,
+      if not LinesMatch(OldSource, NewSource, OldMarker, NewMarker, Position.OldLine.Offset, Position.NewLine.Offset,
         OldEnd, NewEnd, IgnoreSpaceChanges) then
         Break;
       Position.OldLine.Offset := OldEnd;
@@ -177,8 +195,8 @@ var
 
 begin
   Budget := MaxSearchBytes;
-  OldLines := IndexLines(OldSource, IgnoreSpaceChanges);
-  NewLines := IndexLines(NewSource, IgnoreSpaceChanges);
+  OldLines := IndexLines(OldSource, OldMarker, IgnoreSpaceChanges);
+  NewLines := IndexLines(NewSource, NewMarker, IgnoreSpaceChanges);
   Indexed := ((Length(OldLines) > 0) or (OldSource = '')) and
     ((Length(NewLines) > 0) or (NewSource = ''));
   Prefix := Default(TPosition);
@@ -264,7 +282,7 @@ begin
   Result := False;
 end;
 
-function Replacement(const OldSource, NewSource: RawByteString; const Prefix: TPosition;
+function Replacement(const OldSource, NewSource, OldMarker, NewMarker: RawByteString; const Prefix: TPosition;
   IgnoreSpaceChanges: Boolean): TChange;
 var
   Tail: TPosition;
@@ -283,7 +301,7 @@ begin
     Tail := Result.After;
     Retreat(OldSource, Tail.OldLine);
     Retreat(NewSource, Tail.NewLine);
-    if not SameDiffLine(OldSource, NewSource, Tail.OldLine.Offset, Tail.NewLine.Offset,
+    if not LinesMatch(OldSource, NewSource, OldMarker, NewMarker, Tail.OldLine.Offset, Tail.NewLine.Offset,
       Result.After.OldLine.Offset, Result.After.NewLine.Offset, IgnoreSpaceChanges) then
       Break;
     Result.After := Tail;
@@ -381,13 +399,31 @@ begin
   WriteLines(Output, '> ', NewSource, Change.First.NewLine.Offset, Change.After.NewLine.Offset);
 end;
 
+function OnlyHeaders(const Source, Marker: RawByteString; First, After: Integer): Boolean;
+begin
+  while First < After do
+  begin
+    if not IsHeader(Source, Marker, First) then Exit(False);
+    First := LineEnd(Source, First);
+  end;
+  Result := True;
+end;
+
 procedure WriteDeckDiff(const OldSource, NewSource: RawByteString; const OldLabel, NewLabel: string;
   Output: TScuOutput; IgnoreSpaceChanges: Boolean; Format: TDiffFormat;
-  ShowNormalLabels: Boolean);
+  ShowNormalLabels: Boolean; const OldMarker, NewMarker: string);
 var
   Changes: TChanges;
   Prefix: TPosition;
-  First, Last: Integer;
+  First, Last, Index: Integer;
+  Printed, Visible: Boolean;
+
+  function VisibleChange(const Change: TChange): Boolean;
+  begin
+    Result := not (OnlyHeaders(OldSource, OldMarker, Change.First.OldLine.Offset, Change.After.OldLine.Offset)
+      and OnlyHeaders(NewSource, NewMarker, Change.First.NewLine.Offset, Change.After.NewLine.Offset));
+  end;
+
 begin
   if OldSource = NewSource then
     Exit;
@@ -397,26 +433,26 @@ begin
     Exit;
   end;
 
-  if not FindChanges(OldSource, NewSource, Changes, Prefix, IgnoreSpaceChanges) then
+  if not FindChanges(OldSource, NewSource, OldMarker, NewMarker, Changes, Prefix, IgnoreSpaceChanges) then
   begin
     SetLength(Changes, 1);
-    Changes[0] := Replacement(OldSource, NewSource, Prefix, IgnoreSpaceChanges);
+    Changes[0] := Replacement(OldSource, NewSource, OldMarker, NewMarker, Prefix, IgnoreSpaceChanges);
   end;
   if Length(Changes) = 0 then
     Exit;
+  Printed := False;
   if Format = dfNormal then
   begin
-    if ShowNormalLabels then
-      Output.WriteLine('diff ' + OldLabel + ' ' + NewLabel);
     for First := 0 to High(Changes) do
     begin
       CheckSessionInterrupt;
+      if not VisibleChange(Changes[First]) then Continue;
+      if ShowNormalLabels and not Printed then Output.WriteLine('diff ' + OldLabel + ' ' + NewLabel);
+      Printed := True;
       WriteNormalChange(Output, OldSource, NewSource, Changes[First]);
     end;
     Exit;
   end;
-  Output.WriteLine('--- ' + OldLabel);
-  Output.WriteLine('+++ ' + NewLabel);
   First := 0;
   while First < Length(Changes) do
   begin
@@ -424,7 +460,19 @@ begin
     while (Last < High(Changes)) and
       (Changes[Last + 1].First.OldLine.Lines - Changes[Last].After.OldLine.Lines <= 2 * ContextLines) do
       Inc(Last);
-    WriteHunk(Output, OldSource, NewSource, Changes, First, Last);
+    Visible := False;
+    for Index := First to Last do
+      if VisibleChange(Changes[Index]) then Visible := True;
+    if Visible then
+    begin
+      if not Printed then
+      begin
+        Output.WriteLine('--- ' + OldLabel);
+        Output.WriteLine('+++ ' + NewLabel);
+        Printed := True;
+      end;
+      WriteHunk(Output, OldSource, NewSource, Changes, First, Last);
+    end;
     First := Last + 1;
   end;
 end;

@@ -7,6 +7,8 @@ interface
 // UTC wall clock; elapsed-time measurements must use a monotonic clock instead.
 function PlatformUtcNow: TDateTime;
 
+function PlatformLocalTime(UTC: TDateTime; out Local: TDateTime): Boolean;
+
 implementation
 
 uses
@@ -18,6 +20,11 @@ uses
 function PlatformUtcNow: TDateTime;
 begin
   Result := ReadUtcClock;
+end;
+
+function PlatformLocalTime(UTC: TDateTime; out Local: TDateTime): Boolean;
+begin
+  Result := ConvertUtcToLocal(UTC, Local);
 end;
 
 end.

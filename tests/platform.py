@@ -35,6 +35,18 @@ class PlatformTests(unittest.TestCase):
             self.assertLessEqual(before - margin, actual)
             self.assertLessEqual(actual, after + margin)
 
+    @unittest.skipUnless(LINUX, 'POSIX TZ environment')
+    def test_local_display_uses_offset_at_the_recorded_instant(self):
+        cases = [
+            ('Europe/Amsterdam', '2026-10-25T00:30:00.123Z', '2026-10-25T02:30:00.123+02:00'),
+            ('Europe/Amsterdam', '2026-10-25T01:30:00.123Z', '2026-10-25T02:30:00.123+01:00'),
+            ('Asia/Kathmandu', '2026-01-01T19:00:00.007Z', '2026-01-02T00:45:00.007+05:45'),
+            ('America/New_York', '2026-01-01T01:00:00.000Z', '2025-12-31T20:00:00.000-05:00'),
+        ]
+        for zone, utc, local in cases:
+            with self.subTest(zone=zone, utc=utc):
+                self.assertEqual(self.probe('local', utc, env={**os.environ, 'TZ': zone}), local)
+
     def test_canonical_file_allows_missing_leaf(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

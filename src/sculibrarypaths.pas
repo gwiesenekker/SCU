@@ -12,7 +12,7 @@ function IsLibraryStoragePath(const Candidate, LibraryPath: string): Boolean;
 implementation
 
 uses
-  SysUtils, ScuErrors, ScuPlatformPaths;
+  SysUtils, ScuErrors, ScuFiles, ScuPlatformPaths;
 
 function NormalizeLibraryName(const Path: string): string;
 var
@@ -28,9 +28,15 @@ begin
   Result := Path;
 end;
 
+function HiddenLockPath(const Path: string): string;
+begin
+  Result := ExtractFilePath(Path) + '.' + ExtractFileName(Path) + '.lock';
+end;
+
 function LibraryLockPath(const Path: string): string;
 begin
   Result := Path + '.lock';
+  if not FileEntryExists(Result) then Result := HiddenLockPath(Path);
 end;
 
 function LibraryRecoveryPath(const Path: string; ProcessID: Integer): string;
@@ -40,7 +46,8 @@ end;
 
 function IsLibraryStoragePath(const Candidate, LibraryPath: string): Boolean;
 begin
-  Result := SameStoragePath(Candidate, LibraryPath) or SameStoragePath(Candidate, LibraryLockPath(LibraryPath)) or
+  Result := SameStoragePath(Candidate, LibraryPath) or SameStoragePath(Candidate, LibraryPath + '.lock') or
+    SameStoragePath(Candidate, HiddenLockPath(LibraryPath)) or
     SameStoragePath(Candidate, LibraryPath + '-journal') or SameStoragePath(Candidate, LibraryPath + '-wal') or
     SameStoragePath(Candidate, LibraryPath + '-shm');
 end;

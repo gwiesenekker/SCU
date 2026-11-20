@@ -6,6 +6,7 @@ interface
 
 uses Classes, SysUtils, ScuFileTypes;
 
+function FileEntryExists(const Path: string): Boolean;
 function RegularFileExists(const Path: string): Boolean;
 function IsSQLiteFile(const Path: string): Boolean;
 procedure CleanupStaleAtomicFiles(const Directory: string);
@@ -70,6 +71,18 @@ begin
   finally
     if Handle <> INVALID_HANDLE_VALUE then CloseHandle(Handle);
   end;
+end;
+
+function FileEntryExists(const Path: string): Boolean;
+var Attributes, Error: DWORD;
+begin
+  if Path = '' then Exit(False);
+  Attributes := GetFileAttributesW(PWideChar(NativeFilePath(Path)));
+  if Attributes <> INVALID_FILE_ATTRIBUTES then Exit(True);
+  Error := GetLastError;
+  if not (Error in [ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND]) then
+    RaiseSystemError('Could not inspect "' + Path + '"', Error);
+  Result := False;
 end;
 
 function RegularFileExists(const Path: string): Boolean;

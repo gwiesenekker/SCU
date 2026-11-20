@@ -94,7 +94,6 @@ type
     function ListDeckRevisions(const Deck: string; Dest: TStrings; Formats: TDeckRevisionFormats): Integer;
     procedure ChangedDecks(Base, Last: Integer; Dest: TStrings);
     procedure VersionBounds(const Name: string; out Base, Last: Integer);
-    procedure ListVersions(Dest: TStrings);
     procedure ListVersionNames(Dest: TStrings; const Deck: string = '');
     function SelectDeck(const Deck, Version, DeckRevision: string): TDeckSelection;
     procedure ListDeckRevisionNames(const Deck, Version: string; Dest: TStrings);
@@ -107,6 +106,7 @@ type
     function PreviousDeckSnapshot(const Name: string; AtRevision: Integer): TLibrarySnapshot;
     procedure LockVersion(const Description: string);
     function SuggestedNextVersion: string;
+    procedure DeleteVersion(const Name: string);
     procedure CreateVersion(const Name: string);
     function CurrentVersion: string;
     function VersionAt(Revision: Integer): string;
@@ -461,11 +461,6 @@ begin
   FQueries.VersionBounds(Name, Base, Last);
 end;
 
-procedure TDeckLibrary.ListVersions(Dest: TStrings);
-begin
-  FQueries.ListVersions(Dest);
-end;
-
 procedure TDeckLibrary.ListVersionNames(Dest: TStrings; const Deck: string);
 begin
   FQueries.ListVersionNames(Dest, Deck);
@@ -612,6 +607,12 @@ procedure TDeckLibrary.Configure(const Settings: TLibrarySettingsChange);
 begin
   if FStore.Header.Configure(Settings, Revision) then
     MarkModified;
+end;
+
+procedure TDeckLibrary.DeleteVersion(const Name: string);
+begin
+  FStore.Header.DeleteVersion(Name, Revision);
+  MarkModified;
 end;
 
 end.

@@ -19,6 +19,8 @@ DLL_GROUPS = (('sqlite3.dll',), ('libzstd.dll', 'zstd.dll'),
 
 
 def build_gui(args, output):
+    subprocess.run([getattr(args, 'fpcres', 'fpcres'), '-of', 'res', 'gui/scumanual.rc',
+                    '-o', 'gui/scumanual.res'], cwd=ROOT, check=True)
     # Generate local projects rather than rewriting tracked LPI files or sharing
     # Linux LCL objects. Paths are absolute so Unicode/spaced output roots work.
     projects = [('gui/scu_gui.lpi', 'scu-gui.exe', 'gui-units')]
@@ -36,7 +38,7 @@ def build_gui(args, output):
         unit.set('Value', str((ROOT / template).parent / unit.get('Value')))
         filename = output / Path(template).name
         tree.write(filename, encoding='utf-8', xml_declaration=True)
-        command = [args.lazbuild, '--os=win64', '--cpu=x86_64', '--widgetset=win32',
+        command = [args.lazbuild, '--build-all', '--os=win64', '--cpu=x86_64', '--widgetset=win32',
                    '--compiler=' + args.fpc]
         command += ['--opt=' + subprocess.list2cmdline([option]) for option in args.fpc_option]
         command.append(str(filename))
@@ -85,6 +87,7 @@ def build(args):
                     raise ValueError(f'Conflicting previously staged DLL: {output / name}. Use a clean output directory.')
     units = output / 'units'
     units.mkdir(parents=True, exist_ok=True)
+    subprocess.run([sys.executable, str(ROOT / 'tools/embed_commands.py'), '--fpcres', getattr(args, 'fpcres', 'fpcres')], cwd=ROOT, check=True)
     command = [args.fpc, *args.fpc_option, '-Twin64', '-O2', '-B',
                '-Fu' + str(ROOT / 'src'), '-FU' + str(units), '-FE' + str(output),
                '-o' + str(output / 'scu.exe'), str(ROOT / 'src' / 'scu.pas')]
@@ -116,6 +119,7 @@ def build(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--fpc', default='fpc', help='Free Pascal compiler executable (default: fpc)')
+    parser.add_argument('--fpcres', default='fpcres', help='FPC resource compiler executable (default: fpcres)')
     parser.add_argument('--fpc-option', action='append', default=[],
                         help='Additional compiler argument; repeat, using --fpc-option=-FuPATH for flags')
     parser.add_argument('--output', type=Path, default=ROOT / 'build' / 'windows',

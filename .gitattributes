@@ -4,3 +4,6 @@
 *.dll -text
 *.exe -text
 *.zst -text
+
+/src/scucommands.res -text linguist-generated=true
+/gui/scumanual.res -text linguist-generated=true

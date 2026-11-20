@@ -1,7 +1,7 @@
 program gui_check;
 {$mode objfpc}{$H+}
 uses {$IFDEF UNIX}cthreads,{$ENDIF} {$IFDEF WINDOWS}Windows, ScuPlatformProcessStringsWindows,{$ENDIF} Interfaces, Forms, Classes, SysUtils, Controls, StdCtrls, ExtCtrls,
-  ComCtrls, Graphics, Types, FPImage, Dialogs, Menus, FPJSON, Process, ScuGuiOptions, LCLType, ScuGuiTabs, ScuGuiMain, ScuGuiTab, ScuFiles, ScuGuiReader, ScuGuiLiveDiff, ScuSQLite, ScuSQLiteDB, ScuPlatformPaths, ScuGuiPlatform;
+  ComCtrls, Graphics, Types, SynEdit, uManualForm, FPImage, Dialogs, Menus, FPJSON, Process, ScuGuiOptions, LCLType, ScuGuiTabs, ScuGuiMain, ScuGuiTab, ScuFiles, ScuGuiReader, ScuGuiLiveDiff, ScuSQLite, ScuSQLiteDB, ScuPlatformPaths, ScuGuiPlatform;
 type TErrorHandler = class
   procedure Failed(Sender: TObject; E: Exception);
 end;
@@ -43,6 +43,32 @@ begin
   until not Main.Busy;
   Application.ProcessMessages;
 end;
+procedure CheckManual;
+var
+  Entry: TMenuItem;
+  Manual: TManualForm;
+  Search: TEdit;
+begin
+  Entry := Main.Menu.FindItem(VK_F1, fkShortCut);
+  Check(Assigned(Entry), 'Help menu contains Manual');
+  Entry.Click;
+  Application.ProcessMessages;
+  Manual := TManualForm(Main.FindComponent('ManualWindow'));
+  Check(Assigned(Manual) and Manual.Visible, 'Manual opens before library selection');
+  Check(TSynEdit(Manual.FindComponent('ManualText')).ReadOnly, 'Manual uses a read-only SynEdit');
+  Check(Length(Manual.Document.Headings) >= 8, 'Markdown sections populate the manual');
+  Search := TEdit(Manual.FindComponent('ManualSearch'));
+  Search.Text := 'disvh';
+  Check(Length(Manual.Matches) > 1, 'Manual search finds version history');
+  TButton(Manual.FindComponent('ManualNext')).Click;
+  Manual.RenderForColumns(60);
+  Check(Manual.MatchIndex = 1, 'Resizing preserves the selected search result');
+  Manual.Close;
+  Entry.Click;
+  Check(Main.FindComponent('ManualWindow') = Manual, 'Reopen the existing manual window');
+  Manual.Close;
+end;
+
 procedure Inspect(Parent: TWinControl);
 var I: Integer; Child: TControl;
 begin
@@ -162,6 +188,7 @@ begin
   Main := TTestMainForm.Create(nil);
   try
     Main.Show; Application.ProcessMessages;
+    CheckManual;
     Check(Main.Preferences.EditorFont.Name = DefaultGuiFont, 'Platform default editor font');
     Check(Main.LogView.Font.Name = DefaultGuiFont, 'Platform default log font');
     Check(Main.DiffView.Font.Name = DefaultGuiFont, 'Platform default diff font');

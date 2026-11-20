@@ -3,6 +3,7 @@
 /library.json.audit
 /library.json.lock
 /library.sqlite
+/.library.sqlite.lock
 /library.sqlite.lock
 /library.sqlite-journal
 /library.sqlite-wal

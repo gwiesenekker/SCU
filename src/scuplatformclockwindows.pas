@@ -6,9 +6,11 @@ interface
 
 function ReadUtcClock: TDateTime;
 
+function ConvertUtcToLocal(UTC: TDateTime; out Local: TDateTime): Boolean;
+
 implementation
 
-uses Windows, DateUtils;
+uses Windows, DateUtils, SysUtils;
 
 function ReadUtcClock: TDateTime;
 const
@@ -25,6 +27,20 @@ begin
     Int64(UnixEpochTicks);
   Result := UnixToDateTime(Ticks div Int64(TicksPerSecond)) +
     (Ticks mod Int64(TicksPerSecond)) / 864000000000.0;
+end;
+
+function GetTimeZoneInformationForYear(Year: Word; Zone: Pointer;
+  out Rules: TTimeZoneInformation): LongBool; stdcall; external 'kernel32';
+
+function ConvertUtcToLocal(UTC: TDateTime; out Local: TDateTime): Boolean;
+var
+  UtcParts, LocalParts: TSystemTime;
+  Rules: TTimeZoneInformation;
+begin
+  DateTimeToSystemTime(UTC, UtcParts);
+  Result := GetTimeZoneInformationForYear(UtcParts.Year, nil, Rules) and
+    SystemTimeToTzSpecificLocalTime(@Rules, UtcParts, LocalParts);
+  if Result then Local := SystemTimeToDateTime(LocalParts);
 end;
 
 end.

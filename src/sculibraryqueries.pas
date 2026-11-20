@@ -23,7 +23,6 @@ type
     procedure ChangedDecks(Base, Last: Integer; Dest: TStrings);
     function ListDeckRevisions(const Deck: string; Dest: TStrings; Formats: TDeckRevisionFormats): Integer;
     procedure VersionBounds(const Name: string; out Base, Last: Integer);
-    procedure ListVersions(Dest: TStrings);
     procedure ListVersionNames(Dest: TStrings; const Deck: string);
     function SelectDeck(const Deck, Version, DeckRevision: string): TDeckSelection;
     procedure ListDeckRevisionNames(const Deck, Version: string; Dest: TStrings);
@@ -218,11 +217,6 @@ begin
   Versions.Bounds(Name, Revision, Base, Last);
 end;
 
-
-procedure TLibraryQueries.ListVersions(Dest: TStrings);
-begin
-  Versions.List(Revision, Dest);
-end;
 
 
 procedure TLibraryQueries.ListVersionNames(Dest: TStrings; const Deck: string);

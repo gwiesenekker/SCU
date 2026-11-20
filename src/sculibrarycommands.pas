@@ -11,15 +11,14 @@ function InitializeLibrary(var Context: TCommandContext): string;
 function SaveRecoveredLibrary(var Context: TCommandContext): string;
 function SaveLibrary(var Context: TCommandContext): string;
 function DisplayLibrary(var Context: TCommandContext): string;
-function ShowLibrary(var Context: TCommandContext): string;
 procedure ReportLibraryHeader(const Context: TCommandContext);
 function ConfigureLibrary(var Context: TCommandContext): string;
 function LockVersion(var Context: TCommandContext): string;
+function DeleteVersion(var Context: TCommandContext): string;
 function CreateVersion(var Context: TCommandContext): string;
 function DisplayVersion(var Context: TCommandContext): string;
 function DisplayVersionHistory(var Context: TCommandContext): string;
-function ListVersions(var Context: TCommandContext): string;
-function ShowHistory(var Context: TCommandContext): string;
+function DisplayAuditTrail(var Context: TCommandContext): string;
 
 implementation
 
@@ -51,6 +50,7 @@ end;
 function DisplayLibrary(var Context: TCommandContext): string;
 begin
   Context.Snapshots.Selected := Context.LibraryFile.CurrentSnapshot;
+  if BooleanArgument(Context.Command, 'json', 'no') then Exit('');
   Result := Format('Library "%s".', [Context.LibraryPath]);
 end;
 
@@ -60,6 +60,11 @@ var
   Previous: TLibrarySnapshot;
   PreviousVersion: string;
 begin
+  if BooleanArgument(Context.Command, 'json', 'no') then
+  begin
+    Context.Output.WriteLine(Context.LibraryFile.HeaderJSON);
+    Exit;
+  end;
   Configuration := Context.LibraryFile.CreateHeaderConfiguration;
   try
     PreviousVersion := 'none';
@@ -70,12 +75,6 @@ begin
   finally
     Configuration.Free;
   end;
-end;
-
-function ShowLibrary(var Context: TCommandContext): string;
-begin
-  Context.Output.WriteLine(Context.LibraryFile.HeaderJSON);
-  Result := '';
 end;
 
 function ConfigureLibrary(var Context: TCommandContext): string;
@@ -133,8 +132,19 @@ end;
 
 function LockVersion(var Context: TCommandContext): string;
 begin
+  if (Context.Command.ExpectedVersion <> '') and
+    (Context.Command.ExpectedVersion <> Context.LibraryFile.CurrentVersion) then
+    raise EScuError.CreateFmt('Version changed from %s to %s while editing the lock description.',
+      [Context.Command.ExpectedVersion, Context.LibraryFile.CurrentVersion]);
   Context.LibraryFile.LockVersion(Context.Command['description']);
   Result := 'Locked version ' + Context.LibraryFile.CurrentVersion;
+end;
+
+function DeleteVersion(var Context: TCommandContext): string;
+begin
+  Context.LibraryFile.DeleteVersion(Context.Command['version']);
+  Result := Format('Deleted version %s. Current version %s is locked.',
+    [Context.Command['version'], Context.LibraryFile.CurrentVersion]);
 end;
 
 function CreateVersion(var Context: TCommandContext): string;
@@ -193,35 +203,14 @@ begin
           SetLength(Description, FirstBreak - 1);
           Break;
         end;
+      Description := StringToJSONString(Description);
     end;
-    Description := StringToJSONString(Description);
     Rows[Index - FirstVersion].Version := Entry.Name;
     Rows[Index - FirstVersion].Status := Status;
     Rows[Index - FirstVersion].LockedUTC := LockedUTC;
     Rows[Index - FirstVersion].Description := Description;
   end;
-  WriteVersionHistoryRows(Rows, Context.Output);
-  Result := '';
-end;
-
-function ListVersions(var Context: TCommandContext): string;
-var
-  Rows: TStringList;
-  Row: string;
-  Table: TScuTable;
-begin
-  Rows := TStringList.Create;
-  Table := nil;
-  try
-    Table := TScuTable.Create(['Version', 'Status']);
-    Context.LibraryFile.ListVersions(Rows);
-    for Row in Rows do
-      Table.AddDelimitedRow(Row);
-    Table.WriteTo(Context.Output, Context.Output.Columns);
-  finally
-    Table.Free;
-    Rows.Free;
-  end;
+  WriteVersionHistoryRows(Rows, Context.Output, SameText(Mode, 'full'));
   Result := '';
 end;
 
@@ -273,7 +262,7 @@ begin
   Table.AddRow([FormatAuditCommand(Attempt), HistoryStatus(Outcome, BuildOutcome)]);
 end;
 
-function ShowHistory(var Context: TCommandContext): string;
+function DisplayAuditTrail(var Context: TCommandContext): string;
 var
   Limit: Int64;
   Writer: THistoryWriter;

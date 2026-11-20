@@ -10,6 +10,7 @@ begin
   try
     Mode := ParamStr(1);
     if Mode = 'now' then WriteLn(UtcTimestamp(UtcNow))
+    else if Mode = 'local' then WriteLn(LocalTimestamp(ParamStr(2)))
     else if Mode = 'fixed' then
       WriteLn(UtcTimestamp(EncodeDateTime(2026, 11, 16, 12, 34, 56, 789)))
     else if Mode = 'directory' then WriteLn(PlatformCanonicalDirectory(ParamStr(2)))

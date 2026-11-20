@@ -41,11 +41,18 @@ begin
   Result := Result + #9 + Version;
 end;
 
-procedure WriteChangedDeck(const Context: TCommandContext; const Deck: string; IgnoreSpaceChanges: Boolean; Format: TDiffFormat);
+function HeaderMarker(const Source: TDeckSource; const DefaultPrefix: string): string;
+begin
+  Result := Source.CommentPrefix;
+  if Result = '' then Result := DefaultPrefix;
+  if Result <> '' then Result := Result + ' SCU REVISION ';
+end;
+
+procedure WriteChangedDeck(const Context: TCommandContext; const Deck: string; IgnoreSpaceChanges, IgnoreHeaders: Boolean; Format: TDiffFormat);
 var
   FromDeck, ToDeck: TLibrarySnapshot;
   FromSource, ToSource: TDeckSource;
-  FromLabel, ToLabel: string;
+  FromLabel, ToLabel, FromMarker, ToMarker: string;
   InFrom, InTo: Boolean;
 begin
   InFrom := Context.LibraryFile.TryDeckSnapshot(Deck, Context.Snapshots.FromVersion.LibraryRevision, FromDeck);
@@ -76,18 +83,28 @@ begin
       Context.Output.WriteLine('Only in version ' + Context.Snapshots.FromVersion.Version + ': ' + Deck + ' (empty deck)');
   end
   else
+  begin
+    FromMarker := '';
+    ToMarker := '';
+    if IgnoreHeaders then
+    begin
+      if InFrom then FromMarker := HeaderMarker(FromSource, Context.LibraryFile.DefaultCommentPrefix(Context.Snapshots.FromVersion.Version));
+      if InTo then ToMarker := HeaderMarker(ToSource, Context.LibraryFile.DefaultCommentPrefix(Context.Snapshots.ToVersion.Version));
+    end;
     WriteDeckDiff(FromSource.Bytes, ToSource.Bytes, FromLabel, ToLabel, Context.Output,
-      IgnoreSpaceChanges, Format, True);
+      IgnoreSpaceChanges, Format, True, FromMarker, ToMarker);
+  end;
 end;
 
 function DisplayVersionDiff(var Context: TCommandContext): string;
 var
   Decks: TStringList;
   Deck: string;
-  IgnoreSpaceChanges: Boolean;
+  IgnoreSpaceChanges, IgnoreHeaders: Boolean;
   Format: TDiffFormat;
 begin
   IgnoreSpaceChanges := BooleanArgument(Context.Command, 'ignore_space_changes');
+  IgnoreHeaders := BooleanArgument(Context.Command, 'ignore_legacy_scu_header');
   Format := ParseDiffFormat(Context.Command.Argument('output_format', 'normal'));
   Context.Snapshots.FromVersion := Context.LibraryFile.ParseLibrarySnapshot(Context.Command['from_version']);
   Context.Snapshots.ToVersion := Context.LibraryFile.ParseLibrarySnapshot(Context.Command['to_version']);
@@ -107,7 +124,7 @@ begin
     for Deck in Decks do
     begin
       CheckSessionInterrupt;
-      WriteChangedDeck(Context, Deck, IgnoreSpaceChanges, Format);
+      WriteChangedDeck(Context, Deck, IgnoreSpaceChanges, IgnoreHeaders, Format);
     end;
   finally
     Decks.Free;
