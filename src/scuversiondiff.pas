@@ -12,7 +12,7 @@ function DisplayVersionDiff(var Context: TCommandContext): string;
 implementation
 
 uses
-  ScuArchiveCompatibility, Classes, ScuDiff, ScuLibrary, ScuSignals;
+  ScuArchiveCompatibility, Classes, SysUtils, ScuTable, ScuDiff, ScuLibrary, ScuSignals;
 
 function PatchLabel(const Path, Version: string): string;
 const Octal = '01234567';
@@ -48,12 +48,14 @@ begin
   if Result <> '' then Result := Result + ' SCU REVISION ';
 end;
 
-procedure WriteChangedDeck(const Context: TCommandContext; const Deck: string; IgnoreSpaceChanges, IgnoreHeaders: Boolean; Format: TDiffFormat);
+procedure WriteChangedDeck(const Context: TCommandContext; const Deck: string; IgnoreSpaceChanges, IgnoreHeaders: Boolean; Format: TDiffFormat; Summary: TScuTable; var Total: TDiffStats; var DeckCount: Integer);
 var
   FromDeck, ToDeck: TLibrarySnapshot;
   FromSource, ToSource: TDeckSource;
   FromLabel, ToLabel, FromMarker, ToMarker: string;
   InFrom, InTo: Boolean;
+  Stats: TDiffStats;
+  Status: string;
 begin
   InFrom := Context.LibraryFile.TryDeckSnapshot(Deck, Context.Snapshots.FromVersion.LibraryRevision, FromDeck);
   InTo := Context.LibraryFile.TryDeckSnapshot(Deck, Context.Snapshots.ToVersion.LibraryRevision, ToDeck);
@@ -75,6 +77,7 @@ begin
     if Format = dfUnified then ToLabel := PatchLabel('b/' + ToSource.SourcePath, ToSource.DeckVersion)
     else ToLabel := Deck + '@' + ToSource.DeckVersion;
   end;
+  Stats := Default(TDiffStats);
   if (FromSource.Bytes = '') and (ToSource.Bytes = '') and (InFrom <> InTo) then
   begin
     if InTo then
@@ -91,14 +94,30 @@ begin
       if InFrom then FromMarker := HeaderMarker(FromSource, Context.LibraryFile.DefaultCommentPrefix(Context.Snapshots.FromVersion.Version));
       if InTo then ToMarker := HeaderMarker(ToSource, Context.LibraryFile.DefaultCommentPrefix(Context.Snapshots.ToVersion.Version));
     end;
-    WriteDeckDiff(FromSource.Bytes, ToSource.Bytes, FromLabel, ToLabel, Context.Output,
+    Stats := WriteDeckDiff(FromSource.Bytes, ToSource.Bytes, FromLabel, ToLabel, Context.Output,
       IgnoreSpaceChanges, Format, True, FromMarker, ToMarker);
+    if not Stats.Binary and (Stats.Added + Stats.Changed + Stats.Deleted = 0) then Exit;
   end;
+  if not Assigned(Summary) then Exit;
+  if not InFrom then Status := 'Added'
+  else if not InTo then Status := 'Deleted'
+  else Status := 'Modified';
+  Inc(DeckCount);
+  if Stats.Binary then
+    Summary.AddRow([Deck, Status + ' (binary)', '-', '-', '-'])
+  else
+    Summary.AddRow([Deck, Status, IntToStr(Stats.Added), IntToStr(Stats.Changed), IntToStr(Stats.Deleted)]);
+  Inc(Total.Added, Stats.Added);
+  Inc(Total.Changed, Stats.Changed);
+  Inc(Total.Deleted, Stats.Deleted);
 end;
 
 function DisplayVersionDiff(var Context: TCommandContext): string;
 var
   Decks: TStringList;
+  Summary: TScuTable;
+  Total: TDiffStats;
+  DeckCount: Integer;
   Deck: string;
   IgnoreSpaceChanges, IgnoreHeaders: Boolean;
   Format: TDiffFormat;
@@ -108,12 +127,17 @@ begin
   Format := ParseDiffFormat(Context.Command.Argument('output_format', 'normal'));
   Context.Snapshots.FromVersion := Context.LibraryFile.ParseLibrarySnapshot(Context.Command['from_version']);
   Context.Snapshots.ToVersion := Context.LibraryFile.ParseLibrarySnapshot(Context.Command['to_version']);
+  Summary := nil;
   if Format = dfUnified then
+    RequireArchiveSourceNames(Context.LibraryFile, Context.Database)
+  else
   begin
-    RequireArchiveSourceNames(Context.LibraryFile, Context.Database);
+    Context.Output.WriteLine('From version ' + Context.Snapshots.FromVersion.Version + '.');
+    Context.Output.WriteLine('To version ' + Context.Snapshots.ToVersion.Version + '.');
+    Summary := TScuTable.Create(['Deck name', 'Status', 'Added', 'Changed', 'Deleted'], 0);
   end;
-  Context.Output.Report('From version ' + Context.Snapshots.FromVersion.Version + '.');
-  Context.Output.Report('To version ' + Context.Snapshots.ToVersion.Version + '.');
+  DeckCount := 0;
+  Total := Default(TDiffStats);
   Decks := TStringList.Create;
   try
     Decks.CaseSensitive := True;
@@ -124,10 +148,19 @@ begin
     for Deck in Decks do
     begin
       CheckSessionInterrupt;
-      WriteChangedDeck(Context, Deck, IgnoreSpaceChanges, IgnoreHeaders, Format);
+      WriteChangedDeck(Context, Deck, IgnoreSpaceChanges, IgnoreHeaders, Format, Summary, Total, DeckCount);
+    end;
+    if not Assigned(Summary) then Exit('');
+    if DeckCount = 0 then Context.Output.WriteLine('No decks differ.')
+    else
+    begin
+      Summary.AddRow(['Total', '', IntToStr(Total.Added), IntToStr(Total.Changed), IntToStr(Total.Deleted)]);
+      Context.Output.WriteLine('Diff summary (' + IntToStr(DeckCount) + ' changed)');
+      Summary.WriteTo(Context.Output);
     end;
   finally
     Decks.Free;
+    Summary.Free;
   end;
   Result := '';
 end;

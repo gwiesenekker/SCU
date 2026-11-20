@@ -181,7 +181,8 @@ end;
 function TransferVersion(var Context: TCommandContext; Mode: TExportMode): string;
 var
   Version, Directory, ExpansionUTC: string;
-  Revision, Base, Index, DeletedCount, WrittenCount: Integer;
+  Revision, Base, Index, DeletedCount, WrittenCount, ConflictCount: Integer;
+  Conflicts: TScuTable;
   Snapshot: TLibrarySnapshot;
   Selection: TDeckSelection;
   Names, FileNames, Removed, Preserved: TStringList;
@@ -210,6 +211,8 @@ begin
   Removed := TStringList.Create;
   Preserved := TStringList.Create;
   Manifest := nil;
+  Conflicts := nil;
+  ConflictCount := 0;
   try
     Names.Sorted := True;
     Names.CaseSensitive := True;
@@ -234,9 +237,26 @@ begin
       if FileNames.IndexOf(Rendered.FileName) >= 0 then
         raise EScuError.Create('Several decks export to source filename "' + Rendered.FileName + '". Choose unique source associations before exporting.');
       FileNames.Add(Rendered.FileName);
-      Manifest.PlanExport(Context.LibraryPath, OutputPath(Context, IncludeTrailingPathDelimiter(Directory) + Rendered.FileName),
-        Names[Index], Version, Rendered.DeckVersion, Mode, Rendered.ExpansionUTC, '', Rendered.Bytes,
-        BooleanArgument(Context.Command, 'overwrite', 'no'));
+      try
+        Manifest.PlanExport(Context.LibraryPath, OutputPath(Context, IncludeTrailingPathDelimiter(Directory) + Rendered.FileName),
+          Names[Index], Version, Rendered.DeckVersion, Mode, Rendered.ExpansionUTC, '', Rendered.Bytes,
+          BooleanArgument(Context.Command, 'overwrite', 'no'));
+      except
+        on E: EExportOverwriteRequired do
+        begin
+          if Expand then raise;
+          if not Assigned(Conflicts) then
+            Conflicts := TScuTable.Create(['Deck name', 'Deck version', 'Output file']);
+          Conflicts.AddRow([Names[Index], Rendered.DeckVersion, StringToJSONString(Rendered.FileName)]);
+          Inc(ConflictCount);
+        end;
+      end;
+    end;
+    if Assigned(Conflicts) then
+    begin
+      Conflicts.WriteTo(Context.Output, Context.Output.Columns);
+      raise EScuError.CreateFmt('%d output file(s) in "%s" require overwrite=yes. No decks were extracted.',
+        [ConflictCount, StringToJSONString(Directory)]);
     end;
     DeletedCount := 0;
     if Expand then DeletedCount := PlanReleaseCleanup(Context, Directory, Version, FileNames, Manifest, Removed, Preserved);
@@ -252,6 +272,7 @@ begin
       Result := Result + Format(', %d unchanged', [Names.Count - WrittenCount]);
     if DeletedCount > 0 then Result := Result + Format('; removed %d obsolete file(s).', [DeletedCount]);
   finally
+    Conflicts.Free;
     Manifest.Free;
     Preserved.Free;
     Removed.Free;

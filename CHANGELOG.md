@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Summarize changed decks and added, changed, and deleted lines after a normal version diff. Successful unified diffs omit the summary and leave standard error empty.
+
+- List all output files requiring explicit overwrite before extracting a version or starting its build.
+
 - Show Created, Replaced, or Unchanged for each extracted or released deck and count actual writes in the summary.
 
 - Strip the leading legacy `// SCU REVISION` header from decks stored by `import_versions.py`. Archive manifests retain the original file sizes and SHA-1 checksums.

@@ -845,6 +845,29 @@ class PortableCliTests(unittest.TestCase):
         self.run_scu("verify_audit_trail")
 
 
+    def test_extract_version_lists_all_overwrite_conflicts_before_writing(self):
+        for deck in ("absent", "edited", "identical", "untracked"):
+            self.store(deck, b"stored source")
+        directory = self.root / "outputs"
+        directory.mkdir()
+        self.run_scu("extd", "edited", "of=outputs/edited")
+        manifest = directory / ".scu-exports.json"
+        before = manifest.read_bytes()
+        (directory / "edited").write_bytes(b"local edit")
+        (directory / "identical").write_bytes(b"stored source")
+        (directory / "untracked").write_bytes(b"untracked work")
+        self.run_scu("conl", "build_command=echo built > build-marker")
+        result = self.run_scu("extv", "od=outputs", error="require overwrite=yes. No decks were extracted.")
+        self.assertEqual(self.table_data(result).splitlines(),
+                         ["edited\t1.0-0.000\tedited", "untracked\t1.0-0.000\tuntracked"])
+        self.assertEqual(manifest.read_bytes(), before)
+        self.assertFalse((directory / "absent").exists())
+        self.assertFalse((self.root / "build-marker").exists())
+        self.assertEqual((directory / "edited").read_bytes(), b"local edit")
+        self.assertEqual((directory / "untracked").read_bytes(), b"untracked work")
+        self.assertIn("Wrote 3 deck(s)", self.run_scu("extv", "od=outputs", "o=y", "b=n"))
+        self.run_scu("verat")
+
     def test_extract_version_lists_the_complete_snapshot_with_latest_deck_versions(self):
         self.store("inherited", b"inherited")
         self.store("removed", b"removed")
@@ -1441,6 +1464,32 @@ class PortableCliTests(unittest.TestCase):
         self.run_scu("verify_audit_trail")
 
 
+    def test_version_diff_counts_each_edit_block_and_omits_binary_lines(self):
+        self.store("main", b"gone\ngone again\nkeep\nold\nstay\nend")
+        self.store("binary", b"\x00a")
+        self.store("ignored", b"// SCU REVISION old\na b\n")
+        self.run_scu("locv", "before")
+        self.run_scu("crev", "1.1")
+        self.store("main", b"keep\nnew\nextra\nstay\nend")
+        self.store("binary", b"\x00b")
+        self.store("ignored", b"// SCU REVISION new\na  b\n")
+        for fmt in ("normal", "unified"):
+            result = self.invoke([SCU, "disvd", "of=" + fmt], cwd=self.root,
+                                 capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stderr, "")
+            if fmt == "unified":
+                self.assertNotIn("Diff summary", result.stdout)
+                self.assertNotIn("From version", result.stdout)
+                identical = self.invoke([SCU, "disvd", "1.1", "1.1", "of=unified"], cwd=self.root,
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual((identical.returncode, identical.stdout, identical.stderr), (0, "", ""))
+                continue
+            summary = result.stdout.split("Diff summary (2 changed)\n")[1]
+            self.assertEqual(self.table_data(summary).splitlines(), [
+                "binary\tModified (binary)\t-\t-\t-", "main\tModified\t1\t1\t2",
+                "Total\t\t1\t1\t2"])
+
     def test_normal_version_diff_labels_changed_decks_and_missing_sides(self):
         self.store("main", b"before\n")
         self.store("removed", b"gone\n")
@@ -1450,8 +1499,12 @@ class PortableCliTests(unittest.TestCase):
         self.store("main", b"after\n")
         self.run_scu("deld", "removed")
         self.store("added", b"new\n")
-        self.assertEqual(self.run_scu("disvd"),
-                         "diff /dev/null added@1.1-0.000\n0a1\n> new\n"
+        patch, summary = self.run_scu("disvd").split("Diff summary (3 changed)\n")
+        self.assertEqual(self.table_data(summary).splitlines(), [
+            "added\tAdded\t1\t0\t0", "main\tModified\t0\t1\t0",
+            "removed\tDeleted\t0\t0\t1", "Total\t\t1\t1\t1"])
+        self.assertEqual(patch.rstrip(),
+                         "From version 1.0.\nTo version 1.1.\ndiff /dev/null added@1.1-0.000\n0a1\n> new\n"
                          "diff main@1.0-0.000 main@1.1-0.000\n1c1\n< before\n---\n> after\n"
                          "diff removed@1.0-0.000 /dev/null\n1d0\n< gone")
         outcome = json.loads(self.audit_lines()[-2].split(b" ", 1)[1])

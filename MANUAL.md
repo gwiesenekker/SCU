@@ -61,6 +61,8 @@ If you locked the current version too soon, enter `unlv`. It takes no arguments.
 You can then import further edits into that version and use `locv` again with a new description.
 The audit trail retains the earlier lock. Once a successor exists, the earlier version stays locked.
 
+`disvd` ends with a per-deck line summary and totals. Within each replacement block it pairs old and new lines as changed and counts the excess as added or deleted. Binary differences are listed with dashes for line counts. With `of=unified`, SCU omits the summary and version announcements so standard output contains the diff and standard error is reserved for errors.
+
 To undo an accidental `crev 8.1307`, enter `delv 8.1307`. This returns to the preceding locked version if 8.1307 is still open and has no deck revisions of its own. To remove a populated open version and its stored deck revisions, enter `delv 8.1307 delete_revisions=yes`. Earlier versions, audit history, and working files are preserved.
 
 The archive importer strips one leading `// SCU REVISION` header before storing a deck. Extraction returns the remaining bytes. Archive imports attach their original file lists, checksums, filename mappings and HISTORY entries to each locked version. Use `disl json=yes` to read the version’s `import_manifest`. Deck lists and releases include only source decks.
@@ -84,6 +86,8 @@ Open this manual with **Help → Manual** or F1. Select a heading in the content
 ```text
 extv build=no
 ```
+
+When `extv` encounters edited or untracked files that differ, it lists their deck names, versions, and output filenames. The batch stops before extraction and the build. Review the list before using `extv o=y` to replace those files.
 
 To discard an external edit to `book.c`, use `extd book.c o=y b=n`. SCU reports the output path and whether it wrote the file or found matching contents. If you already imported the edit, select the version to restore, for example `extd book.c v=8.1306 o=y b=n`.
 

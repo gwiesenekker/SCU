@@ -675,6 +675,7 @@ scu extract_version version=1.1
 
 `extract_deck` reports the output path and whether it wrote the file or found matching contents.
 `extract_version` and `release_version` list each selected deck with its version and file status (`Created`, `Replaced`, or `Unchanged`). Their summaries count files actually written and report how many already matched.
+`extv` lists every deck that requires `overwrite=yes` with its deck version and output filename. Resolve those conflicts or explicitly allow replacement before retrying.
 Existing identical files can be tracked without replacement. Differing untracked
 or locally edited files require `overwrite=yes`. Extraction can explicitly restore
 working sources; no export may overwrite SQLite storage. Separate sessions
@@ -760,6 +761,8 @@ scu display_deck_list
 If you locked the current version too soon, enter `unlv`. It takes no arguments.
 You can then import further edits into that version and use `locv` again with a new description.
 The audit trail retains the earlier lock. Once a successor exists, the earlier version stays locked.
+
+`disvd` ends with a per-deck line summary and totals. Within each replacement block it pairs old and new lines as changed and counts the excess as added or deleted. Binary differences are listed with dashes for line counts. With `of=unified`, SCU omits the summary and version announcements so standard output contains the diff and standard error is reserved for errors.
 
 To undo an accidental `crev 8.1307`, enter `delv 8.1307`. This returns to the preceding locked version if 8.1307 is still open and has no deck revisions of its own. To remove a populated open version and its stored deck revisions, enter `delv 8.1307 delete_revisions=yes`. Earlier versions, audit history, and working files are preserved.
 

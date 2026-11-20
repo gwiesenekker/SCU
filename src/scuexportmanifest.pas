@@ -5,12 +5,13 @@ unit ScuExportManifest;
 interface
 
 uses
-  Classes, Contnrs, ScuExportTypes, ScuLocks, ScuExportNames;
+  Classes, Contnrs, ScuErrors, ScuExportTypes, ScuLocks, ScuExportNames;
 
 const
   ExportManifestName = '.scu-exports.json';
 
 type
+  EExportOverwriteRequired = class(EScuError);
   TExportMode = ScuExportTypes.TExportMode;
   TExportRecord = ScuExportTypes.TExportRecord;
 
@@ -55,7 +56,7 @@ type
 implementation
 
 uses
-  SysUtils, FPJSON, DateUtils, ScuClock, ScuCodec, ScuErrors, ScuFiles, ScuJSON,
+  SysUtils, FPJSON, DateUtils, ScuClock, ScuCodec, ScuFiles, ScuJSON,
   ScuSignals, ScuLibraryNames, ScuLibraryModel, ScuVersions, ScuCleanupFiles, ScuLibraryPaths
   {$IFDEF WINDOWS}, Windows, ScuPlatformPathsWindows{$ENDIF};
 
@@ -500,7 +501,7 @@ begin
   if (Previous <> '') and (Previous <> AuditSHA256(Bytes)) and not ReplaceExisting and
     (not Assigned(Existing) or (Existing.Data.SHA256 <> Previous) or Existing.Data.Interrupted or
       (not SameExportLibrary(Existing.Data.LibraryPath, CanonicalLibrary))) then
-    raise EScuError.Create('Refusing to overwrite untracked or edited output "' + OutputPath + '". Use overwrite=yes to replace it explicitly.');
+    raise EExportOverwriteRequired.Create('Refusing to overwrite untracked or edited output "' + OutputPath + '". Use overwrite=yes to replace it explicitly.');
   if FPlanNames.Find(FileKey(Name)) <> nil then
     raise EScuError.Create('Duplicate output path in export batch: "' + OutputPath + '".');
   if FStageDirectory = '' then

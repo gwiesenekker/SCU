@@ -8,18 +8,22 @@ uses
   ScuOutput;
 
 type
+  TDiffStats = record
+    Added, Changed, Deleted: Int64;
+    Binary: Boolean;
+  end;
   TDiffFormat = (dfNormal, dfUnified);
 
 function ParseDiffFormat(const Value: string): TDiffFormat;
 
-procedure WriteDeckDiff(const OldSource, NewSource: RawByteString; const OldLabel, NewLabel: string;
+function WriteDeckDiff(const OldSource, NewSource: RawByteString; const OldLabel, NewLabel: string;
   Output: TScuOutput; IgnoreSpaceChanges: Boolean = True; Format: TDiffFormat = dfNormal;
-  ShowNormalLabels: Boolean = False; const OldMarker: string = ''; const NewMarker: string = '');
+  ShowNormalLabels: Boolean = False; const OldMarker: string = ''; const NewMarker: string = ''): TDiffStats;
 
 implementation
 
 uses
-  SysUtils, ScuDiffLines, ScuErrors, ScuSignals;
+  Math, SysUtils, ScuDiffLines, ScuErrors, ScuSignals;
 
 function ParseDiffFormat(const Value: string): TDiffFormat;
 begin
@@ -409,9 +413,9 @@ begin
   Result := True;
 end;
 
-procedure WriteDeckDiff(const OldSource, NewSource: RawByteString; const OldLabel, NewLabel: string;
+function WriteDeckDiff(const OldSource, NewSource: RawByteString; const OldLabel, NewLabel: string;
   Output: TScuOutput; IgnoreSpaceChanges: Boolean; Format: TDiffFormat;
-  ShowNormalLabels: Boolean; const OldMarker, NewMarker: string);
+  ShowNormalLabels: Boolean; const OldMarker, NewMarker: string): TDiffStats;
 var
   Changes: TChanges;
   Prefix: TPosition;
@@ -424,11 +428,25 @@ var
       and OnlyHeaders(NewSource, NewMarker, Change.First.NewLine.Offset, Change.After.NewLine.Offset));
   end;
 
+  procedure CountChange(const Change: TChange; var Stats: TDiffStats);
+  var
+    OldCount, NewCount, Paired: Integer;
+  begin
+    OldCount := Change.After.OldLine.Lines - Change.First.OldLine.Lines;
+    NewCount := Change.After.NewLine.Lines - Change.First.NewLine.Lines;
+    Paired := Min(OldCount, NewCount);
+    Inc(Stats.Changed, Paired);
+    Inc(Stats.Added, NewCount - Paired);
+    Inc(Stats.Deleted, OldCount - Paired);
+  end;
+
 begin
+  Result := Default(TDiffStats);
   if OldSource = NewSource then
     Exit;
   if (Pos(#0, OldSource) > 0) or (Pos(#0, NewSource) > 0) then
   begin
+    Result.Binary := True;
     Output.WriteLine('Binary files ' + OldLabel + ' and ' + NewLabel + ' differ');
     Exit;
   end;
@@ -447,6 +465,7 @@ begin
     begin
       CheckSessionInterrupt;
       if not VisibleChange(Changes[First]) then Continue;
+      CountChange(Changes[First], Result);
       if ShowNormalLabels and not Printed then Output.WriteLine('diff ' + OldLabel + ' ' + NewLabel);
       Printed := True;
       WriteNormalChange(Output, OldSource, NewSource, Changes[First]);
@@ -462,7 +481,11 @@ begin
       Inc(Last);
     Visible := False;
     for Index := First to Last do
-      if VisibleChange(Changes[Index]) then Visible := True;
+      if VisibleChange(Changes[Index]) then
+      begin
+        CountChange(Changes[Index], Result);
+        Visible := True;
+      end;
     if Visible then
     begin
       if not Printed then

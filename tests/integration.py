@@ -2740,7 +2740,9 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         result = subprocess.run([SCU, "display_version_diff", "output_format=unified"], cwd=self.root,
                                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stderr, "From version 1.0.\nTo version 1.1.\n")
+        self.assertEqual(result.stderr, "")
+        self.assertRegex(self.run_scu("disvd"), r"empty +Added +0 +0 +0")
+        self.assertNotIn("Diff summary", result.stdout)
         self.assertIn("--- a/main\t1.0-0.000\n+++ b/main\t1.1-0.000\n", result.stdout)
         self.assertIn("-before\n+after\n", result.stdout)
         self.assertIn("--- /dev/null\n+++ b/added\t1.1-0.000\n@@ -0,0 +1 @@\n+new deck\n", result.stdout)
@@ -2783,7 +2785,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
     def test_version_diff_missing_previous_and_unknown_version_fail_without_prompting(self):
         self.run_scu("disvd", error="No locked version precedes current version 1.0")
         self.run_scu("disvd", "1.0", "9.9", error='Version "9.9" does not exist')
-        self.assertEqual(self.run_scu("disvd", "1.0"), "")
+        self.assertTrue(self.run_scu("disvd", "1.0").endswith("No decks differ."))
         self.assertIn("interrupted=0", self.run_scu("verify_audit_trail"))
 
     def test_deck_diff_uses_current_names_and_rejects_retired_aliases(self):
@@ -2837,7 +2839,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         self.run_scu("locv", "d=First")
         self.run_scu("crev", "1.1")
         self.store("main", b"a\tb\n")
-        self.assertEqual(self.run_scu("disvd"), "")
+        self.assertTrue(self.run_scu("disvd").endswith("No decks differ."))
         self.assertIn("< a  b  \n---\n> a\tb", self.run_scu("disvd", "ignore_space_changes=no"))
         result = subprocess.run([SCU], cwd=self.root, capture_output=True, text=True, timeout=20,
                                 input="disdd main\ndisdd main isc=n\nquis\n")
