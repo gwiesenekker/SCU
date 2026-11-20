@@ -1,4 +1,8 @@
-"""Import numbered source directories through SCU's audited command interface."""
+"""Import numbered source directories through SCU's audited command interface.
+
+Import only new or modified decks, ignoring an initial // SCU REVISION line
+when comparing source bytes. Stored revisions retain their original bytes.
+"""
 
 import argparse
 from collections import Counter, defaultdict
@@ -20,6 +24,8 @@ DECK = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 HEADINGS = re.compile(r"^Revision:[ \t]*([^\r\n]*)", re.MULTILINE)
 MANIFEST = "scu-import-manifest.json"
 MAX_SOURCE = 64 * 1024 * 1024
+REVISION_LINE = re.compile(rb"\A// SCU REVISION(?=[ \t\r\n]|\Z)[^\r\n]*(?:\r\n|\r|\n|\Z)")
+COMPARISON = "bytes_ignoring_initial_scu_revision_line"
 
 
 class ImportFailure(Exception):
@@ -169,6 +175,12 @@ class Runner:
         return result.stdout.strip()
 
 
+def comparison_bytes(data):
+    """Ignore just an initial revision header, not other text or body whitespace."""
+    header = REVISION_LINE.match(data)
+    return data[header.end():] if header else data
+
+
 def stage_files(snapshot, names, inputs, previous_files):
     rows = []
     commands = []
@@ -191,8 +203,9 @@ def stage_files(snapshot, names, inputs, previous_files):
         rows.append({"path": file.relative, "deck_name": deck,
                      "size": len(data), "sha1": hashlib.sha1(data).hexdigest()})
         previous = previous_files.get(deck)
-        # Compare the exact bytes previously imported, not timestamps or SHA-1 alone.
-        if previous is None or previous.read_bytes() != data:
+        # Compare bodies independently of revision stamps on either side.
+        # Do not strip headers from staged/stored bytes or archive checksums.
+        if previous is None or comparison_bytes(previous.read_bytes()) != comparison_bytes(data):
             commands.append(f"import_deck deck_name={scu_quote(deck)} source_file={scu_quote(source.name)}")
     return rows, commands, current_files
 
@@ -224,6 +237,7 @@ def import_snapshots(snapshots, names, archive, output, executable, prefix, time
             manifest = inputs / MANIFEST
             manifest.write_text(json.dumps({
                 "format": 1, "source_archive": str(archive), "version": snapshot.version,
+                "comparison": COMPARISON,
                 "history": snapshot.history, "missing_history_description": snapshot.missing_description,
                 "files": rows,
             }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -234,7 +248,7 @@ def import_snapshots(snapshots, names, archive, output, executable, prefix, time
             runner.run("lock_version", "description=" + snapshot.description)
             print(f"Imported {snapshot.version}: {len(rows)} files, {len(removed)} deletions, "
                   f"{stored_count} stored, {len(rows) - stored_count} inherited", flush=True)
-            # Keep an immutable copy of the preceding snapshot for exact comparisons.
+            # Keep an immutable, unmodified copy of the preceding archive snapshot.
             if previous_directory.exists():
                 shutil.rmtree(previous_directory)
             previous_directory.mkdir()

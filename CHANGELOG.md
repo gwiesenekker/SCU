@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Make archive imports ignore only an initial // SCU REVISION line when detecting modified decks. Header-only changes, additions and removals remain inherited; preserve all stored source bytes and original archive checksums, and record the comparison rule in provenance manifests.
+- Add importer regressions for header line endings, binary/empty files, near-matching or later headers, substantive/whitespace edits, inherited deck versions and deletion/recreation across multiple snapshots.
+
 - Standardize every shipped command argument on a single initials abbreviation, including output_directory (od), output_file (of), source_file (sf), deck_name (dn), editor (e) and description (d). Use underscore names consistently, including comment_prefix and the library_name (ln) selector; keep continue_on_error (coe).
 - Rename replace to overwrite (o), avoiding the collision with revision (r). Update execution, help, completion expectations, examples and overwrite diagnostics; remove former convenience argument aliases. Preserve enum value aliases and positional argument order.
 - Add catalog/help consistency and extraction/audit regressions proving revision, output and overwrite resolve independently to canonical argument names.

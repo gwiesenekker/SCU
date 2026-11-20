@@ -889,10 +889,22 @@ Version directories are sorted by exact numeric value; their spelling is
 preserved. Visible regular files are represented, including files in nested
 directories. Files whose names start with a dot are skipped, as are entire
 hidden directory trees (for example `.git` and `.cache`). Skipped files are
-excluded from import counts, filename mappings, manifests, and deletion tracking. New files and files whose exact bytes differ from the
-preceding snapshot are stored. Identical files remain inherited, retaining their
-original deck version and modification time. The importer compares staged bytes,
-not timestamps or SHA-1 alone, and reports stored and inherited file counts.
+excluded from import counts, filename mappings, manifests, and deletion tracking.
+Only new files or files with modified content are stored. For comparison, ignore
+an initial line beginning with the exact token `// SCU REVISION` (followed by a
+space, tab, line ending or end of file) on either side. LF, CRLF, CR and an
+unterminated final header are supported. Adding, changing or removing only that header leaves the
+deck inherited, retaining its earlier deck version and modification time.
+Headers elsewhere, different spellings and all body bytes—including whitespace,
+line endings and binary content—still matter. The importer compares bytes, not
+timestamps or SHA-1 alone, and reports stored and inherited file counts.
+
+This rule affects comparison only: newly stored revisions retain the complete
+original source, including its header. An inherited deck therefore retains the
+header from its last content change, rather than a newer archive stamp.
+The import manifest records the comparison rule and each archive file's original
+size and SHA-1, including its current header; those provenance checksums may
+differ from inherited deck checksums when only the ignored header changed.
 Files absent from the next directory receive deletion revisions, and files that
 reappear are recreated even when their bytes match a previously deleted deck.
 Each version's manifest still records its complete file list and checksums. All imported versions are

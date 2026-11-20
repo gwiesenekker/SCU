@@ -116,6 +116,108 @@ class ScuIntegration(portable_cli.PortableCliTests):
         self.run_scu(library, "verify_audit")
         self.assertEqual(list(self.root.glob(".scu-import-*")), [])
 
+    def test_directory_import_ignores_only_initial_scu_revision_headers(self):
+        archive = self.root / 'archive'
+        first = {
+            'plain': b'unchanged\n',
+            'lf': b'// SCU REVISION 1.0 old\nbody\n',
+            'crlf': b'// SCU REVISION 1.0\r\nbody\r\n',
+            'cr': b'// SCU REVISION 1.0\rbody\r',
+            'added': b'body\n',
+            'removed': b'// SCU REVISION 1.0\nbody\n',
+            'empty': b'',
+            'header-only': b'// SCU REVISION 1.0 without newline',
+            'header-exact': b'// SCU REVISION\n',
+            'binary': b'// SCU REVISION 1.0\n\x00\xff\r\nbody',
+            'later': b'copyright\n// SCU REVISION 1.0\nbody\n',
+            'near': b'// SCU REVISIONED 1.0\nbody\n',
+            'case': b'// scu revision 1.0\nbody\n',
+            'indented': b' // SCU REVISION 1.0\nbody\n',
+            'body-newline': b'// SCU REVISION 1.0\nbody\n',
+            'body-space': b'// SCU REVISION 1.0\nint x;\n',
+        }
+        second = {
+            'plain': first['plain'],
+            'lf': b'// SCU REVISION 1.1 new date\nbody\n',
+            'crlf': b'// SCU REVISION 1.1\nbody\r\n',
+            'cr': b'// SCU REVISION 1.1\r\nbody\r',
+            'added': b'// SCU REVISION 1.1\nbody\n',
+            'removed': b'body\n',
+            'empty': b'// SCU REVISION 1.1',
+            'header-only': b'',
+            'header-exact': b'// SCU REVISION\tnew stamp\r',
+            'binary': b'// SCU REVISION 1.1\r\n\x00\xff\r\nbody',
+            'later': b'copyright\n// SCU REVISION 1.1\nbody\n',
+            'near': b'// SCU REVISIONED 1.1\nbody\n',
+            'case': b'// scu revision 1.1\nbody\n',
+            'indented': b' // SCU REVISION 1.1\nbody\n',
+            'body-newline': b'// SCU REVISION 1.1\nbody\n\n',
+            'body-space': b'// SCU REVISION 1.1\nint  x;\n',
+        }
+        changed = {'later', 'near', 'case', 'indented', 'body-newline', 'body-space'}
+        for version, files in [('1.0', first), ('1.1', second)]:
+            (archive / version).mkdir(parents=True)
+            for name, data in files.items():
+                (archive / version / name).write_bytes(data)
+        (archive / 'HISTORY').write_text('Revision: 1.0\nDescription: First\nRevision: 1.1\nDescription: Next\n')
+        library = self.root / 'imported.sqlite'
+        result = self.run_import(archive, library)
+        self.assertIn('1.1: 16 files, 0 deletions, 6 stored, 10 inherited', result.stdout)
+        with closing(sqlite3.connect(library)) as database:
+            versions = database.execute('SELECT deck_name, library_version FROM deck_revisions').fetchall()
+        imports = [json.loads(line.split(b' ', 1)[1]) for line in self.audit_lines(library)]
+        imports = [event['parameters']['deck_name'] for event in imports if event.get('command') == 'import_deck']
+        for name in first:
+            with self.subTest(deck=name):
+                self.assertEqual([v for deck, v in versions if deck == name], ['1.0', '1.1'] if name in changed else ['1.0'])
+                self.assertEqual(imports.count(name), 2 if name in changed else 1)
+                self.run_scu(library, 'extd', name, 'result', 'v=1.1')
+                self.assertEqual((self.root / 'result').read_bytes(), second[name] if name in changed else first[name])
+                self.assertEqual((archive / '1.0' / name).read_bytes(), first[name])
+                self.assertEqual((archive / '1.1' / name).read_bytes(), second[name])
+        self.run_scu(library, 'extd', 'scu-import-manifest.json', 'manifest', 'v=1.1')
+        manifest = json.loads((self.root / 'manifest').read_bytes())
+        self.assertEqual(manifest['comparison'], 'bytes_ignoring_initial_scu_revision_line')
+        for row in manifest['files']:
+            original = second[row['path']]
+            self.assertEqual(row['size'], len(original))
+            self.assertEqual(row['sha1'], hashlib.sha1(original).hexdigest())
+        self.run_scu(library, 'verify_audit')
+
+    def test_directory_import_header_inheritance_survives_real_edits_and_recreation(self):
+        archive = self.root / 'archive'
+        snapshots = {}
+        for version in ['1.0', '1.1', '1.2', '1.3']:
+            header = ('// SCU REVISION ' + version + '\n').encode()
+            files = {'main': header + (b'old\n' if version in ['1.0', '1.1'] else b'new\n'),
+                     'stable': header + b'never changes\n'}
+            if version != '1.1':
+                files['revived'] = header + b'same body\n'
+            snapshots[version] = files
+            (archive / version).mkdir(parents=True)
+            for name, data in files.items():
+                (archive / version / name).write_bytes(data)
+        (archive / 'HISTORY').write_text(''.join(
+            'Revision: ' + version + '\nDescription: Release ' + version + '\n' for version in snapshots))
+        library = self.root / 'imported.sqlite'
+        result = self.run_import(archive, library)
+        self.assertIn('1.1: 2 files, 1 deletions, 0 stored, 2 inherited', result.stdout)
+        self.assertIn('1.2: 3 files, 0 deletions, 2 stored, 1 inherited', result.stdout)
+        self.assertIn('1.3: 3 files, 0 deletions, 0 stored, 3 inherited', result.stdout)
+        with closing(sqlite3.connect(library)) as database:
+            rows = database.execute('SELECT deck_name, library_version, deleted FROM deck_revisions ORDER BY sequence').fetchall()
+        self.assertEqual([(version, deleted) for deck, version, deleted in rows if deck == 'main'], [('1.0', 0), ('1.2', 0)])
+        self.assertEqual([(version, deleted) for deck, version, deleted in rows if deck == 'stable'], [('1.0', 0)])
+        self.assertEqual([(version, deleted) for deck, version, deleted in rows if deck == 'revived'], [('1.0', 0), ('1.1', 1), ('1.2', 0)])
+        for deck, inherited_from in [('main', '1.2'), ('stable', '1.0'), ('revived', '1.2')]:
+            self.run_scu(library, 'extd', deck, 'result', 'v=1.3')
+            self.assertEqual((self.root / 'result').read_bytes(), snapshots[inherited_from][deck])
+        listing = self.table_data(self.run_scu(library, 'disdl', 'v=1.3'))
+        self.assertIn('main\t1.2-0.000', listing)
+        self.assertIn('stable\t1.0-0.000', listing)
+        self.assertIn('revived\t1.2-0.000', listing)
+        self.run_scu(library, 'verify_audit')
+
     def test_directory_import_inherits_exact_unchanged_files_and_recreates_removed_files(self):
         archive = self.root / "archive"
         versions = {
