@@ -1,7 +1,7 @@
 """Import numbered source directories through SCU's audited command interface.
 
-Import only new or modified decks, ignoring an initial // SCU REVISION line
-when comparing source bytes. Stored revisions retain their original bytes.
+Remove one leading // SCU REVISION line before comparing and storing decks.
+The import manifest records the size and SHA-1 of each original archive file.
 """
 
 import argparse
@@ -174,8 +174,7 @@ class Runner:
         return result.stdout.strip()
 
 
-def comparison_bytes(data):
-    """Ignore just an initial revision header, not other text or body whitespace."""
+def strip_legacy_header(data):
     header = REVISION_LINE.match(data)
     return data[header.end():] if header else data
 
@@ -197,14 +196,13 @@ def stage_files(snapshot, names, inputs, previous_files):
         # Flattened subdirectories use their mapped ID.
         filename = file.relative if "/" not in file.relative and "\\" not in file.relative else deck
         source = inputs / filename
-        source.write_bytes(data)
+        body = strip_legacy_header(data)
+        source.write_bytes(body)
         current_files[deck] = source
         rows.append({"path": file.relative, "deck_name": deck,
                      "size": len(data), "sha1": hashlib.sha1(data).hexdigest()})
         previous = previous_files.get(deck)
-        # Compare bodies independently of revision stamps on either side.
-        # Do not strip headers from staged/stored bytes or archive checksums.
-        if previous is None or comparison_bytes(previous.read_bytes()) != comparison_bytes(data):
+        if previous is None or previous.read_bytes() != body:
             commands.append(f"import_deck deck_name={scu_quote(deck)} source_file={scu_quote(source.name)}")
     return rows, commands, current_files
 
@@ -237,6 +235,7 @@ def import_snapshots(snapshots, names, archive, output, executable, prefix, time
             manifest.write_text(json.dumps({
                 "format": 1, "source_archive": str(archive), "version": snapshot.version,
                 "comparison": COMPARISON,
+                "storage": "strip_initial_scu_revision_line",
                 "history": snapshot.history, "missing_history_description": snapshot.missing_description,
                 "files": rows,
             }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -247,7 +246,7 @@ def import_snapshots(snapshots, names, archive, output, executable, prefix, time
                        "import_manifest_file=" + str(manifest.resolve()))
             print(f"Imported {snapshot.version}: {len(rows)} files, {len(removed)} deletions, "
                   f"{stored_count} stored, {len(rows) - stored_count} inherited", flush=True)
-            # Keep an immutable, unmodified copy of the preceding archive snapshot.
+            # Keep the staged deck bodies for comparison with the next snapshot.
             if previous_directory.exists():
                 shutil.rmtree(previous_directory)
             previous_directory.mkdir()

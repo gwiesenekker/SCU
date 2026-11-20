@@ -144,9 +144,10 @@ class ScuIntegration(portable_cli.PortableCliTests):
         self.run_scu(library, "verify_audit_trail")
         self.assertEqual(list(self.root.glob(".scu-import-*")), [])
 
-    def test_directory_import_ignores_only_initial_scu_revision_headers(self):
+    def test_directory_import_strips_only_initial_scu_revision_headers(self):
         archive = self.root / 'archive'
         first = {
+            'double': b'// SCU REVISION old\n// SCU REVISION retained\nbody\n',
             'plain': b'unchanged\n',
             'lf': b'// SCU REVISION 1.0 old\nbody\n',
             'crlf': b'// SCU REVISION 1.0\r\nbody\r\n',
@@ -165,6 +166,7 @@ class ScuIntegration(portable_cli.PortableCliTests):
             'body-space': b'// SCU REVISION 1.0\nint x;\n',
         }
         second = {
+            'double': b'// SCU REVISION new\nbody\n',
             'plain': first['plain'],
             'lf': b'// SCU REVISION 1.1 new date\nbody\n',
             'crlf': b'// SCU REVISION 1.1\nbody\r\n',
@@ -182,7 +184,7 @@ class ScuIntegration(portable_cli.PortableCliTests):
             'body-newline': b'// SCU REVISION 1.1\nbody\n\n',
             'body-space': b'// SCU REVISION 1.1\nint  x;\n',
         }
-        changed = {'later', 'near', 'case', 'indented', 'body-newline', 'body-space'}
+        changed = {'double', 'later', 'near', 'case', 'indented', 'body-newline', 'body-space'}
         for version, files in [('1.0', first), ('1.1', second)]:
             (archive / version).mkdir(parents=True)
             for name, data in files.items():
@@ -190,7 +192,7 @@ class ScuIntegration(portable_cli.PortableCliTests):
         (archive / 'HISTORY').write_text('Revision: 1.0\nDescription: First\nRevision: 1.1\nDescription: Next\n')
         library = self.root / 'imported.sqlite'
         result = self.run_import(archive, library)
-        self.assertIn('1.1: 16 files, 0 deletions, 6 stored, 10 inherited', result.stdout)
+        self.assertIn('1.1: 17 files, 0 deletions, 7 stored, 10 inherited', result.stdout)
         with closing(sqlite3.connect(library)) as database:
             versions = database.execute('SELECT deck_name, library_version FROM deck_revisions').fetchall()
         imports = [json.loads(line.split(b' ', 1)[1]) for line in self.audit_lines(library)]
@@ -199,11 +201,16 @@ class ScuIntegration(portable_cli.PortableCliTests):
             with self.subTest(deck=name):
                 self.assertEqual([v for deck, v in versions if deck == name], ['1.0', '1.1'] if name in changed else ['1.0'])
                 self.assertEqual(imports.count(name), 2 if name in changed else 1)
-                self.run_scu(library, 'extd', name, 'result', 'v=1.1')
-                self.assertEqual((self.root / 'result').read_bytes(), second[name] if name in changed else first[name])
+                for version, files in [('1.0', first), ('1.1', second)]:
+                    expected = files[name]
+                    if name not in {'later', 'near', 'case', 'indented'} and expected.startswith(b'// SCU REVISION'):
+                        expected = b''.join(expected.splitlines(keepends=True)[1:])
+                    self.run_scu(library, 'extd', name, 'result', 'v=' + version)
+                    self.assertEqual((self.root / 'result').read_bytes(), expected)
                 self.assertEqual((archive / '1.0' / name).read_bytes(), first[name])
                 self.assertEqual((archive / '1.1' / name).read_bytes(), second[name])
         manifest = self.version_import_manifest(library, '1.1')
+        self.assertEqual(manifest['storage'], 'strip_initial_scu_revision_line')
         self.assertEqual(manifest['comparison'], 'bytes_ignoring_initial_scu_revision_line')
         for row in manifest['files']:
             original = second[row['path']]
@@ -238,7 +245,7 @@ class ScuIntegration(portable_cli.PortableCliTests):
         self.assertEqual([(version, deleted) for deck, version, deleted in rows if deck == 'revived'], [('1.0', 0), ('1.1', 1), ('1.2', 0)])
         for deck, inherited_from in [('main', '1.2'), ('stable', '1.0'), ('revived', '1.2')]:
             self.run_scu(library, 'extd', deck, 'result', 'v=1.3')
-            self.assertEqual((self.root / 'result').read_bytes(), snapshots[inherited_from][deck])
+            self.assertEqual((self.root / 'result').read_bytes(), snapshots[inherited_from][deck].split(b'\n', 1)[1])
         listing = self.table_data(self.run_scu(library, 'disdl', 'v=1.3'))
         self.assertIn('main\t1.2-0.000', listing)
         self.assertIn('stable\t1.0-0.000', listing)

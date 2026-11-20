@@ -936,21 +936,17 @@ preserved. Visible regular files are represented, including files in nested
 directories. Files whose names start with a dot are skipped, as are entire
 hidden directory trees (for example `.git` and `.cache`). Skipped files are
 excluded from import counts, filename mappings, manifests, and deletion tracking.
-Only new files or files with modified content are stored. For comparison, ignore
-an initial line beginning with the exact token `// SCU REVISION` (followed by a
-space, tab, line ending or end of file) on either side. LF, CRLF, CR and an
-unterminated final header are supported. Adding, changing or removing only that header leaves the
-deck inherited, retaining its earlier deck version and modification time.
-Headers elsewhere, different spellings and all body bytes—including whitespace,
-line endings and binary content—still matter. The importer compares bytes, not
-timestamps or SHA-1 alone, and reports stored and inherited file counts.
+Before storing or comparing a deck, the importer removes one leading line
+beginning with the exact token `// SCU REVISION` followed by a space, tab,
+line ending, or end of file. It removes the header’s LF, CRLF, or CR terminator
+as well. A file consisting only of the header becomes an empty deck. All
+remaining bytes, including subsequent revision lines and binary data, are preserved.
+A change to the header alone inherits the preceding deck revision.
 
-This rule affects comparison only: newly stored revisions retain the complete
-original source, including its header. An inherited deck therefore retains the
-header from its last content change, rather than a newer archive stamp.
-The import manifest records the comparison rule and each archive file's original
-size and SHA-1, including its current header; those provenance checksums may
-differ from inherited deck checksums when only the ignored header changed.
+Each version’s import manifest records the storage rule and the size and SHA-1
+of each original archive file, including its header. SCU computes the deck’s
+SHA-1 over the bytes it stores. When switching to a newly imported library,
+use header-free working copies before running `impd`, which compares exact bytes.
 Files absent from the next directory receive deletion revisions, and files that
 reappear are recreated even when their bytes match a previously deleted deck.
 Each version's manifest still records its complete file list and checksums. All imported versions are
@@ -1489,7 +1485,7 @@ build/scu build/rebuilt.sqlite release_version
 Keep the old database until the rebuilt snapshots and released filenames have
 been checked. The importer refuses an existing destination. Rebuilding records
 new import/lock timestamps and a new audit chain while retaining HISTORY text and
-source bytes; it does not migrate later edits made only in the old database.
+source bytes after removal of the first legacy header; it does not migrate later edits made only in the old database.
 Those edits must be preserved separately before switching libraries. Single-deck
 extraction to an explicit, literal `output_file` remains available for rescue:
 `scu OLD.sqlite extract_deck main.pas output_file=rescued-main.pas build=no`.

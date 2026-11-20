@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Strip the leading legacy `// SCU REVISION` header from decks stored by `import_versions.py`. Archive manifests retain the original file sizes and SHA-1 checksums.
+
 - Add `unlock_version` (`unlv`) to reopen the current version.
 
 - Archive imports store each manifest as audited version metadata, keeping generated manifests out of deck listings and source exports.
