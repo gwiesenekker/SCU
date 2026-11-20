@@ -29,6 +29,7 @@ type
   public
     constructor Create(Entries: TJSONArray; Latest: Integer);
     procedure Lock(const Description, ManifestDigest: string);
+    procedure Unlock;
     procedure DeleteCurrent(const Name: string; Latest: Integer; DeleteRevisions: Boolean);
     procedure Start(const Name, Prefix: string; Latest: Integer);
     function NextVersion(Increment: Int64): string;
@@ -220,6 +221,23 @@ begin
   FEntries[Index].Locked := True;
   FEntries[Index].LockedUTC := LockedUTC;
   FEntries[Index].Description := Description;
+end;
+
+procedure TVersionHistory.Unlock;
+var
+  Index: Integer;
+  Item: TJSONObject;
+begin
+  if not Locked then
+    raise EScuError.CreateFmt('Version %s is already unlocked.', [Current]);
+  Index := High(FEntries);
+  Item := Entry(Index);
+  Item.Booleans['locked'] := False;
+  if Assigned(Item.Find('locked_utc')) then Item.Delete('locked_utc');
+  if Assigned(Item.Find('description')) then Item.Delete('description');
+  FEntries[Index].Locked := False;
+  FEntries[Index].LockedUTC := '';
+  FEntries[Index].Description := '';
 end;
 
 procedure TVersionHistory.Start(const Name, Prefix: string; Latest: Integer);

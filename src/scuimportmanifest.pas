@@ -6,6 +6,7 @@ interface
 
 uses FPJSON, ScuSQLiteDB;
 
+procedure RemoveImportManifest(Database: TSQLiteConnection; const Version: string);
 function StoreImportManifest(Database: TSQLiteConnection; const Version: string;
   Manifest: TJSONObject): string;
 // Materialize manifests only for a full header display or recovery document.
@@ -20,6 +21,19 @@ uses SysUtils, ScuCodec, ScuErrors, ScuJSON, ScuSignals;
 const
   DigestField = 'import_manifest_sha256';
   PayloadField = 'import_manifest';
+
+procedure RemoveImportManifest(Database: TSQLiteConnection; const Version: string);
+var
+  Statement: TSQLiteStatement;
+begin
+  Statement := Database.Prepare('DELETE FROM version_import_manifests WHERE version = ?');
+  try
+    Statement.Bind(1, Version);
+    Statement.Step;
+  finally
+    Statement.Free;
+  end;
+end;
 
 function StoreImportManifest(Database: TSQLiteConnection; const Version: string;
   Manifest: TJSONObject): string;

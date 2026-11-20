@@ -57,6 +57,10 @@ A library version groups changes across decks. Each deck has its own revision wi
 
 Modification and lock times in `disd`, `disv`, and `disvh` use your local time zone. The numeric offset distinguishes the two occurrences of a local time when daylight saving ends. The JSON header, audit records, and release macros use UTC.
 
+If you locked the current version too soon, enter `unlv`. It takes no arguments.
+You can then import further edits into that version and use `locv` again with a new description.
+The audit trail retains the earlier lock. Once a successor exists, the earlier version stays locked.
+
 To undo an accidental `crev 8.1307`, enter `delv 8.1307`. This returns to the preceding locked version if 8.1307 is still open and has no deck revisions of its own. To remove a populated open version and its stored deck revisions, enter `delv 8.1307 delete_revisions=yes`. Earlier versions, audit history, and working files are preserved.
 
 Archive imports attach their original file lists, checksums, filename mappings and HISTORY entries to each locked version. Use `disl json=yes` to read the version’s `import_manifest`. Deck lists and releases include only source decks.
@@ -178,5 +182,6 @@ Use the full command or any listed abbreviation. For argument details, enter `di
 | `recover_library` | recl | Restore an SCU recovery file to a new SQLite library. |
 | `release_version` | relv | Publish a complete version with release macros expanded. |
 | `save_library` | savl | Confirm the library is saved. |
+| `unlock_version` | unlv | Reopen the current locked version for editing. |
 | `verify_audit_trail` | verat | Verify the audit chain and optionally check for a saved head. |
 | `verify_decks` | verd | Verify tracked exports against the latest visible deck versions. |

@@ -756,6 +756,10 @@ scu display_deck main.pas limit=10
 scu display_deck_list
 ```
 
+If you locked the current version too soon, enter `unlv`. It takes no arguments.
+You can then import further edits into that version and use `locv` again with a new description.
+The audit trail retains the earlier lock. Once a successor exists, the earlier version stays locked.
+
 To undo an accidental `crev 8.1307`, enter `delv 8.1307`. This returns to the preceding locked version if 8.1307 is still open and has no deck revisions of its own. To remove a populated open version and its stored deck revisions, enter `delv 8.1307 delete_revisions=yes`. Earlier versions, audit history, and working files are preserved.
 
 Lock descriptions are required. To write a multiline description in the configured editor, enter `locv` at the SCU prompt or run `scu ln=project.sqlite locv` from a terminal. Save and close to lock, or leave it empty to cancel. Batch input requires an explicit description. Lock

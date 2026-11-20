@@ -956,6 +956,13 @@
       "help": "The library is saved automatically after every successful modifying command. This command confirms the saved state without leaving the session."
     },
     {
+      "name": "unlock_version",
+      "aliases": ["unlv"],
+      "summary": "Reopen the current locked version for editing.",
+      "arguments": [],
+      "help": "Reopen the latest library version. Its deck revisions and archive import metadata are preserved. The next lock records a new description and timestamp. Earlier lock commands remain in the audit trail."
+    },
+    {
       "name": "verify_audit_trail",
       "aliases": ["verat"],
       "summary": "Verify the audit chain and optionally check for a saved head.",

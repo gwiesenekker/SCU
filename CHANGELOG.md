@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `unlock_version` (`unlv`) to reopen the current version.
+
 - Archive imports store each manifest as audited version metadata, keeping generated manifests out of deck listings and source exports.
 
 - `delete_version` accepts `delete_revisions=yes` to remove a populated open successor and its revisions in one audited transaction.

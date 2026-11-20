@@ -13,6 +13,7 @@ function SaveLibrary(var Context: TCommandContext): string;
 function DisplayLibrary(var Context: TCommandContext): string;
 procedure ReportLibraryHeader(const Context: TCommandContext);
 function ConfigureLibrary(var Context: TCommandContext): string;
+function UnlockVersion(var Context: TCommandContext): string;
 function LockVersion(var Context: TCommandContext): string;
 function DeleteVersion(var Context: TCommandContext): string;
 function CreateVersion(var Context: TCommandContext): string;
@@ -135,6 +136,12 @@ begin
   end;
 end;
 
+function UnlockVersion(var Context: TCommandContext): string;
+begin
+  Context.LibraryFile.UnlockVersion;
+  Result := 'Unlocked version ' + Context.LibraryFile.CurrentVersion;
+end;
+
 function LockVersion(var Context: TCommandContext): string;
 var
   Path, Digest: string;
@@ -166,6 +173,7 @@ begin
   BeforeCount := Context.LibraryFile.Revision;
   Context.LibraryFile.DeleteVersion(Context.Command['version'],
     BooleanArgument(Context.Command, 'delete_revisions', 'no'));
+  RemoveImportManifest(Context.Database, Context.Command['version']);
   Result := Format('Deleted version %s. Current version %s is locked.',
     [Context.Command['version'], Context.LibraryFile.CurrentVersion]);
   if BeforeCount > Context.LibraryFile.Revision then

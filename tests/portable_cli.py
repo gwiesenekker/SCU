@@ -607,6 +607,34 @@ class PortableCliTests(unittest.TestCase):
         self.run_scu("delv", "8.1307", error="is locked")
         self.run_scu("verat")
 
+    def test_unlock_current_version_and_relock(self):
+        self.run_scu("unlv", error="already unlocked")
+        self.store("main", b"first")
+        self.run_scu("locv", "First lock")
+        self.assertIn("Unlocked version 1.0", self.run_scu("unlv"))
+        entry = self.read_library()["header"]["versions"][-1]
+        self.assertFalse(entry["locked"])
+        self.assertNotIn("locked_utc", entry)
+        self.assertNotIn("description", entry)
+        self.store("main", b"second")
+        self.run_scu("locv", "Second lock")
+        self.assertIn("Second lock", self.run_scu("disvh"))
+        self.assertIn("First lock", self.run_scu("disat"))
+        self.run_scu("crev", "1.1")
+        self.run_scu("unlv", "1.0", error="Too many arguments")
+        self.run_scu("unlv", error="already unlocked")
+        self.assertTrue(self.read_library()["header"]["versions"][0]["locked"])
+        manifest = {"format": 1, "version": "1.1", "source_archive": "archive",
+                    "history": [], "files": []}
+        (self.root / "manifest.json").write_text(json.dumps(manifest))
+        self.run_scu("locv", "Imported", "imf=manifest.json")
+        self.run_scu("unlv")
+        self.run_scu("locv", "Rechecked")
+        self.assertEqual(json.loads(self.run_scu("disl", "j=y"))["versions"][-1]["import_manifest"], manifest)
+        self.run_scu("unlv")
+        self.run_scu("delv", "1.1")
+        self.run_scu("verat")
+
     def test_delete_populated_version_and_reuse_its_name(self):
         self.store("main", b"baseline")
         self.run_scu("locv", "Baseline")

@@ -3361,7 +3361,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         command_verbs = {
             "configure", "create", "delete", "display", "edit", "expand", "extract",
             "initialize", "import", "list", "lock", "quit", "recover", "release", "reset", "save",
-            "show", "start", "store", "verify",
+            "show", "start", "store", "unlock", "verify",
         }
         for command in commands:
             name = command["name"]

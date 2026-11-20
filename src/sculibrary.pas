@@ -103,6 +103,7 @@ type
     function CurrentSnapshot: TLibrarySnapshot;
     function TryPreviousSnapshot(out Snapshot: TLibrarySnapshot): Boolean;
     function PreviousDeckSnapshot(const Name: string; AtRevision: Integer): TLibrarySnapshot;
+    procedure UnlockVersion;
     procedure LockVersion(const Description, ManifestDigest: string);
     function SuggestedNextVersion: string;
     procedure DeleteVersion(const Name: string; DeleteRevisions: Boolean);
@@ -515,6 +516,12 @@ end;
 function TDeckLibrary.PreviousDeckSnapshot(const Name: string; AtRevision: Integer): TLibrarySnapshot;
 begin
   Result := FQueries.PreviousDeckSnapshot(Name, AtRevision);
+end;
+
+procedure TDeckLibrary.UnlockVersion;
+begin
+  Versions.Unlock;
+  MarkModified;
 end;
 
 procedure TDeckLibrary.LockVersion(const Description, ManifestDigest: string);
