@@ -674,6 +674,7 @@ scu extract_version version=1.1
 ```
 
 `extract_deck` reports the output path and whether it wrote the file or found matching contents.
+`extract_version` and `release_version` list each selected deck with its version and file status (`Created`, `Replaced`, or `Unchanged`). Their summaries count files actually written and report how many already matched.
 Existing identical files can be tracked without replacement. Differing untracked
 or locally edited files require `overwrite=yes`. Extraction can explicitly restore
 working sources; no export may overwrite SQLite storage. Separate sessions

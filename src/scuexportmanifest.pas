@@ -45,7 +45,7 @@ type
     procedure PlanDelete(const LibraryPath, OutputPath, Version: string; ReplaceExisting: Boolean = False);
     procedure Observe(const Entry: TExportRecord; Removed: Boolean);
     procedure SaveObservations;
-    function Publish: Integer;
+    function Publish(out Rows: TExportResults): Integer;
     function WriteExport(const LibraryPath, OutputPath, Deck, Version, DeckVersion: string;
       Mode: TExportMode; const ExpansionUTC, Prefix: string; const Bytes: RawByteString; ReplaceExisting: Boolean = False): Boolean;
     property Count: Integer read GetCount;
@@ -577,13 +577,15 @@ begin
   Plan.ReplaceExisting := ReplaceExisting;
 end;
 
-function TExportManifest.Publish: Integer;
+function TExportManifest.Publish(out Rows: TExportResults): Integer;
 var
-  Index: Integer;
+  Index, RowCount: Integer;
   Plan, RecoveryPlan: TExportPlan;
   Path, Actual: string;
 begin
   Result := 0;
+  RowCount := 0;
+  SetLength(Rows, FPlanned.Count);
   if FPlanned.Count = 0 then Exit;
   if FPending.Count <> 0 then raise EScuError.Create('Another export batch still needs recovery.');
   Save(True);
@@ -614,11 +616,18 @@ begin
     end
     else
     begin
-      if Actual <> Plan.Data.SHA256 then
+      Rows[RowCount].Deck := Plan.Data.Deck;
+      Rows[RowCount].DeckVersion := Plan.Data.DeckVersion;
+      if Actual = Plan.Data.SHA256 then
+        Rows[RowCount].Status := esUnchanged
+      else
       begin
         AtomicWrite(Path, ReadBytes(Plan.StageFile, MaxDeckSize), [awSourceOutput]);
         Inc(Result);
+        if Actual = '' then Rows[RowCount].Status := esCreated
+        else Rows[RowCount].Status := esReplaced;
       end;
+      Inc(RowCount);
       Install(Plan.Data);
     end;
   end;
@@ -629,13 +638,16 @@ begin
   FPending.Clear;
   FPlanNames.Clear;
   FPlanned.Clear;
+  SetLength(Rows, RowCount);
 end;
 
 function TExportManifest.WriteExport(const LibraryPath, OutputPath, Deck, Version, DeckVersion: string;
   Mode: TExportMode; const ExpansionUTC, Prefix: string; const Bytes: RawByteString; ReplaceExisting: Boolean): Boolean;
+var
+  Rows: TExportResults;
 begin
   PlanExport(LibraryPath, OutputPath, Deck, Version, DeckVersion, Mode, ExpansionUTC, Prefix, Bytes, ReplaceExisting);
-  Result := Publish <> 0;
+  Result := Publish(Rows) <> 0;
 end;
 
 function TExportManifest.GetCount: Integer;

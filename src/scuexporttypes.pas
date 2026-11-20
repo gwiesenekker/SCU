@@ -6,6 +6,12 @@ interface
 
 type
   TExportMode = (emExtract, emExpand);
+  TExportStatus = (esCreated, esReplaced, esUnchanged);
+  TExportResult = record
+    Deck, DeckVersion: string;
+    Status: TExportStatus;
+  end;
+  TExportResults = array of TExportResult;
   TExportRecord = record
     FileName, LibraryPath: RawByteString;
     Deck, LibraryVersion, DeckVersion, ExpansionUTC, CommentPrefix, SHA256: string;

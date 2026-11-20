@@ -854,21 +854,32 @@ class PortableCliTests(unittest.TestCase):
         self.store("alpha", b"alpha")
         self.store("zebra", b"latest")
         self.run_scu("deld", "removed")
-        expected = ["Deck name  Deck version", "alpha      1.1-0.000",
-                    "inherited  1.0-0.000", "zebra      1.1-0.001", "Wrote 3 deck(s) for version 1.1"]
+        expected = ["Deck name  Deck version  Status", "alpha      1.1-0.000     Created",
+                    "inherited  1.0-0.000     Created", "zebra      1.1-0.001     Created", "Wrote 3 deck(s) for version 1.1"]
         self.assertEqual(self.run_scu("extv").splitlines(), expected)
         self.assertEqual((self.root / "alpha").read_bytes(), b"alpha")
         self.assertEqual((self.root / "zebra").read_bytes(), b"latest")
         self.assertEqual((self.root / "inherited").read_bytes(), b"inherited")
         self.assertFalse((self.root / "removed").exists())
-        # Extraction has no checkpoint: a second run lists every extracted deck again.
-        self.assertEqual(self.run_scu("extv").splitlines(), expected)
+        timestamp = (self.root / "alpha").stat().st_mtime_ns
+        repeated = self.run_scu("extv").splitlines()
+        self.assertEqual(repeated, [row.replace("Created", "Unchanged") for row in expected[:-1]] + ["Wrote 0 deck(s) for version 1.1, 3 unchanged"])
+        self.assertEqual((self.root / "alpha").stat().st_mtime_ns, timestamp)
+        outcome = json.loads(self.audit_lines()[-1].split(b" ", 1)[1])
+        self.assertEqual(outcome["detail"], repeated[-1])
+        (self.root / "zebra").unlink()
+        (self.root / "alpha").write_bytes(b"local edit")
+        mixed = self.run_scu("extv", "o=y").splitlines()
+        self.assertEqual(mixed, [expected[0], "alpha      1.1-0.000     Replaced",
+                                 "inherited  1.0-0.000     Unchanged", "zebra      1.1-0.001     Created",
+                                 "Wrote 2 deck(s) for version 1.1, 1 unchanged"])
+        self.assertEqual((self.root / "zebra").read_bytes(), b"latest")
         manifest = json.loads((self.root / ".scu-exports.json").read_bytes())
         self.assertEqual({e["deck_name"]: e["deck_version"] for e in manifest["files"]},
                          {"alpha": "1.1-0.000", "zebra": "1.1-0.001", "inherited": "1.0-0.000"})
         self.run_scu("locv", "d=Second")
         self.run_scu("crev", "1.2")
-        self.assertIn("Wrote 3 deck(s) for version 1.2", self.run_scu("extv"))
+        self.assertIn("Wrote 0 deck(s) for version 1.2, 3 unchanged", self.run_scu("extv"))
         self.run_scu("verify_audit_trail")
 
 

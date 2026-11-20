@@ -181,14 +181,14 @@ end;
 function TransferVersion(var Context: TCommandContext; Mode: TExportMode): string;
 var
   Version, Directory, ExpansionUTC: string;
-  Revision, Base, Index, DeletedCount: Integer;
+  Revision, Base, Index, DeletedCount, WrittenCount: Integer;
   Snapshot: TLibrarySnapshot;
   Selection: TDeckSelection;
   Names, FileNames, Removed, Preserved: TStringList;
   Manifest: TExportManifest;
   Rendered: TRenderedDeck;
   Expand: Boolean;
-  Written: TDeckListEntries;
+  Rows: TExportResults;
   LegacyCopy: Boolean;
 begin
   Expand := Mode = emExpand;
@@ -225,7 +225,6 @@ begin
     Manifest.Recover;
     ExpansionUTC := UtcTimestamp(UtcNow);
     LegacyCopy := False;
-    SetLength(Written, Names.Count);
     for Index := 0 to Names.Count - 1 do
     begin
       Selection := Default(TDeckSelection);
@@ -238,19 +237,19 @@ begin
       Manifest.PlanExport(Context.LibraryPath, OutputPath(Context, IncludeTrailingPathDelimiter(Directory) + Rendered.FileName),
         Names[Index], Version, Rendered.DeckVersion, Mode, Rendered.ExpansionUTC, '', Rendered.Bytes,
         BooleanArgument(Context.Command, 'overwrite', 'no'));
-      Written[Index].Name := Names[Index];
-      Written[Index].DeckVersion := Rendered.DeckVersion;
     end;
     DeletedCount := 0;
     if Expand then DeletedCount := PlanReleaseCleanup(Context, Directory, Version, FileNames, Manifest, Removed, Preserved);
-    Manifest.Publish;
+    WrittenCount := Manifest.Publish(Rows);
     Context.FilesPublished := (Names.Count > 0) or (DeletedCount > 0);
     if LegacyCopy then Context.Output.Report('Warning: COPY is no longer expanded; COPY directives are released as literal source.');
-    if Names.Count > 0 then WriteDeckList(Written, Context.Output);
+    if Length(Rows) > 0 then WriteExportResults(Rows, Context.Output);
     for Index := 0 to Removed.Count - 1 do Context.Output.WriteLine('Removed obsolete release file "' + StringToJSONString(Removed[Index]) + '".');
     for Index := 0 to Preserved.Count - 1 do Context.Output.WriteLine('Kept untracked release file "' + StringToJSONString(Preserved[Index]) + '"; use overwrite=yes to remove it.');
     if not Expand then ScheduleBuild(Context, Directory);
-    Result := Format('Wrote %d deck(s) for version %s', [Names.Count, Version]);
+    Result := Format('Wrote %d deck(s) for version %s', [WrittenCount, Version]);
+    if WrittenCount < Names.Count then
+      Result := Result + Format(', %d unchanged', [Names.Count - WrittenCount]);
     if DeletedCount > 0 then Result := Result + Format('; removed %d obsolete file(s).', [DeletedCount]);
   finally
     Manifest.Free;

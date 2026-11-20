@@ -973,7 +973,7 @@ int mkstemp(char *pattern) {
         directory = self.root / "outputs"
         directory.mkdir()
         self.assertEqual(self.run_scu("extv", "od=" + str(directory)).splitlines(),
-                         ["Deck name  Deck version", "main       1.1-0.000", "Wrote 1 deck(s) for version 1.1"])
+                         ["Deck name  Deck version  Status", "main       1.1-0.000     Created", "Wrote 1 deck(s) for version 1.1"])
         self.assertEqual((directory / "main").read_bytes(), b"current")
         begin, end = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()[-2:]]
         self.assertEqual(begin["parameters"]["version"], "scu$current_version")
@@ -1001,7 +1001,7 @@ int mkstemp(char *pattern) {
         source.write_bytes(b"source")
         self.run_scu(library, "impd", "main.pas", source.name)
         self.assertEqual(self.run_scu(library, "extv").splitlines(),
-                         ["Deck name  Deck version", "main.pas   1.0-0.000", "Wrote 1 deck(s) for version 1.0"])
+                         ["Deck name  Deck version  Status", "main.pas   1.0-0.000     Unchanged", "Wrote 0 deck(s) for version 1.0, 1 unchanged"])
         self.assertEqual((directory / "Main.pas").read_bytes(), b"source")
         self.assertFalse((self.root / "Main.pas").exists())
         begin, end = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines(library)[-2:]]
@@ -1012,7 +1012,7 @@ int mkstemp(char *pattern) {
             read_until(b"scu> ")
             os.write(terminal, b"extv\n")
             output = read_until(b"scu> ")
-            self.assertIn(b"Wrote 1 deck(s) for version 1.0", output)
+            self.assertIn(b"Wrote 0 deck(s) for version 1.0, 1 unchanged", output)
             self.assertNotIn(b"output_directory= ", output)
             self.assertNotIn(b"version= ", output)
             os.write(terminal, b"quis\n")
@@ -2700,7 +2700,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
                 self.assertEqual((directory / "main").read_bytes(), b"main source\n")
                 self.assertEqual((directory / "generated").read_bytes(), b"helper source\n")
                 if name == "bulk":
-                    self.assertIn("Wrote 2 deck(s)", self.run_scu(*command, directory))
+                    self.assertIn("Wrote 0 deck(s) for version 1.0, 2 unchanged", self.run_scu(*command, directory))
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
         self.assertEqual([event["success"] for event in events if event["phase"] == "build"], [True, True, True])
         self.assertIn("interrupted=0", self.run_scu("verify_audit_trail"))

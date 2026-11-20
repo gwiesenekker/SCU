@@ -5,7 +5,7 @@ unit ScuLibraryDisplay;
 interface
 
 uses
-  FPJSON, ScuLibrary, ScuOutput;
+  FPJSON, ScuExportTypes, ScuLibrary, ScuOutput;
 
 type
   TVersionHistoryDisplayRow = record
@@ -16,6 +16,7 @@ type
 // Configuration is borrowed; rendering never changes the library header.
 procedure WriteLibraryConfiguration(Configuration: TJSONObject; Sink: TScuOutput; Columns: SizeInt);
 procedure WriteVersionHistoryRows(const Rows: TVersionHistoryDisplayRows; Sink: TScuOutput; Full: Boolean);
+procedure WriteExportResults(const Rows: TExportResults; Sink: TScuOutput);
 procedure WriteDeckList(const Rows: TDeckListEntries; Sink: TScuOutput);
 procedure WriteVersionDecks(const Rows: TVersionDeckEntries; Sink: TScuOutput);
 procedure WriteDeckHistory(const Rows: TDeckHistoryEntries; Sink: TScuOutput);
@@ -123,6 +124,26 @@ begin
         Table.AddRow([Row.Version, Row.Status, LocalTimestamp(Row.LockedUTC)],
           DisplayText(AdjustLineBreaks(Row.Description, tlbsLF), True))
       else Table.AddRow([Row.Version, Row.Status, LocalTimestamp(Row.LockedUTC), Row.Description]);
+    end;
+    Table.WriteTo(Sink, Sink.Columns);
+  finally
+    Table.Free;
+  end;
+end;
+
+procedure WriteExportResults(const Rows: TExportResults; Sink: TScuOutput);
+const
+  StatusText: array[TExportStatus] of string = ('Created', 'Replaced', 'Unchanged');
+var
+  Table: TScuTable;
+  Row: TExportResult;
+begin
+  Table := TScuTable.Create(['Deck name', 'Deck version', 'Status']);
+  try
+    for Row in Rows do
+    begin
+      CheckSessionInterrupt;
+      Table.AddRow([DisplayText(Row.Deck), Row.DeckVersion, StatusText[Row.Status]]);
     end;
     Table.WriteTo(Sink, Sink.Columns);
   finally

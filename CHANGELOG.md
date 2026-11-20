@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Show Created, Replaced, or Unchanged for each extracted or released deck and count actual writes in the summary.
+
 - Strip the leading legacy `// SCU REVISION` header from decks stored by `import_versions.py`. Archive manifests retain the original file sizes and SHA-1 checksums.
 
 - Add `unlock_version` (`unlv`) to reopen the current version.
