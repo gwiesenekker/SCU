@@ -640,6 +640,41 @@ class PortableCliTests(unittest.TestCase):
         self.run_scu("delv", "1.1", "dr=y", error="is locked")
         self.run_scu("verat")
 
+    def test_version_import_manifest_lock_recovery_and_tamper_detection(self):
+        self.store("main.c", b"source")
+        manifest = {"format": 1, "version": "1.1", "source_archive": "archive",
+                    "history": [{"description": "Original description"}], "files": []}
+        path = self.root / "manifest.json"
+        path.write_text(json.dumps(manifest))
+        self.run_scu("locv", "Release", "imf=manifest.json", error="for version 1.0")
+        manifest["version"] = "1.0"
+        path.write_text(json.dumps(manifest))
+        with closing(sqlite3.connect(self.library, isolation_level=None)) as db:
+            db.executescript("""
+                CREATE TRIGGER reject_manifest_lock BEFORE INSERT ON audit_records
+                WHEN json_extract(substr(NEW.line, 66), '$.success') = 1
+                BEGIN SELECT RAISE(ABORT, 'injected lock failure'); END;
+            """)
+            self.run_scu("locv", "Release", "imf=manifest.json", error="injected lock failure")
+            self.assertEqual(db.execute("SELECT count(*) FROM version_import_manifests").fetchone(), (0,))
+            db.execute("DROP TRIGGER reject_manifest_lock")
+        self.run_scu("locv", "Release", "imf=manifest.json")
+        document = self.read_library()
+        document["header"] = json.loads(self.run_scu("disl", "j=y"))
+        self.assertEqual(document["header"]["versions"][0]["import_manifest"], manifest)
+        self.assertEqual(document["header"]["last_modified_deck"], "main.c")
+        recovery = self.root / "recovery.json"
+        recovery.write_text(json.dumps(document))
+        restored = self.root / "restored.sqlite"
+        self.run_scu(restored, "recl", recovery)
+        self.assertEqual(json.loads(self.run_scu(restored, "disl", "j=y")), document["header"])
+        self.run_scu(restored, "verat")
+        with closing(sqlite3.connect(self.library, isolation_level=None)) as db:
+            db.execute("UPDATE version_import_manifests SET payload = '{}'")
+            self.run_scu("verat", error="checksum mismatch for version 1.0")
+            db.execute("DELETE FROM version_import_manifests")
+            self.run_scu("verat", error="Missing import manifest for version 1.0")
+
     def test_library_json_switch_and_audit_verification_abbreviation(self):
         summary = self.run_scu("disl")
         self.assertEqual(self.run_scu("disl", "json=false"), summary)

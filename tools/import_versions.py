@@ -22,7 +22,6 @@ import tempfile
 VERSION = re.compile(r"(0|[1-9][0-9]*)\.[0-9]{1,10}\Z")
 DECK = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 HEADINGS = re.compile(r"^Revision:[ \t]*([^\r\n]*)", re.MULTILINE)
-MANIFEST = "scu-import-manifest.json"
 MAX_SOURCE = 64 * 1024 * 1024
 REVISION_LINE = re.compile(rb"\A// SCU REVISION(?=[ \t\r\n]|\Z)[^\r\n]*(?:\r\n|\r|\n|\Z)")
 COMPARISON = "bytes_ignoring_initial_scu_revision_line"
@@ -134,10 +133,10 @@ def deck_names(snapshots):
     paths = sorted({file.relative for snapshot in snapshots for file in snapshot.files})
     folded = Counter(path.lower() for path in paths)
     names = {}
-    used = {MANIFEST}
+    used = set()
     # Reserve plain names first so an encoded path cannot steal a real filename.
     for path in paths:
-        if DECK.fullmatch(path) and folded[path.lower()] == 1 and path.lower() != MANIFEST:
+        if DECK.fullmatch(path) and folded[path.lower()] == 1:
             names[path] = path.lower()
             used.add(path.lower())
     for path in paths:
@@ -195,8 +194,8 @@ def stage_files(snapshot, names, inputs, previous_files):
             raise ImportFailure(f"Source changed while reading: {file.path}")
         deck = names[file.relative]
         # Preserve an actual root filename as the deck's source association.
-        # Flattened subdirectories and reserved manifest names use their mapped ID.
-        filename = file.relative if "/" not in file.relative and "\\" not in file.relative and file.relative != MANIFEST else deck
+        # Flattened subdirectories use their mapped ID.
+        filename = file.relative if "/" not in file.relative and "\\" not in file.relative else deck
         source = inputs / filename
         source.write_bytes(data)
         current_files[deck] = source
@@ -234,18 +233,18 @@ def import_snapshots(snapshots, names, archive, output, executable, prefix, time
             commands[:0] = [f"delete_deck deck_name={scu_quote(deck)}" for deck in removed]
             if index:
                 commands.insert(0, "create_version version=" + snapshot.version)
-            manifest = inputs / MANIFEST
+            manifest = staging / ".import-manifest.json"
             manifest.write_text(json.dumps({
                 "format": 1, "source_archive": str(archive), "version": snapshot.version,
                 "comparison": COMPARISON,
                 "history": snapshot.history, "missing_history_description": snapshot.missing_description,
                 "files": rows,
             }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            commands.append(f"import_deck deck_name={MANIFEST} source_file={scu_quote(manifest.name)}")
             commands.append("save_library")
             runner.run(batch="\n".join(commands) + "\n")
             # Pass multiline text as one argv value, not as lines of a batch file.
-            runner.run("lock_version", "description=" + snapshot.description)
+            runner.run("lock_version", "description=" + snapshot.description,
+                       "import_manifest_file=" + str(manifest.resolve()))
             print(f"Imported {snapshot.version}: {len(rows)} files, {len(removed)} deletions, "
                   f"{stored_count} stored, {len(rows) - stored_count} inherited", flush=True)
             # Keep an immutable, unmodified copy of the preceding archive snapshot.

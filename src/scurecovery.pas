@@ -12,7 +12,7 @@ function ReadRecovery(Command: TScuCommand): TJSONObject;
 implementation
 
 uses
-  SysUtils, ScuErrors, ScuFiles, ScuJSON, ScuSignals, ScuSQLite;
+  ScuImportManifest, SysUtils, ScuErrors, ScuFiles, ScuJSON, ScuSignals, ScuSQLite;
 
 procedure CheckBaseHistory(BaseHeader, RecoveryHeader: TJSONObject);
 var
@@ -68,6 +68,7 @@ begin
       BaseDocument := Base.Revisions.ReadMetadata;
       try
         CheckBaseHistory(TJSONObject(Field(BaseDocument, 'header', jtObject)), Header);
+        ReadImportManifests(Base, Header, True);
       finally
         BaseDocument.Free;
       end;

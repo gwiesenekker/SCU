@@ -28,7 +28,7 @@ type
     function IndexOf(const Name: string): Integer;
   public
     constructor Create(Entries: TJSONArray; Latest: Integer);
-    procedure Lock(const Description: string);
+    procedure Lock(const Description, ManifestDigest: string);
     procedure DeleteCurrent(const Name: string; Latest: Integer; DeleteRevisions: Boolean);
     procedure Start(const Name, Prefix: string; Latest: Integer);
     function NextVersion(Increment: Int64): string;
@@ -200,7 +200,7 @@ begin
   Result := FEntries[Index];
 end;
 
-procedure TVersionHistory.Lock(const Description: string);
+procedure TVersionHistory.Lock(const Description, ManifestDigest: string);
 var
   Index: Integer;
   LockedUTC: string;
@@ -216,6 +216,7 @@ begin
   Item.Booleans['locked'] := True;
   Item.Strings['locked_utc'] := LockedUTC;
   Item.Strings['description'] := Description;
+  if ManifestDigest <> '' then Item.Strings['import_manifest_sha256'] := ManifestDigest;
   FEntries[Index].Locked := True;
   FEntries[Index].LockedUTC := LockedUTC;
   FEntries[Index].Description := Description;

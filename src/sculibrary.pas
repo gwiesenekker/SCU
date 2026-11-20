@@ -48,7 +48,6 @@ type
     function Versions: TVersionHistory;
     function GetRevision: Integer;
     function FindDeckRevision(const Name: string; LastRevision: Integer): Integer;
-    function GetHeaderJSON: string;
     function NextDeckNumber(const Name: string; PreviousRevision: Integer): Integer;
     function AppendDeckRevision(const Name: string; var Payload: TJSONObject): Integer;
     function RevisionDeletedAt(Sequence: Integer): Boolean;
@@ -104,7 +103,7 @@ type
     function CurrentSnapshot: TLibrarySnapshot;
     function TryPreviousSnapshot(out Snapshot: TLibrarySnapshot): Boolean;
     function PreviousDeckSnapshot(const Name: string; AtRevision: Integer): TLibrarySnapshot;
-    procedure LockVersion(const Description: string);
+    procedure LockVersion(const Description, ManifestDigest: string);
     function SuggestedNextVersion: string;
     procedure DeleteVersion(const Name: string; DeleteRevisions: Boolean);
     procedure CreateVersion(const Name: string);
@@ -115,7 +114,8 @@ type
     procedure SetFilePatterns(Patterns: TStrings);
     property VersionCount: Integer read GetVersionCount;
     property VersionHistory[Index: Integer]: TVersionEntry read GetVersionEntry;
-    property HeaderJSON: string read GetHeaderJSON;
+    function HeaderJSON(Database: TSQLiteLibrary): string;
+    procedure VerifyImportManifests(Database: TSQLiteLibrary);
     property EditorCount: Integer read GetEditorCount;
     property EditorArguments[Index: Integer]: string read GetEditorArgument;
     property FilePatternCount: Integer read GetFilePatternCount;
@@ -136,7 +136,7 @@ function DeckName(const Name: string): string;
 implementation
 
 uses
-  SysUtils, FGL, ScuCodec, ScuErrors, ScuSignals, ScuVersionNumbers;
+  ScuImportManifest, SysUtils, FGL, ScuCodec, ScuErrors, ScuSignals, ScuVersionNumbers;
 
 function DeckName(const Name: string): string;
 begin
@@ -517,9 +517,9 @@ begin
   Result := FQueries.PreviousDeckSnapshot(Name, AtRevision);
 end;
 
-procedure TDeckLibrary.LockVersion(const Description: string);
+procedure TDeckLibrary.LockVersion(const Description, ManifestDigest: string);
 begin
-  Versions.Lock(Description);
+  Versions.Lock(Description, ManifestDigest);
   MarkModified;
 end;
 
@@ -557,9 +557,27 @@ begin
   Result := FQueries.DefaultCommentPrefix(Version);
 end;
 
-function TDeckLibrary.GetHeaderJSON: string;
+function TDeckLibrary.HeaderJSON(Database: TSQLiteLibrary): string;
+var Header: TJSONObject;
 begin
-  Result := FStore.Header.FormatJSON;
+  Header := FStore.Header.CloneJSON;
+  try
+    ReadImportManifests(Database, Header, True);
+    Result := Header.FormatJSON;
+  finally
+    Header.Free;
+  end;
+end;
+
+procedure TDeckLibrary.VerifyImportManifests(Database: TSQLiteLibrary);
+var Header: TJSONObject;
+begin
+  Header := FStore.Header.CloneJSON;
+  try
+    ReadImportManifests(Database, Header, False);
+  finally
+    Header.Free;
+  end;
 end;
 
 function TDeckLibrary.GetLastModifiedDeck: string;

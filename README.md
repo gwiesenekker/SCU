@@ -973,15 +973,20 @@ entries for a version are joined in file order with a blank line between them.
 A version with no entry receives `No HISTORY description found for version X.`;
 use `--strict-history` to reject those gaps instead. Lock timestamps record the
 import time. Original date strings and HISTORY headings are retained in each
-version's `scu-import-manifest.json` deck, alongside its exact original file
+version’s `import_manifest` metadata, alongside its exact original file
 list, filename mappings, byte counts, and SHA-1 checksums.
 
 SCU folds deck names to lowercase and restricts their characters. Plain file
 names use that lowercase form. Nested paths, unsupported names such as
-`source file.c`, case collisions, and a source file named `scu-import-manifest.json`
+`source file.c`, and case collisions
 receive deterministic `import-file-` deck names based on the original path's
 SHA-256 digest. The manifest retains the exact original spelling and path.
-It is an additional deck in every imported snapshot.
+Use `disl json=yes` to read the `import_manifest` object in each imported version.
+SCU stores it separately in SQLite when locking the version and checks its SHA-256
+during audit verification. A real archive file named `scu-import-manifest.json`
+imports as an ordinary source file. Libraries imported by earlier releases retain
+their historical manifest deck. To use version metadata for an old archive,
+run the importer again with a new destination library.
 
 The importer uses `.COMMENT` as the library's comment prefix when present,
 otherwise `//`. Override it with `--comment-prefix '#'`. Other Python script options include
@@ -1484,6 +1489,10 @@ source bytes; it does not migrate later edits made only in the old database.
 Those edits must be preserved separately before switching libraries. Single-deck
 extraction to an explicit, literal `output_file` remains available for rescue:
 `scu OLD.sqlite extract_deck main.pas output_file=rescued-main.pas build=no`.
+
+Schema 8 adds a SQLite table for version import manifests. SCU upgrades the
+schema on a writable open. The upgrade preserves historical decks and audit
+records. Use a schema-8 CLI and GUI with upgraded libraries.
 
 Schema 7 removes obsolete expansion checkpoints and upgrades libraries in place.
 This is a one-way upgrade: binaries from 6afc937 and earlier cannot reopen a

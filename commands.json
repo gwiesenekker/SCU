@@ -846,6 +846,13 @@
           "aliases": ["d"],
           "value": "scu$required",
           "description": "Describe the changes completed in this version. Omit this argument at the SCU prompt or in a terminal invocation to write a multiline description in the configured editor."
+        },
+        {
+          "name": "import_manifest_file",
+          "type": "string",
+          "aliases": ["imf"],
+          "value": "scu$optional",
+          "description": "Read archive import metadata for this version from a JSON file when locking it."
         }
       ],
       "help": "Lock the current version with a required description and record the lock date and time in UTC. This locks stored revisions only; import external edits first if they should belong to the release.",

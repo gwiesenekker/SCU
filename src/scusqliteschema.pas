@@ -57,6 +57,12 @@ begin
     'DROP TABLE IF EXISTS expansion_checkpoints; PRAGMA user_version = 7');
 end;
 
+procedure CreateImportManifests(Database: TSQLiteConnection);
+begin
+  Database.Execute('CREATE TABLE IF NOT EXISTS version_import_manifests (' +
+    'version TEXT PRIMARY KEY, payload TEXT NOT NULL); PRAGMA user_version = 8');
+end;
+
 function EnsureLibrarySchema(Database: TSQLiteConnection; AllowCreate: Boolean): Integer;
 var
   ID: RawByteString;
@@ -65,7 +71,7 @@ begin
   if ID = ApplicationID then
   begin
     Result := StrToIntDef(Database.Scalar('PRAGMA user_version'), 0);
-    if not (Result in [1..7]) then
+    if not (Result in [1..8]) then
       raise EScuError.Create('Unsupported SQLite library schema in "' + Database.Path + '".');
     if not Database.ReadOnly then
     begin
@@ -97,6 +103,11 @@ begin
         CreateWorkingExports(Database);
         Result := 7;
       end;
+      if Result = 7 then
+      begin
+        CreateImportManifests(Database);
+        Result := 8;
+      end;
     end;
     Exit;
   end;
@@ -114,7 +125,8 @@ begin
   CreateCopyMetadata(Database);
   CreateDeletionIndex(Database);
   CreateWorkingExports(Database);
-  Result := 7;
+  CreateImportManifests(Database);
+  Result := 8;
 end;
 
 end.

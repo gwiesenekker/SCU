@@ -49,7 +49,7 @@ type
 implementation
 
 uses
-  SysUtils, FGL, ScuCodec, ScuCopyMetadata, ScuErrors, ScuJSON, ScuSignals, ScuVersionNumbers;
+  ScuImportManifest, SysUtils, FGL, ScuCodec, ScuCopyMetadata, ScuErrors, ScuJSON, ScuSignals, ScuVersionNumbers;
 
 type
   TDeckRevisionMap = specialize TFPGMap<string, Integer>;
@@ -273,6 +273,8 @@ begin
     raise EScuError.Create('The saved library changed outside this session. Unsaved changes are still in this session.');
   if SavedCount > Count then
     Database.Revisions.RemoveVersionTail(Count, Database.Revisions.ReadCurrentVersion);
+  if FSavedState = '' then
+    RestoreImportManifests(Database, FMetadata.Objects['header']);
   Database.Revisions.SaveMetadata(FMetadata.AsJSON);
   for Index := SavedCount to Count - 1 do
   begin
@@ -325,6 +327,7 @@ var
 begin
   Document := TJSONObject(FMetadata.Clone);
   try
+    if Assigned(Database) then ReadImportManifests(Database, Document.Objects['header'], True);
     Revisions := TJSONArray.Create;
     Document.Add('revisions', Revisions);
     for Index := 0 to Count - 1 do

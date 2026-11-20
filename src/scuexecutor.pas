@@ -253,6 +253,7 @@ begin
       RaiseMissingLibrary;
     Context.LibraryFile := TDeckLibrary.Load(FLibraryPath, Context.Database);
     Audit.VerifyContents(Context.LibraryFile);
+    Context.LibraryFile.VerifyImportManifests(Context.Database);
   end;
   FOutput.WriteLine(Format('records=%d interrupted=%d head=%s', [Audit.Records, Audit.Interrupted, Audit.Head]));
 end;

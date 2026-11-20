@@ -23,7 +23,7 @@ function DisplayAuditTrail(var Context: TCommandContext): string;
 implementation
 
 uses
-  ScuExportPaths, Classes, SysUtils, FPJSON, ScuAudit, ScuCommands, ScuErrors, ScuJSON, ScuLibrary, ScuOutput, ScuSignals, ScuVersions, ScuLibraryDisplay, ScuTable, ScuTerminal;
+  ScuImportManifest, ScuFiles, ScuCodec, ScuExportPaths, Classes, SysUtils, FPJSON, ScuAudit, ScuCommands, ScuErrors, ScuJSON, ScuLibrary, ScuOutput, ScuSignals, ScuVersions, ScuLibraryDisplay, ScuTable, ScuTerminal;
 
 function InitializeLibrary(var Context: TCommandContext): string;
 begin
@@ -62,7 +62,7 @@ var
 begin
   if BooleanArgument(Context.Command, 'json', 'no') then
   begin
-    Context.Output.WriteLine(Context.LibraryFile.HeaderJSON);
+    Context.Output.WriteLine(Context.LibraryFile.HeaderJSON(Context.Database));
     Exit;
   end;
   Configuration := Context.LibraryFile.CreateHeaderConfiguration;
@@ -136,12 +136,26 @@ begin
 end;
 
 function LockVersion(var Context: TCommandContext): string;
+var
+  Path, Digest: string;
+  Manifest: TJSONObject;
 begin
   if (Context.Command.ExpectedVersion <> '') and
     (Context.Command.ExpectedVersion <> Context.LibraryFile.CurrentVersion) then
     raise EScuError.CreateFmt('Version changed from %s to %s while editing the lock description.',
       [Context.Command.ExpectedVersion, Context.LibraryFile.CurrentVersion]);
-  Context.LibraryFile.LockVersion(Context.Command['description']);
+  Digest := '';
+  Path := Context.Command.Argument('import_manifest_file');
+  if Path <> '' then
+  begin
+    Manifest := ParseObject(ReadBytes(Path, MaxDeckSize), 'Import manifest "' + Path + '"');
+    try
+      Digest := StoreImportManifest(Context.Database, Context.LibraryFile.CurrentVersion, Manifest);
+    finally
+      Manifest.Free;
+    end;
+  end;
+  Context.LibraryFile.LockVersion(Context.Command['description'], Digest);
   Result := 'Locked version ' + Context.LibraryFile.CurrentVersion;
 end;
 

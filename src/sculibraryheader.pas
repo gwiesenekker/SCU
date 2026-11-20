@@ -39,7 +39,6 @@ type
     function CloneJSON: TJSONObject;
     // The caller owns the configuration copy; version history is excluded.
     function CloneConfiguration: TJSONObject;
-    function FormatJSON: string;
     function Digest: string;
     property Versions: TVersionHistory read FVersions;
     property LastModifiedDeck: string read FLastModifiedDeck;
@@ -277,11 +276,6 @@ begin
     Result.Free;
     raise;
   end;
-end;
-
-function TLibraryHeader.FormatJSON: string;
-begin
-  Result := FSerialized.FormatJSON;
 end;
 
 function TLibraryHeader.Digest: string;

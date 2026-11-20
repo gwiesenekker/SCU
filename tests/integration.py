@@ -88,6 +88,10 @@ class ScuIntegration(portable_cli.PortableCliTests):
         return result
 
 
+    def version_import_manifest(self, library, version):
+        header = json.loads(self.run_scu(library, "disl", "j=y"))
+        return next(item["import_manifest"] for item in header["versions"] if item["name"] == version)
+
     def test_directory_import_preserves_snapshots_history_deletions_and_original_names(self):
         archive = self.root / "source archive"
         archive.mkdir()
@@ -125,12 +129,11 @@ class ScuIntegration(portable_cli.PortableCliTests):
             self.assertEqual(header["versions"][2]["description"],
                              "No HISTORY description found for version 0.004.")
         for version, files in expected.items():
-            self.run_scu(library, "extd", "scu-import-manifest.json", "manifest", "v=" + version)
-            manifest = json.loads((self.root / "manifest").read_bytes())
+            manifest = self.version_import_manifest(library, version)
             self.assertEqual(manifest["version"], version)
             self.assertEqual({row["path"] for row in manifest["files"]}, set(files))
             actual_decks = {row.split("\t")[0] for row in self.table_data(self.run_scu(library, "disdl", "v=" + version)).splitlines()}
-            self.assertEqual(actual_decks, {row["deck_name"] for row in manifest["files"]} | {"scu-import-manifest.json"})
+            self.assertEqual(actual_decks, {row["deck_name"] for row in manifest["files"]})
             for row in manifest["files"]:
                 data = files[row["path"]]
                 self.assertEqual(row["sha1"], hashlib.sha1(data).hexdigest())
@@ -200,8 +203,7 @@ class ScuIntegration(portable_cli.PortableCliTests):
                 self.assertEqual((self.root / 'result').read_bytes(), second[name] if name in changed else first[name])
                 self.assertEqual((archive / '1.0' / name).read_bytes(), first[name])
                 self.assertEqual((archive / '1.1' / name).read_bytes(), second[name])
-        self.run_scu(library, 'extd', 'scu-import-manifest.json', 'manifest', 'v=1.1')
-        manifest = json.loads((self.root / 'manifest').read_bytes())
+        manifest = self.version_import_manifest(library, '1.1')
         self.assertEqual(manifest['comparison'], 'bytes_ignoring_initial_scu_revision_line')
         for row in manifest['files']:
             original = second[row['path']]
@@ -272,8 +274,7 @@ class ScuIntegration(portable_cli.PortableCliTests):
         self.assertEqual([row[1:] for row in rows if row[0] == "revived"],
                          [("1.0", "0.000", 0), ("1.1", "0.000", 1), ("1.2", "0.000", 0)])
         for version, files in versions.items():
-            self.run_scu(library, "extd", "scu-import-manifest.json", "manifest", "v=" + version)
-            manifest = json.loads((self.root / "manifest").read_bytes())
+            manifest = self.version_import_manifest(library, version)
             self.assertEqual({row["path"] for row in manifest["files"]}, set(files))
             for name, content in files.items():
                 self.run_scu(library, "extd", name, "result", "v=" + version)
@@ -314,16 +315,19 @@ class ScuIntegration(portable_cli.PortableCliTests):
         result = self.run_import(archive, library)
         self.assertIn("1.1: 2 files, 0 deletions, 0 stored, 2 inherited", result.stdout)
         for version in ("1.0", "1.1"):
-            self.run_scu(library, "extd", "scu-import-manifest.json", "manifest", "v=" + version)
-            manifest = json.loads((self.root / "manifest").read_bytes())
+            manifest = self.version_import_manifest(library, version)
             self.assertEqual({row["path"] for row in manifest["files"]},
                              {"main.c", "visible/source file.c"})
             self.assertTrue(all(not part.startswith(".") for row in manifest["files"]
                                 for part in Path(row["path"]).parts))
         with closing(sqlite3.connect(library)) as database:
             names = [row[0] for row in database.execute("SELECT DISTINCT deck_name FROM deck_revisions")]
-            self.assertEqual(len(names), 3)  # Two visible sources and the import manifest.
+            self.assertEqual(len(names), 2)
+            self.assertNotIn("scu-import-manifest.json", names)
             self.assertNotIn("import-file-" + hashlib.sha256(b".SHA1SUM").hexdigest(), names)
+        self.run_scu(library, "relv")
+        self.assertFalse((self.root / "release" / "scu-import-manifest.json").exists())
+        self.assertTrue((self.root / "release" / "main.c").exists())
         self.assertTrue((archive / "1.0" / ".SHA1SUM").exists())
         self.run_scu(library, "verify_audit_trail")
 
@@ -416,7 +420,7 @@ class ScuIntegration(portable_cli.PortableCliTests):
             self.assertEqual(self.run_scu("verify_audit_trail"), head)
             self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (5,))
             self.run_scu("deld", "main")
-            self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (7,))
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (8,))
             self.assertEqual(database.execute("SELECT payload FROM deck_revisions WHERE sequence = 1").fetchall(), payloads)
             self.assertEqual(database.execute("SELECT deleted FROM deck_revisions ORDER BY sequence").fetchall(), [(0,), (1,)])
         self.assertEqual(self.read_library()["revisions"][0], before["revisions"][0])
