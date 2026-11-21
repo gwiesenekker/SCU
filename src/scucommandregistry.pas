@@ -21,7 +21,7 @@ type
   end;
 
 const
-  Registrations: array[0..26] of TCommandRegistration = (
+  Registrations: array[0..27] of TCommandRegistration = (
     (Name: 'configure_library'; Handler: (Mode: cmLibrary; Run: @ConfigureLibrary;
       ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
     (Name: 'create_deck'; Handler: (Mode: cmLibrary; Run: @CreateDeck;
@@ -51,6 +51,8 @@ const
     (Name: 'edit_deck'; Handler: (Mode: cmLibrary; Run: @EditDeckCommand;
       ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
     (Name: 'edit_file_patterns'; Handler: (Mode: cmLibrary; Run: @EditFilePatterns;
+      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+    (Name: 'edit_version_tracker'; Handler: (Mode: cmLibrary; Run: @EditVersionTracker;
       ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
     (Name: 'extract_deck'; Handler: (Mode: cmLibrary; Run: @ExtractDeck;
       ResolveOutputDirectory: @SingleDeckDirectory; ReportCommitted: nil; OutputLockPolicy: olReuseBuild)),

@@ -8,10 +8,10 @@ type
     FPages: TPageControl;
     FFont: TFont;
     FFontPreview: TLabel;
-    FFields: array[0..4] of TEdit;
-    FInitial: array[0..4] of string;
-    FBuild, FPatterns: TMemo;
-    FInitialBuild, FInitialPatterns: string;
+    FFields: array[0..5] of TEdit;
+    FInitial: array[0..5] of string;
+    FBuild, FPatterns, FTracker: TMemo;
+    FInitialBuild, FInitialPatterns, FInitialTracker: string;
     FChanges: TStringList;
     procedure PickFont(Sender: TObject);
     procedure UpdateFontPreview;
@@ -25,14 +25,16 @@ type
     property Pages: TPageControl read FPages;
     function LibraryField(Index: Integer): TEdit;
     property BuildField: TMemo read FBuild;
+    function TrackerChanged: Boolean;
+    property TrackerField: TMemo read FTracker;
     property PatternsField: TMemo read FPatterns;
   end;
 implementation
-uses SysUtils, Dialogs, ExtCtrls, ButtonPanel, ScuLibraryNames;
-const Names: array[0..4] of string = ('comment_prefix','editor','version_increment','revision_increment','release_directory');
-  Keys: array[0..4] of string = ('comment_prefix','editor','version_increment','revision_increment','release_directory');
-  Titles: array[0..4] of string = ('Default comment string (new decks)','External editor (JSON argument array)',
-    'Version increment','Deck revision increment','Release directory');
+uses SysUtils, Dialogs, ExtCtrls, ButtonPanel, ScuLibraryNames, ScuLibraryHeader;
+const Names: array[0..5] of string = ('comment_prefix','editor','version_increment','revision_increment','release_directory','version_tracker');
+  Keys: array[0..5] of string = ('comment_prefix','editor','version_increment','revision_increment','release_directory','version_tracker');
+  Titles: array[0..5] of string = ('Default comment string (new decks)','External editor (JSON argument array)',
+    'Version increment','Deck revision increment','Release directory','Version tracker (output filename)');
 function Row(Owner: TComponent; Parent: TWinControl; const Caption: string): TPanel;
 var LabelControl: TLabel;
 begin
@@ -44,7 +46,7 @@ begin
 end;
 constructor TScuOptionsDialog.CreateOptions(AOwner: TComponent; InitialFont: TFont;
   Configuration: TJSONObject; PrefixEditable: Boolean);
-var EditorPage, LibraryPage: TTabSheet; Scroll: TScrollBox; Container: TPanel;
+var EditorPage, LibraryPage, PatternsPage, TrackerPage: TTabSheet; Scroll: TScrollBox; Container: TPanel;
   Buttons: TButtonPanel; Pick: TButton; Note: TLabel; I: Integer; Value: TJSONData;
 begin
   inherited CreateNew(AOwner);
@@ -69,17 +71,28 @@ begin
   if not Assigned(Configuration) then
   begin LibraryPage.Enabled := False; Note.Caption := 'Open a library to edit its configuration.'; Exit; end;
   // Build from bottom to top using LCL alignment; rows grow with their font.
-  Container := Row(Self, Scroll, 'Monitored files and wildcards (one per line)');
-  FPatterns := TMemo.Create(Self); FPatterns.Parent := Container; FPatterns.Align := alTop; FPatterns.Height := 90; FPatterns.Top := 10000;
+  PatternsPage := TTabSheet.Create(Self); PatternsPage.PageControl := FPages; PatternsPage.Caption := 'File patterns';
+  Note := TLabel.Create(Self); Note.Parent := PatternsPage; Note.Align := alTop;
+  Note.BorderSpacing.Around := 8; Note.Caption := 'Monitored files and wildcards (one per line)';
+  FPatterns := TMemo.Create(Self); FPatterns.Parent := PatternsPage; FPatterns.Align := alClient; FPatterns.BorderSpacing.Around := 8;
   FPatterns.ScrollBars := ssAutoVertical;
   if Configuration.Find('file_patterns') is TJSONArray then
     for I := 0 to TJSONArray(Configuration.Find('file_patterns')).Count-1 do
       FPatterns.Lines.Add(TJSONArray(Configuration.Find('file_patterns')).Strings[I]);
   FInitialPatterns := FPatterns.Text;
+  TrackerPage := TTabSheet.Create(Self); TrackerPage.PageControl := FPages; TrackerPage.Caption := 'Version tracker';
+  Container := Row(Self, TrackerPage, Titles[5]);
+  FFields[5] := TEdit.Create(Self); FFields[5].Parent := Container; FFields[5].Align := alTop; FFields[5].Top := 10000;
+  FFields[5].Text := Configuration.Get('version_tracker', ''); FInitial[5] := FFields[5].Text;
+  FTracker := TMemo.Create(Self); FTracker.Parent := TrackerPage; FTracker.Align := alClient;
+  FTracker.BorderSpacing.Around := 8; FTracker.ScrollBars := ssAutoBoth; FTracker.WordWrap := False;
+  FTracker.Font.Assign(InitialFont);
+  FTracker.Text := Configuration.Get('version_tracker_template', DefaultTrackerTemplate);
+  FInitialTracker := FTracker.Text;
   Container := Row(Self, Scroll, 'Build command (run from the library directory)');
   FBuild := TMemo.Create(Self); FBuild.Parent := Container; FBuild.Align := alTop; FBuild.Height := 70; FBuild.Top := 10000;
   FBuild.Text := Configuration.Get('build_command', ''); FInitialBuild := FBuild.Text;
-  for I := 4 downto 0 do
+  for I := High(FFields)-1 downto 0 do
   begin
     Container := Row(Self, Scroll, Titles[I]);
     FFields[I] := TEdit.Create(Self); FFields[I].Parent := Container; FFields[I].Align := alTop; FFields[I].Top := 10000;
@@ -108,12 +121,14 @@ begin
     if Dialog.Execute then begin FFont.Assign(Dialog.Font); UpdateFontPreview; end;
   finally Dialog.Free; end;
 end;
+function TScuOptionsDialog.TrackerChanged: Boolean;
+begin Result := Assigned(FTracker) and (FTracker.Text <> FInitialTracker); end;
 procedure TScuOptionsDialog.CollectChanges;
 var I: Integer; Patterns: TJSONArray;
 begin
   FChanges.Clear;
   if not Assigned(FPatterns) then Exit;
-  for I := 0 to 4 do
+  for I := 0 to High(FFields) do
     if Assigned(FFields[I]) and (FFields[I].Text <> FInitial[I]) then
       FChanges.Add(Names[I] + '=' + FFields[I].Text);
   if FBuild.Text <> FInitialBuild then FChanges.Add('build_command=' + FBuild.Text);

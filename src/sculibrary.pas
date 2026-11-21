@@ -56,6 +56,9 @@ type
     function GetFilePatternCount: Integer;
     function GetFilePattern(Index: Integer): string;
     function GetBuildCommand: string;
+    function GetTrackerTemplate: string;
+    function GetTrackerModified: string;
+    function GetVersionTracker: string;
     function GetReleaseDirectory: string;
     function GetVersionCount: Integer;
     function GetVersionEntry(Index: Integer): TVersionEntry;
@@ -123,6 +126,10 @@ type
     property FilePatternCount: Integer read GetFilePatternCount;
     property FilePatterns[Index: Integer]: string read GetFilePattern;
     property BuildCommand: string read GetBuildCommand;
+    procedure SetTrackerTemplate(const Value: string);
+    property TrackerTemplate: string read GetTrackerTemplate;
+    property TrackerModified: string read GetTrackerModified;
+    property VersionTracker: string read GetVersionTracker;
     property ReleaseDirectory: string read GetReleaseDirectory;
     property LastModifiedDeck: string read GetLastModifiedDeck;
     property DeckVersion[LibraryRevision: Integer]: string read DeckVersionAt;
@@ -138,7 +145,7 @@ function DeckName(const Name: string): string;
 implementation
 
 uses
-  ScuImportManifest, SysUtils, FGL, ScuCodec, ScuErrors, ScuSignals, ScuVersionNumbers;
+  ScuPlatformPaths, ScuImportManifest, SysUtils, FGL, ScuCodec, ScuErrors, ScuSignals, ScuVersionNumbers;
 
 function DeckName(const Name: string): string;
 begin
@@ -273,6 +280,9 @@ begin
   end;
   if StoredPath = '' then
     StoredPath := Name;
+  if (VersionTracker <> '') and
+    (SameStoragePath(StoredPath, VersionTracker) or SameStoragePath(Name, VersionTracker)) then
+    raise EScuError.Create(VersionTracker + ' is the library version tracker. Use edit_version_tracker.');
   CommentPrefix := Prefix;
   if (CommentPrefix = '') and Assigned(Previous) then
     CommentPrefix := Previous.CommentPrefix;
@@ -611,6 +621,28 @@ end;
 function TDeckLibrary.GetBuildCommand: string;
 begin
   Result := FStore.Header.BuildCommand;
+end;
+
+procedure TDeckLibrary.SetTrackerTemplate(const Value: string);
+begin
+  if (Pos(#0, Value) > 0) or (UTF8Encode(UTF8Decode(Value)) <> Value) then
+    raise EScuError.Create('The version tracker template must be UTF-8 text without NUL bytes.');
+  if FStore.Header.SetTrackerTemplate(Value) then MarkModified;
+end;
+
+function TDeckLibrary.GetTrackerTemplate: string;
+begin
+  Result := FStore.Header.TrackerTemplate;
+end;
+
+function TDeckLibrary.GetTrackerModified: string;
+begin
+  Result := FStore.Header.TrackerModified;
+end;
+
+function TDeckLibrary.GetVersionTracker: string;
+begin
+  Result := FStore.Header.VersionTracker;
 end;
 
 function TDeckLibrary.GetReleaseDirectory: string;

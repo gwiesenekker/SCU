@@ -15,7 +15,8 @@ type
 
   TLibraryFileScan = class
   private
-    FDirectory, FLibraryPath: string;
+    FSkippedTracker: Boolean;
+    FTracker, FDirectory, FLibraryPath: string;
     FPatterns, FFiles, FOwnerPaths: TStringList;
     FOwners: TFPHashObjectList; // Borrowed only while constructing the scan.
     function GetCount: Integer;
@@ -26,10 +27,11 @@ type
     function FindOwner(const RelativePath: string): TDeckFileBinding;
   public
     constructor Create(const Directory, LibraryPath: string; Patterns: TStrings;
-      Owners: TFPHashObjectList = nil);
+      Owners: TFPHashObjectList = nil; const Tracker: string = '');
     destructor Destroy; override;
     function Find(const Deck: string): Integer;
     function Includes(const RelativePath: string): Boolean;
+    property SkippedTracker: Boolean read FSkippedTracker;
     property Count: Integer read GetCount;
     property Decks[Index: Integer]: string read GetDeck;
     property RelativePaths[Index: Integer]: string read GetRelativePath;
@@ -60,7 +62,7 @@ begin
 end;
 
 constructor TLibraryFileScan.Create(const Directory, LibraryPath: string; Patterns: TStrings;
-  Owners: TFPHashObjectList);
+  Owners: TFPHashObjectList; const Tracker: string);
 var
   Pattern: string;
   {$IFDEF WINDOWS}Index: Integer;{$ENDIF}
@@ -71,6 +73,7 @@ begin
   FPatterns := TStringList.Create;
   FPatterns.Assign(Patterns);
   FOwners := Owners;
+  FTracker := Tracker;
   for Pattern in FPatterns do
     ValidateFilePattern(Pattern);
   FFiles := TStringList.Create;
@@ -114,6 +117,11 @@ begin
       CheckSessionInterrupt;
       if not Directory.Next(Name) then Break;
       if (Name = '.') or (Name = '..') or not Includes(Name) then Continue;
+      if (FTracker <> '') and SameStoragePath(Name, FTracker) then
+      begin
+        FSkippedTracker := True;
+        Continue;
+      end;
       Path := FDirectory + Name;
       if Directory.SelectedRegularFile(Name) then
       begin

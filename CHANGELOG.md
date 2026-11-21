@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Store an optional `version_tracker` template in library metadata. Edit it with `edit_version_tracker`, generate it during extraction and release, and report it as ignored during working-file import and verification. GUI Preferences now has dedicated File patterns and Version tracker editors.
+
+- Allow `configure_library platform=Linux|Windows|macOS` to record an unknown creation platform once.
+
 - Add Lock version and Unlock version to the GUI File menu. The lock dialog identifies the current version, accepts a multiline description, and uses the system dialog background and platform button order.
 
 - Fix dragging the deck, diff, and log pane dividers in the Linux GUI. The layout retains the selected pane proportions.

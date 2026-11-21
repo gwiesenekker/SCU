@@ -59,11 +59,20 @@ var
 begin
   CheckSessionInterrupt;
   if not Assigned(FExports) then
+  begin
     FExports := TExportManifest.Create(ExtractFileDir(Context.LibraryPath));
-  if FExports.IsGeneratedFile(ExtractFileName(Path)) then
-    raise EScuError.Create('Refusing to import generated expansion "' + Path + '". Import the original source with COPY directives and macros instead.');
-  Existed := Context.LibraryFile.TryDeckSnapshot(Deck, Context.LibraryFile.Revision, Snapshot);
+    FExports.Recover;
+  end;
+  case FExports.FileMode(RelativePath) of
+    emTracker:
+      begin
+        Context.Output.WriteLine(RelativePath + ' has been ignored (version tracker)');
+        Exit;
+      end;
+    emExpand: raise EScuError.Create('Refusing to import generated expansion "' + Path + '". Edit the stored template with edit_deck instead.');
+  end;
   Bytes := ReadBytes(Path, MaxDeckSize, [rbNoFollow]);
+  Existed := Context.LibraryFile.TryDeckSnapshot(Deck, Context.LibraryFile.Revision, Snapshot);
   Sequence := Context.LibraryFile.Store(Context.Database, Deck, Bytes, [],
     PrefixArgument(Context.Command), RelativePath);
   Selection := Context.LibraryFile.SelectDeck(Deck, '', '');
@@ -164,7 +173,8 @@ begin
           Owners.Add(Path, Owner);
         end;
       end;
-    Scan := TLibraryFileScan.Create(Directory, Context.LibraryPath, Patterns, Owners);
+    Scan := TLibraryFileScan.Create(Directory, Context.LibraryPath, Patterns, Owners, Context.LibraryFile.VersionTracker);
+    if Scan.SkippedTracker then Context.Output.WriteLine(Context.LibraryFile.VersionTracker + ' has been ignored (version tracker)');
     // Preflight basename collisions with a deck whose other source still exists.
     for Index := 0 to Scan.Count - 1 do
       if Context.LibraryFile.TryDeckSnapshot(Scan.Decks[Index], Context.LibraryFile.Revision, Snapshot) then
@@ -181,7 +191,8 @@ begin
     begin
       CheckSessionInterrupt;
       Path := Context.LibraryFile.DeckSourcePath(Context.Database, Decks[Index].Name);
-      if Context.LibraryFile.DeckFileBacked(Context.Database, Decks[Index].Name) and
+      if (Decks[Index].Name <> Context.LibraryFile.VersionTracker) and
+        Context.LibraryFile.DeckFileBacked(Context.Database, Decks[Index].Name) and
         Scan.Includes(Path) and not RegularFileExists(Directory + Path) then
         Report.Deleted(Context, Decks[Index].Name);
     end;
@@ -220,10 +231,13 @@ var
   Deck, Path, Directory: string;
   Report: TDeckImporter;
 begin
-  Context.LibraryFile.RequireOpenVersion;
   Directory := IncludeTrailingPathDelimiter(ExtractFileDir(Context.LibraryPath));
   Deck := Context.Command.Argument('deck_name');
   Path := Context.Command.Argument('source_file');
+  if (Context.LibraryFile.VersionTracker <> '') and
+    (SameStoragePath(Deck, Context.LibraryFile.VersionTracker) or SameStoragePath(Path, Context.LibraryFile.VersionTracker)) then
+    Exit(Context.LibraryFile.VersionTracker + ' has been ignored (version tracker)');
+  Context.LibraryFile.RequireOpenVersion;
   if Context.Command.Provided['deck_name'] and (Deck = '') then
     raise EScuError.Create('deck_name was supplied empty. Omit it entirely to snapshot file_patterns.');
   if Context.Command.Provided['source_file'] and (Path = '') then

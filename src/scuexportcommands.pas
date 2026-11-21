@@ -96,29 +96,57 @@ begin
   end;
 end;
 
+procedure PlanTracker(const Context: TCommandContext; Manifest: TExportManifest; const Path: string);
+var Version: string;
+begin
+  Version := Context.Snapshots.Selected.Version;
+  Manifest.PlanExport(Context.LibraryPath, OutputPath(Context, Path), '', Version, '', emTracker,
+    '', '', RenderTracker(Context.LibraryFile, Version), BooleanArgument(Context.Command, 'overwrite', 'no'));
+end;
+
+procedure ReportTracker(const Context: TCommandContext);
+begin
+  Context.Output.WriteLine(Context.LibraryFile.VersionTracker + ' has been expanded');
+end;
+
 function ExtractDeck(var Context: TCommandContext): string;
 var
   Deck, Path, ResolvedDeckVersion: string;
-  Bytes: RawByteString;
+  Tracker, TrackerPath: string;
+  TrackerOnly: Boolean;
+  Rows: TExportResults;
   Selection: TDeckSelection;
   Manifest: TExportManifest;
   Rendered: TRenderedDeck;
   Written: Boolean;
 begin
-  Deck := DeckName(ResolveDeck(Context));
+  Tracker := Context.LibraryFile.VersionTracker;
+  if (Tracker <> '') and (Context.LibraryFile.LastModifiedDeck = '') and
+    SameText(Context.Command['deck_name'], LastModifiedDeckSelector) then Deck := Tracker
+  else Deck := ResolveDeck(Context);
+  TrackerOnly := (Tracker <> '') and SameStoragePath(Deck, Tracker);
   if Context.Command.HasArgument('revision') and (Context.Command.Argument('revision') = '') then
     raise EScuError.Create('Expected a deck revision from 0.000 to 0.999.');
   if Context.Command.HasArgument('version') and (Context.Command.Argument('version') = '') then
     raise EScuError.Create('Expected a library version.');
-  Selection := Context.LibraryFile.SelectDeck(Deck, Context.Command.Argument('version'),
-    Context.Command.Argument('revision'));
-  Context.Snapshots.Selected := Selection.Snapshot;
-  Context.Snapshots.ResolvedDeck := Deck;
   Path := OutputFileArgument(Context.Command);
-  if not Context.Command.Provided['output_file'] or SameText(Path, DeckNameSelector) or
-    SameText(Path, LastModifiedDeckSelector) then
-    RequireArchiveSourceNames(Context.LibraryFile, Context.Database);
-  Rendered := RenderDeck(Context.LibraryFile, Context.Database, Deck, Selection, emExtract);
+  if TrackerOnly then
+  begin
+    if Context.Command.HasArgument('revision') then
+      raise EScuError.Create('A version tracker has no deck revision.');
+    Context.Snapshots.Selected := ResolveSnapshot(Context);
+    Rendered.FileName := Tracker;
+  end
+  else
+  begin
+    Selection := Context.LibraryFile.SelectDeck(Deck, Context.Command.Argument('version'),
+      Context.Command.Argument('revision'));
+    Context.Snapshots.Selected := Selection.Snapshot;
+    Context.Snapshots.ResolvedDeck := Deck;
+    if not Context.Command.Provided['output_file'] or SameText(Path, DeckNameSelector) or
+      SameText(Path, LastModifiedDeckSelector) then RequireArchiveSourceNames(Context.LibraryFile, Context.Database);
+    Rendered := RenderDeck(Context.LibraryFile, Context.Database, Deck, Selection, emExtract);
+  end;
   if SameText(Path, DeckNameSelector + '.scu') then
     Path := DeckName(Deck) + '.scu'
   else if SameText(Path, DeckNameSelector) then
@@ -129,7 +157,6 @@ begin
     Path := IncludeTrailingPathDelimiter(Context.OutputDirectory) + ExtractFileName(Path);
   Path := OutputPath(Context, Path);
   Context.Snapshots.OutputPath := Path;
-  Bytes := Rendered.Bytes;
   ResolvedDeckVersion := Rendered.DeckVersion;
   CheckSessionInterrupt;
   if SameExportLibrary(ExtractFileDir(Path), ExtractFileDir(CanonicalFile(Context.LibraryPath))) then
@@ -137,15 +164,31 @@ begin
   Manifest := TExportManifest.Create(ExtractFileDir(Path));
   try
     Manifest.Recover;
-    Written := Manifest.WriteExport(Context.LibraryPath, Path, Deck, Selection.Snapshot.Version,
-      ResolvedDeckVersion, emExtract, '', '', Bytes, BooleanArgument(Context.Command, 'overwrite', 'no'));
+    if TrackerOnly then PlanTracker(Context, Manifest, Path)
+    else
+      Manifest.PlanExport(Context.LibraryPath, Path, Deck, Selection.Snapshot.Version, ResolvedDeckVersion,
+        emExtract, '', '', Rendered.Bytes, BooleanArgument(Context.Command, 'overwrite', 'no'));
+    if Tracker <> '' then
+    begin
+      TrackerPath := IncludeTrailingPathDelimiter(ExtractFileDir(Path)) + Tracker;
+      if not TrackerOnly or not SameStoragePath(Path, TrackerPath) then
+        PlanTracker(Context, Manifest, TrackerPath);
+    end;
+    Manifest.Publish(Rows);
+    Written := (Length(Rows) > 0) and (Rows[0].Status <> esUnchanged);
     Context.FilesPublished := True;
   finally
     Manifest.Free;
   end;
   ScheduleBuild(Context, Path);
+  if TrackerOnly then
+  begin
+    ReportTracker(Context);
+    Exit('');
+  end;
   Context.Snapshots.DeckVersion := ResolvedDeckVersion;
   ReportSnapshot(Context, ResolvedDeckVersion, Deck);
+  if Tracker <> '' then ReportTracker(Context);
   if Written then
     Result := 'Wrote "' + StringToJSONString(Path) + '".'
   else
@@ -252,6 +295,22 @@ begin
         end;
       end;
     end;
+    if Context.LibraryFile.VersionTracker <> '' then
+    begin
+      try
+        PlanTracker(Context, Manifest, IncludeTrailingPathDelimiter(Directory) + Context.LibraryFile.VersionTracker);
+        FileNames.Add(Context.LibraryFile.VersionTracker);
+      except
+        on E: EExportOverwriteRequired do
+        begin
+          if Expand then raise;
+          if not Assigned(Conflicts) then
+            Conflicts := TScuTable.Create(['Deck name', 'Deck version', 'Status', 'Output file']);
+          Conflicts.AddRow(['(version tracker)', '', E.Status, Context.LibraryFile.VersionTracker]);
+          Inc(ConflictCount);
+        end;
+      end;
+    end;
     if Assigned(Conflicts) then
     begin
       Conflicts.WriteTo(Context.Output, Context.Output.Columns);
@@ -261,7 +320,9 @@ begin
     DeletedCount := 0;
     if Expand then DeletedCount := PlanReleaseCleanup(Context, Directory, Version, FileNames, Manifest, Removed, Preserved);
     WrittenCount := Manifest.Publish(Rows);
-    Context.FilesPublished := (Names.Count > 0) or (DeletedCount > 0);
+    Context.FilesPublished := (Length(Rows) > 0) or (DeletedCount > 0) or (Context.LibraryFile.VersionTracker <> '');
+    if Context.LibraryFile.VersionTracker <> '' then
+      ReportTracker(Context);
     if LegacyCopy then Context.Output.Report('Warning: COPY is no longer expanded; COPY directives are released as literal source.');
     if Length(Rows) > 0 then WriteExportResults(Rows, Context.Output);
     for Index := 0 to Removed.Count - 1 do Context.Output.WriteLine('Removed obsolete release file "' + StringToJSONString(Removed[Index]) + '".');

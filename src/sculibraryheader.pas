@@ -8,8 +8,8 @@ uses Classes, FPJSON, ScuVersions;
 
 type
   TLibrarySettingsChange = record
-    ChangePrefix, ChangeBuild, ChangeReleaseDirectory: Boolean;
-    Prefix, BuildCommand, ReleaseDirectory, VersionIncrement, RevisionIncrement: string;
+    ChangeTracker, ChangePrefix, ChangeBuild, ChangeReleaseDirectory: Boolean;
+    Prefix, BuildCommand, ReleaseDirectory, VersionIncrement, RevisionIncrement, Platform, VersionTracker: string;
     Editor: TJSONArray; // Borrowed during Configure.
   end;
 
@@ -21,7 +21,8 @@ type
     FVersions: TVersionHistory;
     FEditor, FFilePatterns: array of string;
     FLastModifiedDeck, FBuildCommand, FVersionIncrement, FRevisionIncrement: string;
-    FReleaseDirectory: string;
+    FTrackerTemplate, FTrackerModified: string;
+    FVersionTracker, FReleaseDirectory: string;
     FVersionStep, FRevisionStep: Int64;
     function GetEditorCount: Integer;
     function GetEditorArgument(Index: Integer): string;
@@ -43,6 +44,10 @@ type
     property Versions: TVersionHistory read FVersions;
     property LastModifiedDeck: string read FLastModifiedDeck;
     property BuildCommand: string read FBuildCommand;
+    function SetTrackerTemplate(const Value: string): Boolean;
+    property TrackerTemplate: string read FTrackerTemplate;
+    property TrackerModified: string read FTrackerModified;
+    property VersionTracker: string read FVersionTracker;
     property ReleaseDirectory: string read FReleaseDirectory;
     property RevisionStep: Int64 read FRevisionStep;
     property EditorCount: Integer read GetEditorCount;
@@ -53,13 +58,15 @@ type
 
 
 const
+  DefaultTrackerTemplate = '#ifndef VERSION_H' + #10 + '#define VERSION_H' + #10#10 +
+    '#define PROJECT_VERSION "SCU$VERSION"' + #10#10 + '#endif' + #10;
   HostPlatform = {$IFDEF WINDOWS}'Windows'{$ELSE}{$IFDEF DARWIN}'macOS'{$ELSE}'Linux'{$ENDIF}{$ENDIF};
 
 function NewLibraryMetadata(const Version: string): TJSONObject;
 
 implementation
 
-uses SysUtils, ScuCodec, ScuErrors, ScuJSON, ScuVersionNumbers, ScuLibraryNames;
+uses SysUtils, ScuClock, ScuCodec, ScuErrors, ScuJSON, ScuVersionNumbers, ScuLibraryNames;
 
 const
   DefaultVersionIncrement = '0.01';
@@ -97,6 +104,7 @@ begin
     Result.Add('header', Header);
     Header.Add('current_version', Version);
     Header.Add('platform', HostPlatform);
+    Header.Add('version_tracker', '');
     Header.Add('last_modified_deck', '');
     Header.Add('version_increment', DefaultVersionIncrement);
     Header.Add('revision_increment', DefaultRevisionIncrement);
@@ -145,6 +153,11 @@ begin
   if not Assigned(Header.Find('build_command')) then
     Header.Add('build_command', '');
   FBuildCommand := Field(Header, 'build_command', jtString).AsString;
+  if Assigned(Header.Find('version_tracker')) then
+    FVersionTracker := Field(Header, 'version_tracker', jtString).AsString;
+  if FVersionTracker <> '' then ValidateSourceFileName(FVersionTracker);
+  FTrackerTemplate := Header.Get('version_tracker_template', DefaultTrackerTemplate);
+  FTrackerModified := Header.Get('version_tracker_modified_utc', '');
   FReleaseDirectory := 'release';
   if Assigned(Header.Find('release_directory')) then
     FReleaseDirectory := Field(Header, 'release_directory', jtString).AsString;
@@ -272,6 +285,7 @@ begin
     for Index := 0 to FSerialized.Count - 1 do
       if FSerialized.Names[Index] <> 'versions' then
         Result.Add(FSerialized.Names[Index], FSerialized.Items[Index].Clone);
+    if not Assigned(Result.Find('version_tracker')) then Result.Add('version_tracker', '');
     if not Assigned(Result.Find('platform')) then
       Result.Add('platform', 'unknown');
     if not Assigned(Result.Find('file_patterns')) then
@@ -282,6 +296,16 @@ begin
     Result.Free;
     raise;
   end;
+end;
+
+function TLibraryHeader.SetTrackerTemplate(const Value: string): Boolean;
+begin
+  Result := (Value <> FTrackerTemplate) or not Assigned(FSerialized.Find('version_tracker_template'));
+  if not Result then Exit;
+  FTrackerTemplate := Value;
+  FTrackerModified := UtcTimestamp(UtcNow);
+  FSerialized.Strings['version_tracker_template'] := Value;
+  FSerialized.Strings['version_tracker_modified_utc'] := FTrackerModified;
 end;
 
 function TLibraryHeader.Digest: string;
@@ -296,6 +320,14 @@ var
   Index: Integer;
 begin
   Result := False;
+  if Settings.Platform <> '' then
+  begin
+    if (Settings.Platform <> 'Linux') and (Settings.Platform <> 'Windows') and (Settings.Platform <> 'macOS') then
+      raise EScuError.Create('Expected Linux, Windows, or macOS for platform.');
+    if FSerialized.Get('platform', 'unknown') <> 'unknown' then
+      raise EScuError.CreateFmt('Creation platform is already recorded as %s.', [FSerialized.Strings['platform']]);
+  end;
+  if Settings.ChangeTracker and (Settings.VersionTracker <> '') then ValidateSourceFileName(Settings.VersionTracker);
   VersionValue := FVersionIncrement;
   RevisionValue := FRevisionIncrement;
   VersionStep := FVersionStep;
@@ -321,6 +353,18 @@ begin
   begin
     Versions.SetCommentPrefix(Settings.Prefix, RevisionCount);
     FSerialized.Strings['comment_prefix'] := Settings.Prefix;
+    Result := True;
+  end;
+  if Settings.Platform <> '' then
+  begin
+    FSerialized.Strings['platform'] := Settings.Platform;
+    Result := True;
+  end;
+  if Settings.ChangeTracker and (Settings.VersionTracker <> FVersionTracker) then
+  begin
+    FVersionTracker := Settings.VersionTracker;
+    FSerialized.Strings['version_tracker'] := FVersionTracker;
+    if FVersionTracker <> '' then SetTrackerTemplate(FTrackerTemplate);
     Result := True;
   end;
   if VersionValue <> FVersionIncrement then

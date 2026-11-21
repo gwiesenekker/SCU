@@ -226,7 +226,7 @@ begin
   finally PNG.Free; Bitmap.Free; end;
 end;
 var Tab, Other: TScuEditorTab; ListMarker: TObject; Path, OldDisk: string; I: Integer; EditorFont: TFont; BeforeAudit: Int64; OriginalBytes, OriginalDisk: RawByteString; OriginalVersion: string; Configuration: TJSONObject; State: TGuiLibraryState;
-  Options: TScuOptionsDialog; Parameters: array of string; VersionItem, LockItem, UnlockItem: TMenuItem; BeforeDialogs: Integer;
+  Options: TScuOptionsDialog; VersionItem, LockItem, UnlockItem: TMenuItem; BeforeDialogs: Integer;
 begin
   InitializePlatformPaths;
   {$IFDEF WINDOWS}
@@ -482,24 +482,26 @@ begin
     Options := TScuOptionsDialog.CreateOptions(Main, Main.Preferences.EditorFont, Configuration, State.PrefixEditable);
     try
       Options.Show; Application.ProcessMessages;
-      Check(Options.Pages.PageCount = 2, 'Preferences has Editor and Library panes');
+      Check(Options.Pages.PageCount = 4, 'Preferences has editor, library, file patterns and version tracker panes');
       Check(Options.LibraryField(0).Enabled, 'Comment string editable before first revision');
       Options.CollectChanges; Check(Options.Changes.Count = 0, 'Opening preferences does not change settings');
       Options.Pages.ActivePageIndex := 1; Application.ProcessMessages; Inspect(Options);
-      for I := 0 to 4 do CheckFieldLabel(Options.LibraryField(I));
+      for I := 0 to 5 do CheckFieldLabel(Options.LibraryField(I));
       CheckFieldLabel(Options.BuildField); CheckFieldLabel(Options.PatternsField);
       if ParamCount > 1 then SnapshotWindow(Options, ChangeFileExt(CheckArgument(2), '-preferences.png'));
       Options.Font.Size := 14; Options.Width := 600; Options.Height := 550;
       Application.ProcessMessages; Inspect(Options);
-      for I := 0 to 4 do CheckFieldLabel(Options.LibraryField(I));
+      for I := 0 to 5 do CheckFieldLabel(Options.LibraryField(I));
       CheckFieldLabel(Options.BuildField); CheckFieldLabel(Options.PatternsField);
       Options.LibraryField(0).Text := '#'; Options.LibraryField(2).Text := '0.05';
       Options.LibraryField(3).Text := '0.002'; Options.LibraryField(4).Text := 'gui-release';
+      Options.LibraryField(5).Text := 'version.h';
       Options.BuildField.Text := 'printf ''OPTIONS-BUILD\n''';
       Options.PatternsField.Lines.Text := '*.pas' + #10 + '*.cpp';
-      Options.CollectChanges; SetLength(Parameters, Options.Changes.Count);
-      for I := 0 to High(Parameters) do Parameters[I] := Options.Changes[I];
-      Main.ApplyLibraryOptions(Parameters); Pump;
+      Options.Pages.ActivePageIndex := 2; Application.ProcessMessages; Inspect(Options);
+      Options.Pages.ActivePageIndex := 3; Application.ProcessMessages; Inspect(Options);
+      Options.TrackerField.Text := '#define BUILD "SCU$VERSION"' + LineEnding + '// generated';
+      Main.ApplyLibraryOptions(Options); Pump;
       Check(Main.LastError = '', Main.LastError);
     finally Options.Free; Configuration.Free; end;
     Configuration := ReadGuiConfiguration(CheckArgument(1));
@@ -507,6 +509,9 @@ begin
       Check(Configuration.Get('comment_prefix','') = '#', 'Library comment string saved');
       Check(Configuration.Get('version_increment','') = '0.05', 'Version increment saved');
       Check(Configuration.Get('revision_increment','') = '0.002', 'Revision increment saved');
+      Check(Configuration.Get('version_tracker','') = 'version.h', 'Version tracker saved');
+      Check(Configuration.Get('version_tracker_template','') = '#define BUILD "SCU$VERSION"' + LineEnding +
+        '// generated', 'Multiline tracker template persisted');
       Check(Configuration.Get('release_directory','') = 'gui-release', 'Release directory saved');
       Check(TJSONArray(Configuration.Find('file_patterns')).Count = 2, 'Monitored patterns saved');
     finally Configuration.Free; end;

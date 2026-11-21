@@ -658,7 +658,15 @@ versions retain the deck, and it can be recreated later.
 writes the complete selected version, including inherited decks. Both use the selected revision's recorded source filename (falling back to its
 deck ID when none was recorded), default to the library directory, maintain its `.scu-exports.json`,
 and run the configured build command after successful extraction. COPY text and
-macros are preserved in working files. No `.scu` suffix is added.
+macros are preserved in ordinary working files. No `.scu` suffix is added.
+
+In **Edit → Preferences**, use **File patterns** to edit the filenames and wildcards, one per line. Under **Version tracker**, enter the output filename and edit its multiline template. **OK** saves both through `configure_library`. **Cancel** discards your edits.
+
+To generate a version header, run `conl version_tracker=version.h`. SCU stores the template in the library configuration. Its default C header defines `PROJECT_VERSION` as `"SCU$VERSION"`. Use `edit_version_tracker` (`edivt`) to edit the multiline template in the configured editor.
+
+`extd`, `extv`, and `relv` write the tracker beside their outputs and report `version.h has been expanded`, even when the existing bytes match. Historical exports use the same template with the selected library version. Date and time macros use the template’s modification time. The tracker has no deck revision, so `SCU$DECK_VERSION` stays literal. Overwrite protection applies if you edit the generated file.
+
+Working-file imports and manifest verification report `version.h has been ignored (version tracker)` and exclude it from deck counts. Choose a filename distinct from existing decks and their working files. Clear the filename with `conl version_tracker=` to disable generation and keep the template for later.
 
 Builds run from the **library directory**, even if an explicit output path is
 supplied. The shell receives the absolute output file or directory as `$1` and
@@ -980,13 +988,13 @@ import time. Original date strings and HISTORY headings are retained in each
 version’s `import_manifest` metadata, alongside its exact original file
 list, filename mappings, byte counts, and SHA-1 checksums.
 
-New libraries record their creation OS in the read-only `platform` header attribute.
+New libraries record their creation OS in the `platform` header attribute.
 Opening a library from another OS in an interactive session or GUI, or running
 `disl`, checks the current snapshot, including inherited decks. Warnings list
 deck names and their actual output filenames when case may affect exports or a
 Windows filename rule applies. For example, `Makefile` and `makefile` are distinct
 on Linux and collide on Windows. On macOS, case sensitivity depends on the volume.
-Older libraries show `platform unknown` and skip the comparison.
+Older libraries show `platform unknown` and skip the comparison until you record their creation OS. Use `conl platform=Linux`, `Windows`, or `macOS` to set it once, even when the current version is locked.
 
 Deck names are case-sensitive. Plain filenames retain their spelling as deck names,
 so `Makefile` is imported as `Makefile`. On Linux, `A.c` and `a.c` can be
@@ -1384,7 +1392,7 @@ specific deck and retains the same Save/Discard/Cancel protection for edits.
 
 Drag the three splitters to resize panes. Window resizing preserves pane
 proportions; layout minimums follow the UI font and DPI. **Edit → Preferences…**
-opens a preferences dialog with **Editor** and **Library** panes. The Editor pane
+opens the **Editor**, **Library**, **File patterns**, and **Version tracker** panes when a library is open. The Editor pane
 has a native font picker; family, size and style apply to open and future tabs
 and persist in `$XDG_CONFIG_HOME/scu/gui.json` (normally `~/.config/scu/gui.json`)
 on Linux, or `%LOCALAPPDATA%\scu\gui.json` on Windows (falling back to
@@ -1393,7 +1401,7 @@ saved font choices are preserved. Windows preference directories and atomic
 writes use Unicode/long-path APIs.
 Log/diff fonts remain independent. The Library pane edits the default comment
 string, external-editor argument array, build command, release directory,
-version/revision increments and monitored file patterns. Only changed values are
+and version/revision increments. **File patterns** edits the monitored filenames and wildcards. **Version tracker** edits the generated filename and its template. Only changed values are
 submitted using `configure_library`. The comment string is editable only before
 the first revision of an open version and applies to new decks; existing decks
 retain their own prefix. Monitored patterns use one line per root filename or

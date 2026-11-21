@@ -1,7 +1,7 @@
 unit ScuGuiMain;
 {$mode objfpc}{$H+}
 interface
-uses uManualForm, Classes, SysUtils, Contnrs, Forms, Controls, ExtCtrls, Menus, ComCtrls, ScuCommand,
+uses ScuGuiOptions, uManualForm, Classes, SysUtils, Contnrs, Forms, Controls, ExtCtrls, Menus, ComCtrls, ScuCommand,
   ScuCommands, Graphics, FPJSON, ScuGuiLayout, ScuGuiProcess, ScuGuiTab, ScuGuiPreferences, ScuGuiLiveDiff;
 type
   TGuiJobKind = (gjCommand, gjSave, gjDiff);
@@ -10,6 +10,7 @@ type
     Kind: TGuiJobKind;
     Document: TScuEditorTab; // Borrowed; tabs cannot close while jobs run.
     Response: RawByteString;
+    TemplateDirectory: string;
     destructor Destroy; override;
   end;
   TScuMainForm = class(TScuWorkspaceForm)
@@ -51,8 +52,8 @@ type
     procedure StartLiveDiff;
     procedure PollLiveDiff;
     procedure CancelScheduledPreview;
-    procedure AddJob(const CommandName: string; const Parameters: array of string;
-      Kind: TGuiJobKind = gjCommand; Document: TScuEditorTab = nil);
+    function AddJob(const CommandName: string; const Parameters: array of string;
+      Kind: TGuiJobKind = gjCommand; Document: TScuEditorTab = nil): TGuiJob;
     procedure StartNext;
     procedure QueueSave(Document: TScuEditorTab);
     procedure SaveAll;
@@ -102,7 +103,7 @@ type
     procedure ExtractAll;
     procedure PublishVersion(const Version: string);
     procedure CreateNewVersion(const Version: string = '');
-    procedure ApplyLibraryOptions(const Parameters: array of string);
+    procedure ApplyLibraryOptions(Dialog: TScuOptionsDialog);
     procedure SetEditorFont(Value: TFont);
     property Preferences: TScuGuiPreferences read FPreferences;
     property LibraryPath: string read FLibraryPath;
@@ -111,9 +112,13 @@ type
   end;
 implementation
 uses ButtonPanel, Dialogs, StdCtrls, LCLType, LCLProc, ScuGuiCommands, ScuGuiReader,
-  ScuLibrary, ScuLibraryPaths, ScuFiles, ScuGuiOptions, ScuPlatformPaths;
+  ScuLibrary, ScuLibraryPaths, ScuFiles, ScuCleanupFiles, ScuPlatformPaths;
 destructor TGuiJob.Destroy;
-begin Command.Free; inherited Destroy; end;
+begin
+  if TemplateDirectory <> '' then RemoveWorkingDirectory(TemplateDirectory);
+  Command.Free;
+  inherited Destroy;
+end;
 function MenuEntry(Owner: TComponent; Parent: TMenuItem; const Caption, Shortcut: string;
   Handler: TNotifyEvent): TMenuItem;
 begin
@@ -305,15 +310,15 @@ begin
   finally Preview.Free; end;
   StartNext;
 end;
-procedure TScuMainForm.AddJob(const CommandName: string; const Parameters: array of string;
-  Kind: TGuiJobKind; Document: TScuEditorTab);
+function TScuMainForm.AddJob(const CommandName: string; const Parameters: array of string;
+  Kind: TGuiJobKind; Document: TScuEditorTab): TGuiJob;
 var Job: TGuiJob;
 begin
   Job := TGuiJob.Create;
   try
     Job.Command := GuiCommand(FCatalog, CommandName, Parameters);
     Job.Kind := Kind; Job.Document := Document;
-    FJobs.Add(Job); Job := nil;
+    FJobs.Add(Job); Result := Job; Job := nil;
   finally Job.Free; end;
 end;
 procedure TScuMainForm.StartNext;
@@ -432,12 +437,32 @@ begin
   FLastError := ''; FPreviewPending := False; Inc(FDiffGeneration);
   AddJob('create_version', ['version=' + Desired]); StartNext; RefreshActions;
 end;
-procedure TScuMainForm.ApplyLibraryOptions(const Parameters: array of string);
+procedure TScuMainForm.ApplyLibraryOptions(Dialog: TScuOptionsDialog);
+var Parameters: array of string; Directory, Path: string; I: Integer; Job: TGuiJob;
 begin
   CancelScheduledPreview;
-  if (Length(Parameters) = 0) or (FLibraryPath = '') or (Busy and not Comparing) then Exit;
+  if (FLibraryPath = '') or (Busy and not Comparing) then Exit;
+  Dialog.CollectChanges;
+  SetLength(Parameters, Dialog.Changes.Count + Ord(Dialog.TrackerChanged));
+  if Length(Parameters) = 0 then Exit;
+  for I := 0 to Dialog.Changes.Count - 1 do Parameters[I] := Dialog.Changes[I];
+  Directory := '';
+  try
+    if Dialog.TrackerChanged then
+    begin
+      Directory := MakeTempDirectory('scu-gui-tracker');
+      Path := IncludeTrailingPathDelimiter(Directory) + 'template.txt';
+      AtomicWrite(Path, Dialog.TrackerField.Text);
+      Parameters[High(Parameters)] := 'tracker_template_file=' + Path;
+    end;
+    Job := AddJob('configure_library', Parameters);
+    Job.TemplateDirectory := Directory;
+    Directory := '';
+  finally
+    if Directory <> '' then RemoveWorkingDirectory(Directory);
+  end;
   FLastError := ''; FPreviewPending := False; Inc(FDiffGeneration);
-  AddJob('configure_library', Parameters); StartNext; RefreshActions;
+  StartNext; RefreshActions;
 end;
 procedure TScuMainForm.RefreshActions;
 var Idle, Opened, Browsing: Boolean;
@@ -722,9 +747,8 @@ begin
 end;
 procedure TScuMainForm.PreferencesClick(Sender: TObject);
 var Dialog: TScuOptionsDialog; Configuration: TJSONObject; State: TGuiLibraryState;
-  Parameters: array of string; I: Integer;
 begin
-  Configuration := nil; Dialog := nil; Parameters := nil;
+  Configuration := nil; Dialog := nil;
   try
     try
       State := Default(TGuiLibraryState);
@@ -737,9 +761,7 @@ begin
         if (Dialog.EditorFont.Name <> FPreferences.EditorFont.Name) or
           (Dialog.EditorFont.Size <> FPreferences.EditorFont.Size) or
           (Dialog.EditorFont.Style <> FPreferences.EditorFont.Style) then SetEditorFont(Dialog.EditorFont);
-        SetLength(Parameters, Dialog.Changes.Count);
-        for I := 0 to High(Parameters) do Parameters[I] := Dialog.Changes[I];
-        ApplyLibraryOptions(Parameters);
+        ApplyLibraryOptions(Dialog);
       end;
     except on E: Exception do CommandError('preferences', E.Message); end;
   finally Dialog.Free; Configuration.Free; end;

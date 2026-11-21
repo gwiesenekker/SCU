@@ -79,6 +79,41 @@
           "aliases": ["fp"],
           "value": "scu$optional",
           "description": "Monitored root filenames and wildcards as a JSON array of strings. An empty array clears the list."
+        },
+        {
+          "name": "platform",
+          "type": "enum",
+          "aliases": ["p"],
+          "value": "scu$optional",
+          "description": "Record the creation platform once for a library whose platform is unknown.",
+          "values": [
+            {
+              "name": "Linux",
+              "aliases": []
+            },
+            {
+              "name": "Windows",
+              "aliases": []
+            },
+            {
+              "name": "macOS",
+              "aliases": []
+            }
+          ]
+        },
+        {
+          "name": "version_tracker",
+          "type": "string",
+          "aliases": ["vt"],
+          "value": "scu$optional",
+          "description": "Output filename for the library-wide version tracker template. An empty value disables generation."
+        },
+        {
+          "name": "tracker_template_file",
+          "type": "string",
+          "aliases": ["ttf"],
+          "value": "scu$optional",
+          "description": "Read the version tracker template from a UTF-8 text file (up to 1 MiB)."
         }
       ],
       "help": "Specify at least one argument. Set the default prefix before the current version receives its first revision. Supply editor arguments as a JSON array and quote the build command as one string. Supply file_patterns as a JSON array to update monitored files without opening an external editor. Library settings and patterns are saved transactionally."
@@ -608,6 +643,13 @@
       ]
     },
     {
+      "name": "edit_version_tracker",
+      "aliases": ["edivt"],
+      "summary": "Edit the library-wide version tracker template.",
+      "arguments": [],
+      "help": "Open the stored UTF-8 template in the configured editor. Save and close it to update library metadata. The tracker has no deck revisions."
+    },
+    {
       "name": "extract_deck",
       "aliases": ["extd"],
       "summary": "Write the original source bytes to a file.",
@@ -684,7 +726,7 @@
           "prompt_for_default": false
         }
       ],
-      "help": "Select a library version (default scu$current_version) and optionally a deck revision within that version. With no revision, select the latest visible deck, including inherited decks. Version and revision may be combined, for example version=1.1 revision=0.001. A complete deck version such as version=1.1-0.001 is equivalent; do not combine it with a separate revision. Write the original source bytes, including COPY directives and macro text. Internal library revision numbers are not command selectors. Default to the recorded source filename beside the library; honor an explicit output_file unchanged. Differing untracked or locally edited outputs require overwrite=yes; SQLite libraries cannot be overwritten. Run the configured build command from the library directory after successful extraction; build=no skips it. Preserve the recorded filename's case; fall back to the deck name only when no source filename was recorded. Restoring old source files does not change the current library version; import records them as new revisions.",
+      "help": "Select a library version (default scu$current_version) and optionally a deck revision within that version. With no revision, select the latest visible deck, including inherited decks. Version and revision may be combined, for example version=1.1 revision=0.001. A complete deck version such as version=1.1-0.001 is equivalent; do not combine it with a separate revision. Write original source bytes including COPY directives and macro text. Always macro-expand the configured version_tracker beside the requested output. Internal library revision numbers are not command selectors. Default to the recorded source filename beside the library; honor an explicit output_file unchanged. Differing untracked or locally edited outputs require overwrite=yes; SQLite libraries cannot be overwritten. Run the configured build command from the library directory after successful extraction; build=no skips it. Preserve the recorded filename's case; fall back to the deck name only when no source filename was recorded. Restoring old source files does not change the current library version; import records them as new revisions.",
       "examples": [
         {
           "command": "scu extract_deck main.pas release-1.1.pas version=1.1",
@@ -760,7 +802,7 @@
           "prompt_for_default": false
         }
       ],
-      "help": "Extract every live deck in the selected library version, including inherited decks, under its recorded source filename. Default to scu$current_version and the library directory. Preserve macro text without expansion. Update the export manifest, then run the configured build once from the library directory unless build=no. Unchanged files need no replacement permission; edited or untracked differing files require overwrite=yes. If replacement needs permission, list every conflicting deck and output filename before extracting any decks or running the build. SQLite libraries cannot be overwritten. Preserve the recorded filename's case; fall back to the deck name only when no source filename was recorded. Restoring old source files does not change the current library version; import records them as new revisions.",
+      "help": "Extract every live deck in the selected library version, including inherited decks, under its recorded source filename. Default to scu$current_version and the library directory. Preserve macro text except in the configured version_tracker, which is always expanded and reported. Update the export manifest, then run the configured build once from the library directory unless build=no. Unchanged files need no replacement permission; edited or untracked differing files require overwrite=yes. If replacement needs permission, list every conflicting deck and output filename before extracting any decks or running the build. SQLite libraries cannot be overwritten. Preserve the recorded filename's case; fall back to the deck name only when no source filename was recorded. Restoring old source files does not change the current library version; import records them as new revisions.",
       "examples": [
         {
           "command": "scu extract_version output_directory=build",

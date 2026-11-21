@@ -98,15 +98,15 @@ begin
     if Index > LineEnd then
       Break;
     Macro := MacroAt(Line, Index, LineStart, LineEnd, TokenLength);
-    if Macro = NoMacro then
+    if (Macro = NoMacro) or ((Macro = DeckVersion) and (Stored.DeckVersion = '')) then
     begin
       Inc(Index);
       Continue;
     end;
     AppendSlice(Line, FromIndex, Index - FromIndex);
     case Macro of
-      ModifiedDate: AppendSlice(Stored.ModifiedUTC, 1, 10);
-      ModifiedTime: AppendSlice(Stored.ModifiedUTC, 12, 8);
+      ModifiedDate: Append(Copy(Stored.ModifiedUTC, 1, 10));
+      ModifiedTime: Append(Copy(Stored.ModifiedUTC, 12, 8));
       ModifiedDateTime: Append(Stored.ModifiedUTC);
       LibraryVersion: Append(FVersion);
       DeckVersion: Append(Stored.DeckVersion);

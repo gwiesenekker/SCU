@@ -24,7 +24,7 @@ function DisplayAuditTrail(var Context: TCommandContext): string;
 implementation
 
 uses
-  ScuLibraryPortability, ScuImportManifest, ScuFiles, ScuCodec, ScuExportPaths, Classes, SysUtils, FPJSON, ScuAudit, ScuCommands, ScuErrors, ScuJSON, ScuLibrary, ScuOutput, ScuSignals, ScuVersions, ScuLibraryDisplay, ScuTable, ScuTerminal;
+  ScuPlatformPaths, ScuLibraryNames, ScuLibraryPortability, ScuImportManifest, ScuFiles, ScuCodec, ScuExportPaths, Classes, SysUtils, FPJSON, ScuAudit, ScuCommands, ScuErrors, ScuJSON, ScuLibrary, ScuOutput, ScuSignals, ScuVersions, ScuLibraryDisplay, ScuTable, ScuTerminal;
 
 function InitializeLibrary(var Context: TCommandContext): string;
 begin
@@ -89,14 +89,28 @@ var
   Settings: TLibrarySettingsChange;
   Editor, Patterns: TJSONData;
   PatternList: TStringList;
+  Entry: TDeckListEntry;
+  HasHeaderSettings: Boolean;
   Index: Integer;
 begin
+  Settings.ChangeTracker := Context.Command.HasArgument('version_tracker');
+  Settings.VersionTracker := Context.Command.Argument('version_tracker');
+  if Settings.ChangeTracker and (Settings.VersionTracker <> '') then
+  begin
+    ValidateSourceFileName(Settings.VersionTracker);
+    for Entry in Context.LibraryFile.DeckList(Context.LibraryFile.Revision) do
+      if SameStoragePath(Entry.Name, Settings.VersionTracker) or
+        SameStoragePath(Context.LibraryFile.StoredSourcePath(Context.Database, Entry.Sequence), Settings.VersionTracker) then
+        raise EScuError.CreateFmt('Deck "%s" already uses tracker name "%s". Choose a separate output filename.',
+          [Entry.Name, Settings.VersionTracker]);
+  end;
   Settings.ChangePrefix := Context.Command.HasArgument('comment_prefix');
   Settings.ChangeBuild := Context.Command.HasArgument('build_command');
   Settings.ChangeReleaseDirectory := Context.Command.HasArgument('release_directory');
   Settings.ReleaseDirectory := Context.Command.Argument('release_directory');
   if Settings.ChangeReleaseDirectory then
     ResolveReleaseDirectory(Context.LibraryPath, Settings.ReleaseDirectory);
+  Settings.Platform := Context.Command.Argument('platform');
   Settings.VersionIncrement := Context.Command.Argument('version_increment');
   Settings.RevisionIncrement := Context.Command.Argument('revision_increment');
   if (Context.Command.HasArgument('version_increment') and (Settings.VersionIncrement = '')) or
@@ -121,16 +135,18 @@ begin
       if not (Editor is TJSONArray) then
         raise EScuError.Create('Invalid value for --editor: The editor must be a JSON array of strings.');
     end;
-    if not Settings.ChangePrefix and not Settings.ChangeBuild and not Settings.ChangeReleaseDirectory and (Editor = nil) and
-      (Settings.VersionIncrement = '') and (Settings.RevisionIncrement = '') and not Assigned(PatternList) then
+    HasHeaderSettings := Settings.ChangeTracker or Settings.ChangePrefix or Settings.ChangeBuild or Settings.ChangeReleaseDirectory or Assigned(Editor) or
+      (Settings.VersionIncrement <> '') or (Settings.RevisionIncrement <> '') or (Settings.Platform <> '');
+    if not HasHeaderSettings and not Assigned(PatternList) and not Context.Command.HasArgument('tracker_template_file') then
       raise EScuError.Create('Specify at least one library setting.');
     Settings.Prefix := PrefixArgument(Context.Command);
     Settings.Editor := TJSONArray(Editor);
     Settings.BuildCommand := Context.Command.Argument('build_command');
-    if Settings.ChangePrefix or Settings.ChangeBuild or Settings.ChangeReleaseDirectory or Assigned(Editor) or
-      (Settings.VersionIncrement <> '') or (Settings.RevisionIncrement <> '') then
+    if HasHeaderSettings then
       Context.LibraryFile.Configure(Settings);
     if Assigned(PatternList) then Context.LibraryFile.SetFilePatterns(PatternList);
+    if Context.Command.HasArgument('tracker_template_file') then
+      Context.LibraryFile.SetTrackerTemplate(ReadBytes(Context.Command['tracker_template_file'], 1024 * 1024));
     Result := 'Updated library header';
   finally
     Editor.Free; Patterns.Free; PatternList.Free;

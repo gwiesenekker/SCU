@@ -7,12 +7,24 @@ interface
 uses
   ScuCommandHandler;
 
+function EditVersionTracker(var Context: TCommandContext): string;
 function EditFilePatterns(var Context: TCommandContext): string;
 
 implementation
 
 uses
   Classes, SysUtils, ScuEdit, ScuFiles, ScuErrors;
+
+function EditVersionTracker(var Context: TCommandContext): string;
+var Updated: RawByteString;
+begin
+  if Context.LibraryFile.VersionTracker = '' then
+    raise EScuError.Create('Configure version_tracker with an output filename first.');
+  Updated := EditTextFile(Context.LibraryFile, Context.LibraryFile.VersionTracker,
+    Context.LibraryFile.TrackerTemplate, 1024 * 1024);
+  Context.LibraryFile.SetTrackerTemplate(Updated);
+  Result := 'Saved version tracker template.';
+end;
 
 function EditFilePatterns(var Context: TCommandContext): string;
 const

@@ -154,6 +154,11 @@ begin
   CheckSessionInterrupt;
   FSeen.Add(FFileKeys.Key(Entry.FileName));
   if not SameExportLibrary(Entry.LibraryPath, CanonicalFile(FContext.LibraryPath)) then Exit;
+  if Entry.Mode = emTracker then
+  begin
+    FContext.Output.WriteLine(Entry.FileName + ' has been ignored (version tracker)');
+    Exit;
+  end;
   Inc(FCount);
   Check := Default(TDeckFileCheck);
   Check.FileName := Entry.FileName;

@@ -189,6 +189,91 @@ class PortableCliTests(unittest.TestCase):
         self.assertNotIn("platform", json.loads(self.run_scu(legacy, "disl", "json=yes")))
         self.run_scu(legacy, "verat")
 
+    def test_configure_creation_platform_once_on_locked_legacy_library(self):
+        self.run_scu("cred", "main")
+        self.run_scu("locv", "Imported")
+        document = self.read_library()
+        del document["header"]["platform"]
+        recovery = self.root / "legacy.json"
+        recovery.write_text(json.dumps(document))
+        for platform in ("Linux", "Windows", "macOS"):
+            with self.subTest(platform=platform):
+                if platform == "macOS":
+                    document["header"]["platform"] = "unknown"
+                    recovery.write_text(json.dumps(document))
+                library = self.root / (platform + ".sqlite")
+                self.run_scu(library, "recl", recovery)
+                self.run_scu(library, "conl", "platform=unknown", error="platform")
+                self.run_scu(library, "conl", "p=" + platform.upper())
+                events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines(library)]
+                self.assertTrue(any(event.get("command") == "configure_library" and
+                                    event.get("parameters") == {"platform": platform} for event in events))
+                header = json.loads(self.run_scu(library, "disl", "j=y"))
+                self.assertEqual(header, dict(document["header"], platform=platform))
+                self.run_scu(library, "conl", "bc=changed", "platform=Linux", error="already recorded")
+                self.assertEqual(json.loads(self.run_scu(library, "disl", "j=y")), header)
+                self.run_scu(library, "verat")
+
+    def test_version_tracker_expands_for_single_and_version_extractions(self):
+        self.store("main.c", b"/* SCU$VERSION */")
+        self.run_scu("conl", "vt=version.h", 'fp=["*.c","*.h"]')
+        self.run_scu("locv", "Initial")
+        self.run_scu("crev", "1.1")
+        expanded = "version.h has been expanded"
+        ignored = "version.h has been ignored (version tracker)"
+        self.assertIn(expanded, self.run_scu("extd", "main.c"))
+        header = self.root / "version.h"
+        self.assertIn(b'#define PROJECT_VERSION "1.1"', header.read_bytes())
+        self.assertEqual((self.root / "main.c").read_bytes(), b"/* SCU$VERSION */")
+        self.assertIn("Wrote 0 deck(s)", self.run_scu("extv"))
+        self.assertIn(expanded, self.run_scu("relv", "v=1.0"))
+        self.assertIn(b'"1.0"', (self.root / "release/version.h").read_bytes())
+        header.write_bytes(b"hand edited")
+        for args in [("impd",), ("impd", "version.h"), ("verd", "od=.")]:
+            self.assertIn(ignored, self.run_scu(*args))
+        self.assertEqual(header.read_bytes(), b"hand edited")
+        self.run_scu("extv", error="require overwrite=yes")
+        self.assertIn(expanded, self.run_scu("extd", "version.h", "v=1.0", "o=y"))
+        self.assertIn(b'"1.0"', header.read_bytes())
+        self.assertNotIn("version.h", self.run_scu("disdl"))
+        self.assertEqual(len(self.read_library()["revisions"]), 1)
+        self.run_scu("conl", "vt=")
+        self.assertNotIn(expanded, self.run_scu("extv"))
+        self.assertIn(ignored, self.run_scu("impd"))
+        self.run_scu("verat")
+
+    def test_tracker_with_no_decks_and_name_collision(self):
+        self.run_scu("conl", "vt=version.h")
+        self.assertIn("version.h has been expanded", self.run_scu("extd"))
+        self.assertIn("Wrote 0 deck(s)", self.run_scu("extv"))
+        self.run_scu("conl", "vt=")
+        self.store("main.c", b"source")
+        self.run_scu("conl", "vt=main.c", error="already uses tracker name")
+
+    def test_edit_tracker_persists_multiline_library_metadata(self):
+        if WINE:
+            self.skipTest("Editor fixture uses native Python")
+        editor = self.root / "edit.py"
+        template = 'release="SCU$VERSION"\nmodified=SCU$DATE\n'
+        editor.write_text("from pathlib import Path\nimport sys\n" +
+                          "Path(sys.argv[1]).write_bytes(" + repr(template.encode()) + ")")
+        self.run_scu("conl", "vt=version.h", "editor=" + json.dumps([sys.executable, str(editor)]))
+        self.run_scu("edivt")
+        header = self.read_library()["header"]
+        self.assertEqual(header["version_tracker_template"], template)
+        self.run_scu("extd")
+        expected = template.replace("SCU$VERSION", "1.0").replace("SCU$DATE", header["version_tracker_modified_utc"][:10])
+        self.assertEqual((self.root / "version.h").read_bytes(), expected.encode())
+        self.run_scu("verat")
+
+    def test_invalid_tracker_template_rolls_back_pattern_change(self):
+        invalid = self.root / "invalid.txt"
+        invalid.write_bytes(b"bad" + bytes([0]) + b"template")
+        before = self.read_library()["header"]
+        self.run_scu("conl", 'fp=["*.h"]', "vt=version.h", "ttf=invalid.txt", error="UTF-8")
+        self.assertEqual(self.read_library()["header"], before)
+        self.run_scu("verat")
+
     def test_initialize_library_accepts_a_custom_initial_version(self):
         path = self.root / "custom.sqlite"
         self.assertEqual(self.run_scu(path, "inil", "v=0.003"), "Initialized version 0.003")

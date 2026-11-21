@@ -14,7 +14,7 @@ scu project.sqlite
 The library summary shows the OS that created the library. When opening a
 library from another OS, check the warnings below the summary for decks whose
 output filenames could collide or be invalid. Run `disl` to repeat the check.
-An older library with no recorded platform shows `unknown`.
+An older library with no recorded platform shows `unknown`. To record its creation OS once, run `conl platform=Linux`, substituting `Windows` or `macOS` as appropriate. This also works on a locked version.
 
 At the `scu>` prompt, choose which files belong to the project and take the first snapshot. For a C project you might enter:
 
@@ -72,7 +72,7 @@ To undo an accidental `crev 8.1307`, enter `delv 8.1307`. This returns to the pr
 
 Deck names are case-sensitive. Use the spelling shown by `disdl`. Scanning or importing a new file named `Makefile` uses `Makefile` as its deck name. Command and argument abbreviations still accept either case.
 
-The archive importer strips one leading `// SCU REVISION` header before storing a deck. Extraction returns the remaining bytes. Archive imports attach their original file lists, checksums, filename mappings and HISTORY entries to each locked version. Use `disl json=yes` to read the version’s `import_manifest`. Deck lists and releases include only source decks.
+The archive importer strips one leading `// SCU REVISION` header before storing a deck. Extraction returns the remaining bytes. Archive imports attach their original file lists, checksums, filename mappings and HISTORY entries to each locked version. Use `disl json=yes` to read the version’s `import_manifest`. The import manifest stays in the version metadata.
 
 By default `disvh` shows the ten most recent versions. `disdd` compares the previous and current **stored revisions of one deck**. `disvd` compares **two library versions** across all decks.
 
@@ -85,6 +85,33 @@ The right pane compares the current stored deck revision with the live editor bu
 The bottom pane logs commands, results and build output. Right-click to copy text. Drag the splitters to resize the panes. Ctrl+Tab switches editor tabs and Ctrl+W closes the current tab. **Edit → Preferences** changes the editor font and library settings, including monitored file patterns and the build command.
 
 Open this manual with **Help → Manual** or F1. Select a heading in the contents tree to jump to it. Press Ctrl+F to find text, F3 for the next match, Shift+F3 for the previous one, and Esc to return to the editor.
+
+### Edit file patterns and the version tracker
+
+Open the library, then choose **Edit → Preferences**. The **File patterns** tab controls which working files `import_deck` (`impd`) scans in the library directory. Enter one wildcard or exact filename per line, for example:
+
+```text
+*.c
+*.h
+Makefile
+```
+
+On the **Version tracker** tab, enter `version.h` as the output filename. The text box below it holds the template. You can use the supplied C header or edit it, for example:
+
+```c
+#ifndef VERSION_H
+#define VERSION_H
+#define PROJECT_VERSION "SCU$VERSION"
+#endif
+```
+
+Choose **OK** to save the settings together. **Cancel** discards the edits. In the CLI, `edifp` edits the file patterns, `conl vt=version.h` sets the tracker filename, and `edivt` opens its template in the configured editor. To load an existing template from disk, use `conl vt=version.h tracker_template_file=version.h.in`.
+
+For example, `extv v=8.1307 b=n` writes a header containing `#define PROJECT_VERSION "8.1307"` and reports `version.h has been expanded`. A single-deck extraction such as `extd book.c` also generates the header beside its output. Publishing with `relv` generates it in the release directory. These commands report expansion even when the header already matches.
+
+Although `*.h` matches `version.h`, a working-file scan reports `version.h has been ignored (version tracker)`. Verification also skips the generated file. Edit the template in Preferences or with `edivt` to keep changes. If you edited the generated header directly, extraction requires `overwrite=yes` to replace it.
+
+The template belongs to the whole library. Extracting an older version uses today's stored template with the selected version number. The date and time macros use the template’s last modification time in UTC. The tracker has no deck version of its own. To stop generating it, clear the filename in Preferences or enter `conl vt=`. The template stays in the library.
 
 ## Extract, build, and release
 
@@ -184,6 +211,7 @@ Use the full command or any listed abbreviation. For argument details, enter `di
 | `display_version_history` | disvh | Show versions, lock status, lock times, and descriptions. |
 | `edit_deck` | edid | Edit an existing deck with the configured external editor. |
 | `edit_file_patterns` | edifp | Edit the library file patterns, one wildcard or filename per line. |
+| `edit_version_tracker` | edivt | Edit the library-wide template for the generated version file. |
 | `extract_deck` | extd | Write the original source bytes to a file. |
 | `extract_version` | extv | Extract the complete selected version and run the build. |
 | `import_deck` | impd | Snapshot selected files or import one deck, creating, updating, or deleting revisions. |

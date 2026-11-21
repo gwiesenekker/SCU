@@ -45,7 +45,7 @@ type
     // Recovery is explicit and must run while the caller holds the directory lock.
     procedure Recover;
     function TracksFile(const LibraryPath, FileName: string): Boolean;
-    function IsGeneratedFile(const FileName: RawByteString): Boolean;
+    function FileMode(const FileName: RawByteString): TExportMode;
     procedure PlanExport(const LibraryPath, OutputPath, Deck, Version, DeckVersion: string;
       Mode: TExportMode; const ExpansionUTC, Prefix: string; const Bytes: RawByteString;
       ReplaceExisting: Boolean = False);
@@ -53,8 +53,6 @@ type
     procedure Observe(const Entry: TExportRecord; Removed: Boolean);
     procedure SaveObservations;
     function Publish(out Rows: TExportResults): Integer;
-    function WriteExport(const LibraryPath, OutputPath, Deck, Version, DeckVersion: string;
-      Mode: TExportMode; const ExpansionUTC, Prefix: string; const Bytes: RawByteString; ReplaceExisting: Boolean = False): Boolean;
     property Count: Integer read GetCount;
     property Entries[Index: Integer]: TExportRecord read GetEntry; default;
   end;
@@ -170,7 +168,7 @@ begin
     Result.LibraryPath := DecodeKey(Field(Entry, 'library_bytes', jtString, Context).AsString, Context)
   else
     Result.LibraryPath := RawField(Entry, 'library', Context);
-  Result.Deck := DeckName(RawField(Entry, 'deck_name', Context));
+  Result.Deck := RawField(Entry, 'deck_name', Context);
   Result.LibraryVersion := RawField(Entry, 'library_version', Context);
   Result.DeckVersion := RawField(Entry, 'deck_version', Context);
   Result.SHA256 := RawField(Entry, 'sha256', Context);
@@ -178,14 +176,20 @@ begin
   Result.CommentPrefix := RawField(Entry, 'comment_prefix', Context);
   if (Result.LibraryPath = '') or (Pos(#0, Result.LibraryPath) > 0) then
     raise EScuError.Create(Context + ': missing library path.');
-  if (Result.LibraryVersion = '') or (Result.DeckVersion = '') then
+  if Result.LibraryVersion = '' then
     raise EScuError.Create(Context + ': missing version.');
   if not IsHexDigest(Result.SHA256, 64) then
     raise EScuError.Create(Context + ': invalid output checksum.');
   Mode := RawField(Entry, 'mode', Context);
-  if Mode = 'expand' then Result.Mode := emExpand
+  if Mode = 'tracker' then Result.Mode := emTracker
+  else if Mode = 'expand' then Result.Mode := emExpand
   else if Mode = 'extract' then Result.Mode := emExtract
   else raise EScuError.Create(Context + ': invalid export mode.');
+  if Result.Mode <> emTracker then
+  begin
+    DeckName(Result.Deck);
+    if Result.DeckVersion = '' then raise EScuError.Create(Context + ': missing deck version.');
+  end;
   Stamp := Result.ExpansionUTC;
   if (Result.Mode = emExpand) and
     (not TryISO8601ToDate(Stamp, Time) or (UtcTimestamp(Time) <> Stamp)) then
@@ -453,13 +457,12 @@ begin
   Result := Assigned(Item) and SameExportLibrary(Item.Data.LibraryPath, CanonicalFile(LibraryPath));
 end;
 
-function TExportManifest.IsGeneratedFile(const FileName: RawByteString): Boolean;
+function TExportManifest.FileMode(const FileName: RawByteString): TExportMode;
 var Item: TExportItem;
 begin
-  Item := TExportItem(FFiles.Find(FileKey(FileName)));
-  if Assigned(Item) and (Item.Data.Mode = emExpand) then Exit(True);
   Item := TExportItem(FPlanNames.Find(FileKey(FileName)));
-  Result := Assigned(Item) and (Item.Data.Mode = emExpand);
+  if not Assigned(Item) then Item := TExportItem(FFiles.Find(FileKey(FileName)));
+  if Assigned(Item) then Result := Item.Data.Mode else Result := emExtract;
 end;
 
 procedure TExportManifest.Observe(const Entry: TExportRecord; Removed: Boolean);
@@ -640,11 +643,11 @@ begin
       else
       begin
         AtomicWrite(Path, ReadBytes(Plan.StageFile, MaxDeckSize), [awSourceOutput]);
-        Inc(Result);
+        if Plan.Data.Mode <> emTracker then Inc(Result);
         if Actual = '' then Rows[RowCount].Status := esCreated
         else Rows[RowCount].Status := esReplaced;
       end;
-      Inc(RowCount);
+      if Plan.Data.Mode <> emTracker then Inc(RowCount);
       Install(Plan.Data);
     end;
   end;
@@ -656,15 +659,6 @@ begin
   FPlanNames.Clear;
   FPlanned.Clear;
   SetLength(Rows, RowCount);
-end;
-
-function TExportManifest.WriteExport(const LibraryPath, OutputPath, Deck, Version, DeckVersion: string;
-  Mode: TExportMode; const ExpansionUTC, Prefix: string; const Bytes: RawByteString; ReplaceExisting: Boolean): Boolean;
-var
-  Rows: TExportResults;
-begin
-  PlanExport(LibraryPath, OutputPath, Deck, Version, DeckVersion, Mode, ExpansionUTC, Prefix, Bytes, ReplaceExisting);
-  Result := Publish(Rows) <> 0;
 end;
 
 function TExportManifest.GetCount: Integer;
