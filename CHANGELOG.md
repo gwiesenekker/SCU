@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Show empty file patterns as `(not set)` in the library summary.
+
 - Store an optional `version_tracker` template in library metadata. Edit it with `edit_version_tracker`, generate it during extraction and release, and report it as ignored during working-file import and verification. GUI Preferences now has dedicated File patterns and Version tracker editors.
 
 - Allow `configure_library platform=Linux|Windows|macOS` to record an unknown creation platform once.

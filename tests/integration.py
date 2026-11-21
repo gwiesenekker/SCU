@@ -5730,6 +5730,8 @@ int mkstemp(char *pattern) {
 
 
     def test_configure_library_file_patterns_json_and_atomic_validation(self):
+        empty_patterns = r"(?m)^file_patterns +\(not set\)$"
+        self.assertRegex(self.run_scu("disl"), empty_patterns)
         self.run_scu("conl", 'file_patterns=["*.pas","Makefile"]', "build_command=original")
         header = json.loads(self.run_scu("disl", "j=y"))
         self.assertEqual(header["file_patterns"], ["*.pas", "Makefile"])
@@ -5739,6 +5741,7 @@ int mkstemp(char *pattern) {
                 self.run_scu("conl", "file_patterns=" + value, "build_command=changed", error=error)
                 self.assertEqual(json.loads(self.run_scu("disl", "j=y")), header)
         self.run_scu("conl", "fp=[]")
+        self.assertRegex(self.run_scu("disl"), empty_patterns)
         self.assertEqual(json.loads(self.run_scu("disl", "j=y"))["file_patterns"], [])
         self.run_scu("verat")
 

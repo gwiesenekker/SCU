@@ -50,6 +50,8 @@ begin
       Exit('(not set)');
     Exit(DisplayText(Value.AsString));
   end;
+  if (Value.JSONType = jtArray) and (Value.Count = 0) then
+    Exit('(not set)');
   Result := DisplayText(Value.AsJSON);
 end;
 
