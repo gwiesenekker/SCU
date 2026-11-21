@@ -107,7 +107,12 @@ begin
   begin
     CheckSessionInterrupt;
     Name := DisplayText(Configuration.Names[Index]);
-    WriteRow(Name, DisplayValue(Configuration.Items[Index]));
+    if (Configuration.Names[Index] = 'version_tracker_template') and
+      (Configuration.Items[Index].JSONType = jtString) and
+      (Configuration.Items[Index].AsString <> '') then
+      WriteRow(Name, DisplayText(AdjustLineBreaks(Configuration.Items[Index].AsString, tlbsLF), True))
+    else
+      WriteRow(Name, DisplayValue(Configuration.Items[Index]));
   end;
 end;
 
