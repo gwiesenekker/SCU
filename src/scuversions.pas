@@ -32,7 +32,7 @@ type
     procedure Unlock;
     procedure DeleteCurrent(const Name: string; Latest: Integer; DeleteRevisions: Boolean);
     procedure Start(const Name, Prefix: string; Latest: Integer);
-    function NextVersion(Increment: Int64): string;
+    function NextVersion(const Increment: string): string;
     function CommentPrefix(const Name: string): string;
     procedure SetCommentPrefix(const Prefix: string; Latest: Integer);
     procedure Bounds(const Name: string; Latest: Integer; out Base, Last: Integer);
@@ -44,6 +44,8 @@ type
     property Current: string read GetCurrent;
     property Locked: Boolean read GetLocked;
   end;
+
+const MaxVersionPlaces = 10;
 
 procedure ValidateCommentPrefix(const Prefix: string);
 
@@ -71,7 +73,7 @@ var
 begin
   Dot := Pos('.', Name);
   MinorText := Copy(Name, Dot + 1, MaxInt);
-  Valid := (Length(MinorText) > 0) and (Length(MinorText) <= 10);
+  Valid := (Length(MinorText) > 0) and (Length(MinorText) <= MaxVersionPlaces);
   for Index := 1 to Length(MinorText) do
     Valid := Valid and (MinorText[Index] in ['0'..'9']);
   if (Dot <= 1) or not TryStrToInt(Copy(Name, 1, Dot - 1), Major) or
@@ -271,23 +273,25 @@ begin
   FEntries[Index].CommentPrefix := Prefix;
 end;
 
-function TVersionHistory.NextVersion(Increment: Int64): string;
+function TVersionHistory.NextVersion(const Increment: string): string;
 var
-  Major, Places, Index: Integer;
-  Minor, NewMajor, Scale: Int64;
+  Major, StepMajor, Places, StepPlaces, Index: Integer;
+  Minor, StepMinor, NewMajor, Scale: Int64;
 begin
   ParseVersion(Current, Major, Minor);
+  ParseVersion(Increment, StepMajor, StepMinor);
   Places := Length(Current) - Pos('.', Current);
-  if Places = 1 then
+  StepPlaces := Length(Increment) - Pos('.', Increment);
+  while Places < StepPlaces do
   begin
-    Places := 2;
     Minor := Minor * 10;
+    Inc(Places);
   end;
-  Scale := 100;
-  for Index := 3 to Places do
-    Scale := Scale * 10;
-  Minor := Minor + (Increment mod 100) * (Scale div 100);
-  NewMajor := Int64(Major) + (Increment div 100) + (Minor div Scale);
+  for Index := StepPlaces + 1 to Places do StepMinor := StepMinor * 10;
+  Scale := 1;
+  for Index := 1 to Places do Scale := Scale * 10;
+  Minor := Minor + StepMinor;
+  NewMajor := Int64(Major) + StepMajor + Minor div Scale;
   if NewMajor > High(Integer) then
     raise EScuError.Create('The next library version is out of range.');
   Result := IntToStr(NewMajor) + Copy(FormatFixed(Minor mod Scale, Places), 2, MaxInt);

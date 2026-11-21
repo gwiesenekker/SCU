@@ -63,7 +63,7 @@
           "type": "string",
           "aliases": ["vi"],
           "value": "scu$optional",
-          "description": "Step for automatically starting a library version, in hundredths. The default is 0.01."
+          "description": "Step for automatically starting a library version, with up to ten fractional digits. The default is 0.01."
         },
         {
           "name": "release_directory",

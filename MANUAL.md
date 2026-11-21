@@ -62,6 +62,8 @@ A library version groups changes across decks. Each deck has its own revision wi
 
 Modification and lock times in `disd`, `disv`, and `disvh` use your local time zone. The numeric offset distinguishes the two occurrences of a local time when daylight saving ends. The JSON header, audit records, and release macros use UTC.
 
+Set the library version step with `conl vi=0.001`. After locking version `8.1307`, running `crev` then creates `8.1317`. For `8.1308` as the next version, use `vi=0.0001`. The default step is `0.01`. SCU accepts up to ten fractional digits.
+
 If you locked the current version too soon, enter `unlv`. It takes no arguments.
 You can then import further edits into that version and use `locv` again with a new description.
 The audit trail retains the earlier lock. Once a successor exists, the earlier version stays locked.

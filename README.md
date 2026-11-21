@@ -784,6 +784,8 @@ recent versions with their lock status, lock time, and description.
 The command `display_deck_list` lists the visible snapshot. Use
 `display_version_history limit=0 display_description=full` for complete history with each description printed below its version row.
 
+Set the library version step with `conl vi=0.001`. After locking version `8.1307`, running `crev` then creates `8.1317`. For `8.1308` as the next version, use `vi=0.0001`. The default step is `0.01`. SCU accepts up to ten fractional digits.
+
 Extraction defaults to `version=scu$current_version`. Omit `revision` for the
 latest visible deck; combine `version=1.1 revision=0.001` or use the complete
 selector `version=1.1-0.001`. These are deck revisions, not internal library-wide

@@ -23,7 +23,7 @@ type
     FLastModifiedDeck, FBuildCommand, FVersionIncrement, FRevisionIncrement: string;
     FTrackerTemplate, FTrackerModified: string;
     FVersionTracker, FReleaseDirectory: string;
-    FVersionStep, FRevisionStep: Int64;
+    FRevisionStep: Int64;
     function GetEditorCount: Integer;
     function GetEditorArgument(Index: Integer): string;
     function GetFilePatternCount: Integer;
@@ -71,13 +71,40 @@ uses SysUtils, ScuClock, ScuCodec, ScuErrors, ScuJSON, ScuVersionNumbers, ScuLib
 const
   DefaultVersionIncrement = '0.01';
   DefaultRevisionIncrement = '0.001';
-  MaxVersionIncrement = Int64(High(Integer)) * 100 + 99;
 
 function ParseIncrement(const Value, Name: string; Places: Integer; Maximum: Int64): Int64;
 begin
   if not TryParseFixed(Value, Places, Result) or (Result < 1) or (Result > Maximum) then
     raise EScuError.CreateFmt('Expected a positive %s from %s to %s.',
       [Name, FormatFixed(1, Places), FormatFixed(Maximum, Places)]);
+end;
+
+function NormalizeVersionIncrement(const Value: string): string;
+var
+  Dot: SizeInt;
+  Whole, Fraction: string;
+  Major, Minor: Int64;
+begin
+  Dot := Pos('.', Value);
+  if Dot = 0 then
+  begin
+    Whole := Value;
+    Fraction := '00';
+  end
+  else
+  begin
+    Whole := Copy(Value, 1, Dot - 1);
+    Fraction := Copy(Value, Dot + 1, MaxInt);
+  end;
+  if not TryParseFixed(Whole, 0, Major) or (Major > High(Integer)) or
+    (Length(Fraction) > MaxVersionPlaces) or not TryParseFixed(Fraction, 0, Minor) or
+    ((Major = 0) and (Minor = 0)) then
+    raise EScuError.Create('Expected a positive version_increment with at most ' +
+      IntToStr(MaxVersionPlaces) + ' fractional digits and a whole part up to ' + IntToStr(High(Integer)) + '.');
+  while (Length(Fraction) > 2) and (Fraction[Length(Fraction)] = '0') do
+    SetLength(Fraction, Length(Fraction) - 1);
+  if Length(Fraction) = 1 then Fraction := Fraction + '0';
+  Result := IntToStr(Major) + '.' + Fraction;
 end;
 
 procedure ValidateEditor(Args: TJSONArray; const Source: string);
@@ -169,9 +196,8 @@ begin
     Header.Add('version_increment', DefaultVersionIncrement);
   if not Assigned(Header.Find('revision_increment')) then
     Header.Add('revision_increment', DefaultRevisionIncrement);
-  FVersionIncrement := Field(Header, 'version_increment', jtString).AsString;
+  FVersionIncrement := NormalizeVersionIncrement(Field(Header, 'version_increment', jtString).AsString);
   FRevisionIncrement := Field(Header, 'revision_increment', jtString).AsString;
-  FVersionStep := ParseIncrement(FVersionIncrement, 'version_increment', 2, MaxVersionIncrement);
   FRevisionStep := ParseIncrement(FRevisionIncrement, 'revision_increment', 3, MaxDeckRevision);
   if not Assigned(Header.Find('last_modified_deck')) then
     Header.Add('last_modified_deck', LastDeck);
@@ -258,7 +284,7 @@ begin
 end;
 
 function TLibraryHeader.SuggestedNextVersion: string;
-begin Result := Versions.NextVersion(FVersionStep); end;
+begin Result := Versions.NextVersion(FVersionIncrement); end;
 
 procedure TLibraryHeader.CreateVersion(const Name: string; RevisionCount: Integer);
 var
@@ -316,7 +342,7 @@ end;
 function TLibraryHeader.Configure(const Settings: TLibrarySettingsChange; RevisionCount: Integer): Boolean;
 var
   VersionValue, RevisionValue: string;
-  VersionStep, NewRevisionStep: Int64;
+  NewRevisionStep: Int64;
   Index: Integer;
 begin
   Result := False;
@@ -330,13 +356,9 @@ begin
   if Settings.ChangeTracker and (Settings.VersionTracker <> '') then ValidateSourceFileName(Settings.VersionTracker);
   VersionValue := FVersionIncrement;
   RevisionValue := FRevisionIncrement;
-  VersionStep := FVersionStep;
   NewRevisionStep := FRevisionStep;
   if Settings.VersionIncrement <> '' then
-  begin
-    VersionStep := ParseIncrement(Settings.VersionIncrement, 'version_increment', 2, MaxVersionIncrement);
-    VersionValue := FormatFixed(VersionStep, 2);
-  end;
+    VersionValue := NormalizeVersionIncrement(Settings.VersionIncrement);
   if Settings.RevisionIncrement <> '' then
   begin
     NewRevisionStep := ParseIncrement(Settings.RevisionIncrement, 'revision_increment', 3, MaxDeckRevision);
@@ -371,7 +393,6 @@ begin
   begin
     FSerialized.Strings['version_increment'] := VersionValue;
     FVersionIncrement := VersionValue;
-    FVersionStep := VersionStep;
     Result := True;
   end;
   if RevisionValue <> FRevisionIncrement then

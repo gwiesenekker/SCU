@@ -898,6 +898,27 @@ class PortableCliTests(unittest.TestCase):
         self.assertEqual(working.read_bytes(), b"unsaved work\n")
 
 
+    def test_fine_library_version_increments(self):
+        self.run_scu("conl", "vi=0.001")
+        for invalid in ("0", "0.00000000001", "1.2.3", "2147483648"):
+            self.run_scu("conl", "vi=" + invalid, error="version_increment")
+        self.assertEqual(json.loads(self.run_scu("disl", "j=y"))["version_increment"], "0.001")
+        self.run_scu("locv", "Initial")
+        self.assertEqual(self.run_scu("crev"), "Created version 1.001")
+        self.run_scu("locv", "Next")
+        self.run_scu("crev", "8.1307")
+        self.run_scu("locv", "Imported")
+        self.assertEqual(self.run_scu("crev"), "Created version 8.1317")
+        self.run_scu("locv", "Carry")
+        self.run_scu("crev", "2147483646.9999999999")
+        self.run_scu("conl", "vi=0.0000000001")
+        self.run_scu("locv", "Last major")
+        self.assertEqual(self.run_scu("crev"), "Created version 2147483647.0000000000")
+        self.run_scu("conl", "vi=1")
+        self.run_scu("locv", "Overflow")
+        self.run_scu("crev", error="out of range")
+        self.run_scu("verat")
+
     def test_deck_version_increments_and_rollover_are_per_deck(self):
         header = self.read_library()["header"]
         self.assertEqual((header["version_increment"], header["revision_increment"]), ("0.01", "0.001"))
