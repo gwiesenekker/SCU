@@ -1661,7 +1661,7 @@ if pathlib.Path('remove-file').exists():
         self.run_scu(legacy, "verify_audit_trail")
         with closing(sqlite3.connect(legacy)) as database:
             before = database.execute("SELECT generation, payload FROM library").fetchone()
-        self.assertRegex(self.run_scu(legacy, "disl"), r"(?m)^file_patterns +\[\]$")
+        self.assertRegex(self.run_scu(legacy, "disl"), r"(?m)^file_patterns +\(not set\)$")
         with closing(sqlite3.connect(legacy)) as database:
             self.assertEqual(database.execute("SELECT generation, payload FROM library").fetchone(), before)
         self.assertNotIn("file_patterns", json.loads(self.run_scu(legacy, "display_library", "json=yes")))

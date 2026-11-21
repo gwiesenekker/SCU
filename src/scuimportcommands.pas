@@ -15,7 +15,7 @@ implementation
 
 uses
   ScuArchiveCompatibility, ScuWorkingExports, ScuExportTypes, ScuLibraryNames, Classes, Contnrs, SysUtils, ScuCodec, ScuErrors, ScuFiles, ScuFileScan, ScuLibrary,
-  ScuExportManifest, ScuSignals, ScuTable, ScuTerminal, ScuPlatformPaths;
+  ScuExportCommands, ScuExportManifest, ScuSignals, ScuTable, ScuTerminal, ScuPlatformPaths;
 
 type
   TDeckImporter = class
@@ -223,6 +223,14 @@ begin
     end;
     on E: Exception do
       raise EScuError.Create('Import was saved; its working-file manifest update remains pending: ' + E.Message);
+  end;
+  try
+    RefreshImportedTracker(Context);
+  except
+    on E: ECommandCancelled do
+      raise ECommandCancelled.Create('Import was saved; version tracker refresh was cancelled. Run import_deck again to retry.');
+    on E: Exception do
+      raise EScuError.Create('Import was saved; could not refresh the version tracker: ' + E.Message);
   end;
 end;
 

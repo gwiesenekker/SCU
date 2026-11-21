@@ -7,6 +7,7 @@ interface
 uses
   ScuCommand, ScuCommandHandler;
 
+procedure RefreshImportedTracker(const Context: TCommandContext);
 function SingleDeckDirectory(const Context: TCommandContext): string;
 function VersionOutputDirectory(const Context: TCommandContext): string;
 function ExtractDeck(var Context: TCommandContext): string;
@@ -96,10 +97,8 @@ begin
   end;
 end;
 
-procedure PlanTracker(const Context: TCommandContext; Manifest: TExportManifest; const Path: string);
-var Version: string;
+procedure PlanTracker(const Context: TCommandContext; Manifest: TExportManifest; const Path, Version: string);
 begin
-  Version := Context.Snapshots.Selected.Version;
   Manifest.PlanExport(Context.LibraryPath, OutputPath(Context, Path), '', Version, '', emTracker,
     '', '', RenderTracker(Context.LibraryFile, Version), BooleanArgument(Context.Command, 'overwrite', 'no'));
 end;
@@ -111,6 +110,35 @@ begin
     if Row.TrackerFile <> '' then
       if Row.Status = esUnchanged then Context.Output.WriteLine(Row.TrackerFile + ' is unchanged')
       else Context.Output.WriteLine(Row.TrackerFile + ' has been expanded');
+end;
+
+procedure RefreshImportedTracker(const Context: TCommandContext);
+var
+  Manifest: TExportManifest;
+  Rows: TExportResults;
+  Tracker, Path: string;
+begin
+  Tracker := Context.LibraryFile.VersionTracker;
+  if Tracker = '' then Exit;
+  Path := IncludeTrailingPathDelimiter(Context.OutputDirectory) + Tracker;
+  Manifest := TExportManifest.Create(Context.OutputDirectory);
+  try
+    Manifest.Recover;
+    try
+      PlanTracker(Context, Manifest, Path, Context.LibraryFile.CurrentVersion);
+    except
+      on E: EExportOverwriteRequired do
+      begin
+        Context.Output.WriteLine(Tracker + ' was left untouched (' + E.Status +
+          '). To replace it, run extract_deck with the tracker filename and overwrite=yes.');
+        Exit;
+      end;
+    end;
+    Manifest.Publish(Rows);
+    ReportTracker(Context, Rows);
+  finally
+    Manifest.Free;
+  end;
 end;
 
 function ExtractDeck(var Context: TCommandContext): string;
@@ -168,7 +196,7 @@ begin
   Manifest := TExportManifest.Create(ExtractFileDir(Path));
   try
     Manifest.Recover;
-    if TrackerOnly then PlanTracker(Context, Manifest, Path)
+    if TrackerOnly then PlanTracker(Context, Manifest, Path, Context.Snapshots.Selected.Version)
     else
       Manifest.PlanExport(Context.LibraryPath, Path, Deck, Selection.Snapshot.Version, ResolvedDeckVersion,
         emExtract, '', '', Rendered.Bytes, BooleanArgument(Context.Command, 'overwrite', 'no'));
@@ -176,7 +204,7 @@ begin
     begin
       TrackerPath := IncludeTrailingPathDelimiter(ExtractFileDir(Path)) + Tracker;
       if not TrackerOnly or not SameStoragePath(Path, TrackerPath) then
-        PlanTracker(Context, Manifest, TrackerPath);
+        PlanTracker(Context, Manifest, TrackerPath, Context.Snapshots.Selected.Version);
     end;
     Manifest.Publish(Rows);
     Written := (Length(Rows) > 0) and (Rows[0].Status <> esUnchanged);
@@ -302,7 +330,7 @@ begin
     if Context.LibraryFile.VersionTracker <> '' then
     begin
       try
-        PlanTracker(Context, Manifest, IncludeTrailingPathDelimiter(Directory) + Context.LibraryFile.VersionTracker);
+        PlanTracker(Context, Manifest, IncludeTrailingPathDelimiter(Directory) + Context.LibraryFile.VersionTracker, Version);
         FileNames.Add(Context.LibraryFile.VersionTracker);
       except
         on E: EExportOverwriteRequired do

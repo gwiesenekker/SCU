@@ -109,6 +109,8 @@ Choose **OK** to save the settings together. **Cancel** discards the edits. In t
 
 For example, `extv v=8.1307 b=n` writes a header containing `#define PROJECT_VERSION "8.1307"` and reports `version.h has been expanded`. A single-deck extraction such as `extd book.c` also generates the header beside its output. Publishing with `relv` generates it in the release directory. If the header already matches, these commands report `version.h is unchanged` and preserve its modification time.
 
+After a successful `impd`, SCU refreshes the version tracker in the library directory for the current version. This works for pattern scans and single-file imports, even when no decks changed. SCU reports whether the tracker was expanded or is unchanged. If a differing tracker file is untracked or locally edited, the import keeps it and reports the conflict. To replace it explicitly, use `extd version.h o=y b=n`. Importing does not run the build.
+
 Although `*.h` matches `version.h`, a working-file scan reports `version.h has been ignored (version tracker)`. Verification also skips the generated file. Edit the template in Preferences or with `edivt` to keep changes. If you edited the generated header directly, extraction requires `overwrite=yes` to replace it.
 
 The template belongs to the whole library. Extracting an older version uses today's stored template with the selected version number. The date and time macros use the template’s last modification time in UTC. The tracker has no deck version of its own. To stop generating it, clear the filename in Preferences or enter `conl vt=`. The template stays in the library.

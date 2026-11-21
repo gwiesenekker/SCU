@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refresh the configured version tracker after a successful import, including scans with no changed decks.
+
 - Extraction and release report whether they wrote the version tracker or found it unchanged.
 
 - Show empty file patterns as `(not set)` in the library summary.

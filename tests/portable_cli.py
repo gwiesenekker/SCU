@@ -251,6 +251,29 @@ class PortableCliTests(unittest.TestCase):
         self.assertIn(ignored, self.run_scu("impd"))
         self.run_scu("verat")
 
+    def test_import_refreshes_tracker_from_committed_current_version(self):
+        self.run_scu("conl", "vt=version.h")
+        header = self.root / "version.h"
+        self.run_scu("impd", "missing", error="missing")
+        self.assertFalse(header.exists())
+        self.assertIn("version.h has been expanded", self.run_scu("impd").splitlines())
+        self.assertIn(b'"1.0"', header.read_bytes())
+        self.run_scu("locv", "First")
+        self.run_scu("crev", "1.1")
+        (self.root / "main.c").write_text("source")
+        self.assertIn("version.h has been expanded", self.run_scu("impd", "main.c").splitlines())
+        self.assertIn(b'"1.1"', header.read_bytes())
+        self.run_scu("conl", 'fp=["*.c","*.h"]')
+        stamp = header.stat().st_mtime_ns
+        scan = self.run_scu("impd")
+        self.assertIn("version.h is unchanged", scan.splitlines())
+        self.assertEqual(header.stat().st_mtime_ns, stamp)
+        header.write_text("local edit")
+        self.assertIn("version.h was left untouched", self.run_scu("impd"))
+        self.assertEqual(header.read_text(), "local edit")
+        self.assertEqual(len(self.read_library()["revisions"]), 1)
+        self.run_scu("verat")
+
     def test_tracker_with_no_decks_and_name_collision(self):
         self.run_scu("conl", "vt=version.h")
         self.assertIn("version.h has been expanded", self.run_scu("extd"))

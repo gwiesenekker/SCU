@@ -666,6 +666,8 @@ To generate a version header, run `conl version_tracker=version.h`. SCU stores t
 
 `extd`, `extv`, and `relv` write the tracker beside their outputs and report `version.h has been expanded` when they create or replace it. If its bytes already match, they report `version.h is unchanged`. Historical exports use the same template with the selected library version. Date and time macros use the template’s modification time. The tracker has no deck revision, so `SCU$DECK_VERSION` stays literal. Overwrite protection applies if you edit the generated file.
 
+After a successful `impd`, SCU refreshes the version tracker in the library directory for the current version. This works for pattern scans and single-file imports, even when no decks changed. SCU reports whether the tracker was expanded or is unchanged. If a differing tracker file is untracked or locally edited, the import keeps it and reports the conflict. To replace it explicitly, use `extd version.h o=y b=n`. Importing does not run the build.
+
 Working-file imports and manifest verification report `version.h has been ignored (version tracker)` and exclude it from deck counts. Choose a filename distinct from existing decks and their working files. Clear the filename with `conl version_tracker=` to disable generation and keep the template for later.
 
 Builds run from the **library directory**, even if an explicit output path is
