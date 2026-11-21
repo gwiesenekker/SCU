@@ -18,6 +18,7 @@ type
     constructor Create(Database: TSQLiteConnection; SchemaVersion: Integer);
     function StateKey: string;
     function ReadSourcePath(Sequence: Integer): RawByteString;
+    function MatchesDeckHistory(const Deck: string; const Bytes: RawByteString): Boolean;
     function HasSource(const Deck, DeckVersion, SHA1: string): Boolean;
     function RevisionCount: Integer;
     // The caller owns the returned JSON object.
@@ -36,7 +37,7 @@ type
 implementation
 
 uses
-  SysUtils, ScuErrors, ScuCodec, ScuJSON, ScuRevisionJSON;
+  SysUtils, ScuErrors, ScuCodec, ScuJSON, ScuRevisionJSON, ScuLibraryRevision, ScuSignals;
 
 constructor TSQLiteRevisionStore.Create(Database: TSQLiteConnection; SchemaVersion: Integer);
 begin
@@ -63,6 +64,30 @@ begin
     Result := Statement.Text[0];
     if Result <> '' then Result := DecodeBytesHex(Result, 'Deck source filename')
     else Result := Statement.Text[1];
+  finally Statement.Free; end;
+end;
+
+function TSQLiteRevisionStore.MatchesDeckHistory(const Deck: string; const Bytes: RawByteString): Boolean;
+var Statement: TSQLiteStatement; Payload: TJSONObject; Revision: TLibraryRevision; Sequence: Integer;
+begin
+  Statement := FDatabase.Prepare('SELECT sequence FROM deck_revisions WHERE deck_name=? AND deleted=0 ' +
+    'AND json_extract(payload, ''$.sha1'')=? ORDER BY sequence DESC');
+  try
+    Statement.Bind(1, Deck);
+    Statement.Bind(2, DeckSHA1(Bytes));
+    while Statement.Step do
+    begin
+      CheckSessionInterrupt;
+      Sequence := Statement.Integers[0];
+      Payload := ReadRevision(Sequence);
+      try
+        Revision := TLibraryRevision.CreatePayload(Payload, Sequence);
+        try
+          if (Revision.Name = Deck) and (Revision.Decode = Bytes) then Exit(True);
+        finally Revision.Free; end;
+      finally Payload.Free; end;
+    end;
+    Result := False;
   finally Statement.Free; end;
 end;
 
@@ -224,13 +249,7 @@ begin
   end;
   if RevisionCount <> KeepCount then
     raise EScuError.Create('Stored deck revisions do not match the selected version.');
-  Statement := FDatabase.Prepare('DELETE FROM pending_working_exports WHERE library_version = ?');
-  try
-    Statement.Bind(1, Version);
-    Statement.Step;
-  finally
-    Statement.Free;
-  end;
+
 end;
 
 procedure TSQLiteRevisionStore.AppendRevision(Sequence: Integer;

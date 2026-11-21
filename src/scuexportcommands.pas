@@ -17,7 +17,7 @@ function ReleaseVersion(var Context: TCommandContext): string;
 implementation
 
 uses
-  ScuArchiveCompatibility, ScuWorkingExports, FPJSON, ScuClock, ScuReleaseCleanup, ScuExportManifest, ScuExportPaths, ScuExportTypes, ScuDeckExport, ScuLibraryDisplay, ScuTable, Classes, SysUtils, ScuCommands, ScuErrors, ScuFiles, ScuLibrary,
+  ScuArchiveCompatibility, FPJSON, ScuClock, ScuReleaseCleanup, ScuExportManifest, ScuExportPaths, ScuExportTypes, ScuDeckExport, ScuLibraryDisplay, ScuTable, Classes, SysUtils, ScuCommands, ScuErrors, ScuFiles, ScuLibrary,
   ScuLibraryPaths, ScuSignals, ScuVersions, ScuLockTypes, ScuExportNames, Contnrs, ScuPlatformPaths;
 
 const
@@ -121,7 +121,7 @@ begin
   Tracker := Context.LibraryFile.VersionTracker;
   if Tracker = '' then Exit;
   Path := IncludeTrailingPathDelimiter(Context.OutputDirectory) + Tracker;
-  Manifest := TExportManifest.Create(Context.OutputDirectory, Context.Database.Revisions);
+  Manifest := TExportManifest.CreateWorking(Context.OutputDirectory, Context.LibraryFile, Context.Database.Revisions);
   try
     Manifest.Recover;
     try
@@ -191,9 +191,7 @@ begin
   Context.Snapshots.OutputPath := Path;
   ResolvedDeckVersion := Rendered.DeckVersion;
   CheckSessionInterrupt;
-  if SameExportLibrary(ExtractFileDir(Path), ExtractFileDir(CanonicalFile(Context.LibraryPath))) then
-    RefreshWorkingExports(Context.Database, Context.LibraryPath);
-  Manifest := TExportManifest.Create(ExtractFileDir(Path), Context.Database.Revisions);
+  Manifest := TExportManifest.CreateWorking(ExtractFileDir(Path), Context.LibraryFile, Context.Database.Revisions);
   try
     Manifest.Recover;
     if TrackerOnly then PlanTracker(Context, Manifest, Path, Context.Snapshots.Selected.Version)
@@ -297,9 +295,8 @@ begin
       if not Context.LibraryFile.TryDeckSnapshot(Names[Index], Revision, Snapshot) then
         Names.Delete(Index);
     {$IFDEF WINDOWS}PreflightVersionNames(Context, Names, Directory);{$ENDIF}
-    if SameExportLibrary(Directory, ExtractFileDir(CanonicalFile(Context.LibraryPath))) then
-      RefreshWorkingExports(Context.Database, Context.LibraryPath);
-    Manifest := TExportManifest.Create(Directory, Context.Database.Revisions);
+    if Expand then Manifest := TExportManifest.Create(Directory, Context.Database.Revisions)
+    else Manifest := TExportManifest.CreateWorking(Directory, Context.LibraryFile, Context.Database.Revisions);
     Manifest.Recover;
     ExpansionUTC := UtcTimestamp(UtcNow);
     LegacyCopy := False;

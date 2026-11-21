@@ -145,20 +145,19 @@ class ExportNamesTests(unittest.TestCase):
     def test_unsafe_explicit_targets_leave_existing_files_and_manifest_untouched(self):
         self.initialize()
         self.extract()
-        before = self.manifest.read_bytes()
+        self.assertFalse(self.manifest.exists())
         source = (self.output / 'main.c').read_bytes()
         for name in ['main.c:stream', 'main.c.', 'NUL.c', '.SCU-EXPORTS.JSON', '.SCU-OUTPUT.LOCK']:
             self.extract(name, error=b'Windows')
-            self.assertEqual(self.manifest.read_bytes(), before)
+            self.assertFalse(self.manifest.exists())
             self.assertEqual((self.output / 'main.c').read_bytes(), source)
 
     @unittest.skipUnless(WINDOWS, 'Windows manifest identities')
-    def test_export_case_alias_is_one_manifest_entry(self):
+    def test_working_export_case_alias_needs_no_manifest(self):
         self.initialize()
         self.extract('source.c')
         self.extract('SOURCE.C')
-        document = json.loads(self.manifest.read_text())
-        self.assertEqual(len(document['files']), 1)
+        self.assertFalse(self.manifest.exists())
         self.assertIn(b'No errors', self.cli('verd', 'output_directory=' + argument(self.output)))
 
     @unittest.skipUnless(WINDOWS, 'Windows manifest collision handling')
@@ -251,24 +250,6 @@ class ExportNamesTests(unittest.TestCase):
             self.assertEqual(target.read_bytes() if target.exists() else None, before)
         self.assertFalse(self.manifest.exists())
 
-    @unittest.skipUnless(WINDOWS, 'Windows queued observations')
-    def test_pending_working_names_fail_before_manifest_changes(self):
-        self.initialize()
-        manifest = self.root / '.scu-exports.json'
-        before = manifest.read_bytes() if manifest.exists() else None
-        for names in [[('..\\outside.c', 'main.c')], [('Case.c', 'main.c'), ('case.c', 'other.c')]]:
-            with closing(sqlite3.connect(self.library)) as db, db:
-                db.execute('DELETE FROM pending_working_exports')
-                for name, deck in names:
-                    db.execute('INSERT INTO pending_working_exports VALUES (?, ?, ?, ?, ?, ?, ?)',
-                               (hashlib.sha256(raw(name)).hexdigest(), raw(name), deck,
-                                '1.0', '1.0-0.000', hashlib.sha256(b'payload').hexdigest(), 0))
-            self.cli('extv', 'build=no', error=b'Windows')
-            self.assertEqual(manifest.read_bytes() if manifest.exists() else None, before)
-            self.assertFalse((self.root.parent / 'outside.c').exists())
-            with closing(sqlite3.connect(self.library)) as db:
-                self.assertEqual(db.execute('SELECT count(*) FROM pending_working_exports').fetchone()[0], len(names))
-
     @unittest.skipUnless(WINDOWS, 'Windows existing DOS aliases')
     def test_existing_short_alias_does_not_overwrite_long_target(self):
         self.initialize()
@@ -292,8 +273,9 @@ class ExportNamesTests(unittest.TestCase):
             self.cli('extd', 'main.c', os.fsdecode(b'output_file=' + path), 'build=no')
             with open(path, 'rb') as source:
                 self.assertEqual(source.read(), (self.root / 'source.c').read_bytes())
-        files = json.loads(self.manifest.read_text())['files']
-        self.assertEqual({bytes.fromhex(e['file_bytes']) for e in files}, set(names))
+        self.assertFalse(self.manifest.exists())
+        self.cli('verd', 'output_directory=' + argument(self.output), error=b'need attention')
+        self.cli('extv', 'output_directory=' + argument(self.output))
         self.cli('verd', 'output_directory=' + argument(self.output))
         self.cli('verat')
 

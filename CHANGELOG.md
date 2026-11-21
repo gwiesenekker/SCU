@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fix a Linux race when two releases first create the same output directory or its missing parents.
+
+- Remove working manifests and the SQLite working-file observation queue. `verd` compares files beside the library with the selected snapshot by default. Matching working files show `matches` in the status column and the revision in the `Deck version` column. Release publication and recovery retain their directory manifest.
+
+- Allow `extd` and `extv` to replace ordinary files that exactly match any surviving revision of the same deck, including untracked files.
+
 - Reject conflicting working filenames on import or creation. Protect extracted files from deleted revisions even after their deck version number is reused.
 - Allow an explicit import of a former version tracker and replacement of archive provenance when relocking a version.
 - Preserve uniform editor line endings, guard mixed endings, and defer whole-deck comparisons while typing. Correct GUI child exit codes and Windows preference paths, editor lookup and process cleanup.

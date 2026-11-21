@@ -115,7 +115,7 @@ Choose **OK** to save the settings together. **Cancel** discards the edits. In t
 
 For example, `extv v=8.1307 b=n` writes a header containing `#define PROJECT_VERSION "8.1307"` and reports `version.h has been expanded`. A single-deck extraction such as `extd book.c` also generates the header beside its output. Publishing with `relv` generates it in the release directory. If the header already matches, these commands report `version.h is unchanged` and preserve its modification time.
 
-After a successful `impd`, SCU refreshes the version tracker in the library directory for the current version. This works for pattern scans and single-file imports, even when no decks changed. SCU reports whether the tracker was expanded or is unchanged. If a differing tracker file is untracked or locally edited, the import keeps it and reports the conflict. To replace it explicitly, use `extd version.h o=y b=n`. Importing does not run the build.
+After a successful `impd`, SCU refreshes the version tracker in the library directory for the current version. This works for pattern scans and single-file imports, even when no decks changed. SCU reports whether the tracker was expanded or is unchanged. SCU can replace a working tracker that matches the current template rendered for an earlier library version. If it cannot recognize the bytes, it keeps the file and reports the conflict. To replace it explicitly, use `extd version.h o=y b=n`. Importing does not run the build.
 
 Although `*.h` matches `version.h`, a working-file scan reports `version.h has been ignored (version tracker)`. Verification also skips the generated file. Edit the template in Preferences or with `edivt` to keep changes. If you edited the generated header directly, extraction requires `overwrite=yes` to replace it.
 
@@ -129,9 +129,9 @@ The template belongs to the whole library. Extracting an older version uses toda
 extv build=no
 ```
 
-When `extv` encounters edited or untracked files that differ, it lists their deck names, versions, conflict statuses, and output filenames. The batch stops before extraction and the build. Review the list before using `extv o=y` to replace those files.
+Both `extd` and `extv` can replace a working file if its contents exactly match any surviving revision of the same deck. This includes an old revision you deliberately restored by hand. When `extv` encounters working files that match no such revision, it lists their deck names, versions, conflict statuses, and output filenames. The batch stops before extraction and the build. Review the list before using `extv o=y` to replace those files.
 
-To discard an external edit to `book.c`, use `extd book.c o=y b=n`. SCU reports the output path and whether it wrote the file or found matching contents. If you already imported the edit, select the version to restore, for example `extd book.c v=8.1306 o=y b=n`.
+To discard an external edit to `book.c`, use `extd book.c o=y b=n`. SCU reports the output path and whether it wrote the file or found matching contents. If you already imported the edit, select the version to restore, for example `extd book.c v=8.1306 b=n`.
 
 Set `configure_library build_command="make"` to build after extraction. If no build command is set, extraction just writes the files. When SCU reports that an output contains local edits, import edits you want to keep before using `overwrite=yes`.
 
@@ -139,7 +139,7 @@ Choose **File → Publish version** or enter `relv` to prepare a complete releas
 
 ## Verify exported files
 
-Each export directory has a manifest tracking its exported files. `verd` checks the release directory by default. To check working exports instead, enter `verd output_directory=scu$library_directory`. Read the attention list to identify missing, locally changed, or outdated files.
+Run `verd` to compare working files beside the library directly with the current version, or `verd v=1.1` to compare with another version. SCU checks each live deck at its recorded filename. The `Deck version` column shows the revision used for comparison. The status is `matches` when the file is byte-for-byte identical to that revision. Extra files and the configured tracker are ignored. Custom filenames supplied to `extd` are not remembered. Working directories need no manifest. For published files, use `verd od=scu$release_directory` or name the release output directory. Its hidden manifest is normally `release/.scu-exports.json`.
 
 ## Audit trail
 
@@ -231,4 +231,4 @@ Use the full command or any listed abbreviation. For argument details, enter `di
 | `save_library` | savl | Confirm the library is saved. |
 | `unlock_version` | unlv | Reopen the current locked version for editing. |
 | `verify_audit_trail` | verat | Verify the audit chain and optionally check for a saved head. |
-| `verify_decks` | verd | Verify tracked exports against the latest visible deck versions. |
+| `verify_decks` | verd | Compare working files or a published release with a library version. |

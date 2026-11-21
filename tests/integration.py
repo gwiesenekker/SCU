@@ -141,7 +141,7 @@ class ScuIntegration(portable_cli.PortableCliTests):
                 data = files[row["path"]]
                 self.assertEqual(row["sha1"], hashlib.sha1(data).hexdigest())
                 self.assertEqual(row["size"], len(data))
-                self.run_scu(library, "extd", row["deck_name"], "extracted", "v=" + version)
+                self.run_scu(library, "extd", row["deck_name"], "extracted", "v=" + version, "o=y")
                 self.assertEqual((self.root / "extracted").read_bytes(), data)
         self.assertIn("  deleted", self.run_scu(library, "disd", "obsolete"))
         self.run_scu(library, "verify_audit_trail")
@@ -208,7 +208,7 @@ class ScuIntegration(portable_cli.PortableCliTests):
                     expected = files[name]
                     if name not in {'later', 'near', 'case', 'indented'} and expected.startswith(b'// SCU REVISION'):
                         expected = b''.join(expected.splitlines(keepends=True)[1:])
-                    self.run_scu(library, 'extd', name, 'result', 'v=' + version)
+                    self.run_scu(library, 'extd', name, 'result', 'v=' + version, "o=y")
                     self.assertEqual((self.root / 'result').read_bytes(), expected)
                 self.assertEqual((archive / '1.0' / name).read_bytes(), first[name])
                 self.assertEqual((archive / '1.1' / name).read_bytes(), second[name])
@@ -247,7 +247,7 @@ class ScuIntegration(portable_cli.PortableCliTests):
         self.assertEqual([(version, deleted) for deck, version, deleted in rows if deck == 'stable'], [('1.0', 0)])
         self.assertEqual([(version, deleted) for deck, version, deleted in rows if deck == 'revived'], [('1.0', 0), ('1.1', 1), ('1.2', 0)])
         for deck, inherited_from in [('main', '1.2'), ('stable', '1.0'), ('revived', '1.2')]:
-            self.run_scu(library, 'extd', deck, 'result', 'v=1.3')
+            self.run_scu(library, 'extd', deck, 'result', 'v=1.3', "o=y")
             self.assertEqual((self.root / 'result').read_bytes(), snapshots[inherited_from][deck].split(b'\n', 1)[1])
         listing = self.table_data(self.run_scu(library, 'disdl', 'v=1.3'))
         self.assertIn('main\t1.2-0.000', listing)
@@ -287,7 +287,7 @@ class ScuIntegration(portable_cli.PortableCliTests):
             manifest = self.version_import_manifest(library, version)
             self.assertEqual({row["path"] for row in manifest["files"]}, set(files))
             for name, content in files.items():
-                self.run_scu(library, "extd", name, "result", "v=" + version)
+                self.run_scu(library, "extd", name, "result", "v=" + version, "o=y")
                 self.assertEqual((self.root / "result").read_bytes(), content)
                 self.assertEqual((archive / version / name).read_bytes(), content)
         listing = self.table_data(self.run_scu(library, "disdl", "v=1.2"))
@@ -430,7 +430,7 @@ class ScuIntegration(portable_cli.PortableCliTests):
             self.assertEqual(self.run_scu("verify_audit_trail"), head)
             self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (5,))
             self.run_scu("deld", "main")
-            self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (8,))
+            self.assertEqual(database.execute("PRAGMA user_version").fetchone(), (9,))
             self.assertEqual(database.execute("SELECT payload FROM deck_revisions WHERE sequence = 1").fetchall(), payloads)
             self.assertEqual(database.execute("SELECT deleted FROM deck_revisions ORDER BY sequence").fetchall(), [(0,), (1,)])
         self.assertEqual(self.read_library()["revisions"][0], before["revisions"][0])
@@ -863,20 +863,34 @@ int mkstemp(char *pattern) {
         self.assertEqual(result.returncode, -signal.SIGKILL, result.stderr)
 
 
+    def test_interrupted_extraction_can_be_retried_without_a_manifest(self):
+        self.store("a", b"first")
+        self.store("b", b"second")
+        directory = self.root / "working"
+        directory.mkdir()
+        location = "od=" + str(directory)
+        self.crash_export_write(2, directory, "extv", location, "b=n")
+        self.assertEqual((directory / "a").read_bytes(), b"first")
+        self.assertFalse((directory / "b").exists())
+        self.assertIn("missing", self.run_scu("verd", location, error="need attention"))
+        self.assertIn("1 unchanged", self.run_scu("extv", location, "b=n"))
+        self.assertIn("Verified 2", self.run_scu("verd", location))
+        self.assertFalse((directory / ".scu-exports.json").exists())
+
     def test_export_recovery_discards_unpublished_intent_and_preserves_previous_manifest(self):
         self.store("main", b"old")
-        self.run_scu("extd", "main", "output")
-        path = self.root / ".scu-exports.json"
+        self.run_scu("relv")
+        path = self.root / "release/.scu-exports.json"
         original = json.loads(path.read_bytes())
         self.store("main", b"new")
-        self.crash_export_write(2, self.root, "extd", "main", "output")
+        self.crash_export_write(2, self.root / "release", "relv")
         self.assertIn("pending", json.loads(path.read_bytes()))
-        self.assertEqual((self.root / "output").read_bytes(), b"old")
-        self.assertIn("outdated", self.run_scu("verd", "od=.", error="need attention"))
+        self.assertEqual((self.root / "release/main").read_bytes(), b"old")
+        self.assertIn("outdated", self.run_scu("verd", "od=scu$release_directory", error="need attention"))
         self.assertEqual(json.loads(path.read_bytes()), original)
-        self.assertEqual((self.root / "output").read_bytes(), b"old")
-        self.run_scu("extd", "main", "output")
-        self.assertIn("Verified 1", self.run_scu("verd", "od=."))
+        self.assertEqual((self.root / "release/main").read_bytes(), b"old")
+        self.run_scu("relv")
+        self.assertIn("Verified 1", self.run_scu("verd", "od=scu$release_directory"))
         self.run_scu("verify_audit_trail")
 
     def test_export_recovery_handles_first_exports_before_and_after_publication(self):
@@ -885,8 +899,8 @@ int mkstemp(char *pattern) {
             with self.subTest(stage=stage):
                 directory = self.root / str(stage)
                 directory.mkdir()
-                output = directory / "custom.raw"
-                self.crash_export_write(stage, directory, "extd", "main", output)
+                output = directory / "main"
+                self.crash_export_write(stage, directory, "relv", "od=" + str(directory))
                 path = directory / ".scu-exports.json"
                 record = json.loads(path.read_bytes())
                 self.assertEqual(record["files"], [])
@@ -901,52 +915,52 @@ int mkstemp(char *pattern) {
 
     def test_export_recovery_preserves_modified_files_and_requires_explicit_reexport(self):
         self.store("main", b"generated")
-        self.crash_export_write(3, self.root, "extd", "main", "custom.raw", "overwrite=yes")
-        output = self.root / "custom.raw"
+        self.crash_export_write(3, self.root / "release", "relv", "overwrite=yes")
+        output = self.root / "release/main"
         output.write_bytes(b"user edits after interruption")
-        path = self.root / ".scu-exports.json"
-        report = self.run_scu("verd", "od=.", error="need attention")
+        path = self.root / "release/.scu-exports.json"
+        report = self.run_scu("verd", "od=scu$release_directory", error="need attention")
         self.assertIn("interrupted export", report)
         self.assertIn("locally modified", report)
         document = json.loads(path.read_bytes())
         self.assertNotIn("pending", document)
         self.assertTrue(document["files"][0]["interrupted_export"])
         interrupted = path.read_bytes()
-        self.run_scu("verd", "od=.", error="need attention")
+        self.run_scu("verd", "od=scu$release_directory", error="need attention")
         self.assertEqual(path.read_bytes(), interrupted)
         self.assertEqual(output.read_bytes(), b"user edits after interruption")
         # An interrupted retry must retain the earlier unresolved provenance.
-        self.crash_export_write(2, self.root, "extd", "main", "custom.raw", "overwrite=yes")
-        self.assertIn("interrupted export", self.run_scu("verd", "od=.", error="need attention"))
+        self.crash_export_write(2, self.root / "release", "relv", "overwrite=yes")
+        self.assertIn("interrupted export", self.run_scu("verd", "od=scu$release_directory", error="need attention"))
         self.assertEqual(path.read_bytes(), interrupted)
         self.assertEqual(output.read_bytes(), b"user edits after interruption")
         # Unrelated exports can proceed without discarding or overwriting this file.
         self.run_scu("extd", "main", "different.raw")
         self.assertEqual(output.read_bytes(), b"user edits after interruption")
-        self.run_scu("extd", "main", "custom.raw", "overwrite=yes")
+        self.run_scu("relv", "overwrite=yes")
         self.assertEqual(output.read_bytes(), b"generated")
         self.assertNotIn("pending", json.loads(path.read_bytes()))
         self.assertFalse(any(e.get("interrupted_export") for e in json.loads(path.read_bytes())["files"]))
-        self.assertIn("Verified 2", self.run_scu("verd", "od=."))
+        self.assertIn("Verified 1", self.run_scu("verd", "od=scu$release_directory"))
         self.run_scu("verify_audit_trail")
 
     def test_export_recovery_is_idempotent_when_repair_is_also_interrupted(self):
         self.store("main", b"source")
-        self.crash_export_write(3, self.root, "extd", "main", "output")
-        path = self.root / ".scu-exports.json"
+        self.crash_export_write(3, self.root / "release", "relv")
+        path = self.root / "release/.scu-exports.json"
         original = path.read_bytes()
-        self.crash_export_write(1, self.root, "verd", "od=.")
+        self.crash_export_write(1, self.root / "release", "verd", "od=scu$release_directory")
         self.assertEqual(path.read_bytes(), original)
-        self.assertEqual((self.root / "output").read_bytes(), b"source")
-        self.assertIn("Verified 1", self.run_scu("verd", "od=."))
+        self.assertEqual((self.root / "release/main").read_bytes(), b"source")
+        self.assertIn("Verified 1", self.run_scu("verd", "od=scu$release_directory"))
         self.assertNotIn("pending", json.loads(path.read_bytes()))
         self.run_scu("verify_audit_trail")
 
 
     def test_export_recovery_rejects_unsafe_or_malformed_pending_records(self):
         self.store("main", b"source")
-        self.crash_export_write(3, self.root, "extd", "main", "output")
-        path = self.root / ".scu-exports.json"
+        self.crash_export_write(3, self.root / "release", "relv")
+        path = self.root / "release/.scu-exports.json"
         original = json.loads(path.read_bytes())
         for target, key, value, error in (
             ("entry", "file", "../escape", "invalid or duplicate file name"),
@@ -961,11 +975,11 @@ int mkstemp(char *pattern) {
                     destination.pop("file_bytes", None)
                 path.write_text(json.dumps(document))
                 before = path.read_bytes()
-                self.run_scu("verd", "od=.", error=error)
+                self.run_scu("verd", "od=scu$release_directory", error=error)
                 self.assertEqual(path.read_bytes(), before)
-                self.assertEqual((self.root / "output").read_bytes(), b"source")
+                self.assertEqual((self.root / "release/main").read_bytes(), b"source")
         path.write_text(json.dumps(original))
-        self.assertIn("Verified 1", self.run_scu("verd", "od=."))
+        self.assertIn("Verified 1", self.run_scu("verd", "od=scu$release_directory"))
 
 
     def test_extract_version_defaults_to_current_version_without_prompting(self):
@@ -1036,7 +1050,7 @@ int mkstemp(char *pattern) {
         self.run_scu("deld", name)
         self.assertEqual(path.read_bytes(), before)
         self.assertEqual((self.root / "release" / name).read_bytes(), b"hidden checksums")
-        output = self.run_scu("verd", error="1 of 2 deck file(s) need attention")
+        output = self.run_scu("verd", "od=scu$release_directory", error="1 of 2 deck file(s) need attention")
         lines = output.splitlines()
         self.assertEqual(re.split(r" {2,}", lines[0]), ["File", "Mode", "Exported", "Latest", "Status"])
         self.assertEqual(lines[1].split()[0], "boards.c")
@@ -1044,12 +1058,12 @@ int mkstemp(char *pattern) {
         self.assertIn("1.1-0.000", output)
         self.assertNotIn("unavailable:", output)
         self.assertEqual(path.read_bytes(), before)
-        self.assertIn("Verified 2", self.run_scu("verd", "v=1.0"))
+        self.assertIn("Verified 2", self.run_scu("verd", "od=scu$release_directory", "v=1.0"))
         for columns in (80, 96):
             with self.subTest(columns=columns), self.terminal_session(
                     TERM="dumb", columns=columns) as (process, terminal, read_until):
                 read_until(b"scu> ")
-                os.write(terminal, b"verd\n")
+                os.write(terminal, b"verd od=scu$release_directory\n")
                 body = read_until(b"scu> ").decode().splitlines()[1:-1]
                 self.assertTrue(all(len(line) <= columns for line in body), body)
                 board = next(line for line in body if line.startswith("boards.c "))
@@ -1065,43 +1079,20 @@ int mkstemp(char *pattern) {
 
 
     def test_verification_finishes_with_deck_file_and_reason_for_every_problem(self):
-        for deck in ("ok", "old", "edited", "missing", "removed", "both"):
-            self.store(deck, b"original")
-            self.run_scu("extd", deck)
-        self.store("old", b"new")
-        (self.root / "edited").write_bytes(b"local")
-        (self.root / "missing").unlink()
+        for name in ("ok", "changed", "missing", "removed"):
+            self.store(name, b"source")
+        self.run_scu("extv")
         self.run_scu("deld", "removed")
-        self.store("both", b"new")
-        (self.root / "both").write_bytes(b"local")
-        self.store("broken", b"old")
-        self.run_scu("extd", "broken", "broken", "build=no")
-        self.store("broken", b"//SCU_COPY unknown_copy\n")
-        self.store("unknown", b"untracked")
-        (self.root / "unknown").write_bytes(b"untracked")
-        manifest = (self.root / ".scu-exports.json").read_bytes()
-        output = self.run_scu("verd", "od=.", error="7 of 8 deck file(s) need attention")
-        self.assertEqual(output.count("Needs attention:"), 1)
-        self.assertNotIn("No errors were found", output)
-        listing, attention = output.split("Needs attention:\n", 1)
-        self.assertIn("current", listing)
-        self.assertNotIn('Deck "ok"', attention)
-        for deck, filename, status in (
-            ("old", "old", "outdated"), ("edited", "edited", "locally modified"),
-            ("missing", "missing", "missing"), ("removed", "removed", "deleted"),
-            ("both", "both", "outdated"),
-            ("broken", "broken", "outdated"), ("unknown", "unknown", "untracked"),
-        ):
-            with self.subTest(deck=deck):
-                self.assertIn(f'Deck "{deck}", file "{filename}": {status}', attention)
-        self.assertIn("Exported deck version 1.0-0.000; latest deck version 1.0-0.001.", attention)
-        self.assertIn("File checksum differs from its recorded export.", attention)
-        self.assertIn("Output file does not exist.", attention)
-        self.assertIn("Deck is deleted in library version 1.0", attention)
-        self.assertIn("No export record exists for this file.", attention)
-        self.assertEqual((self.root / ".scu-exports.json").read_bytes(), manifest)
-        self.assertEqual((self.root / "edited").read_bytes(), b"local")
-        self.run_scu("verify_audit_trail")
+        (self.root / "changed").write_bytes(b"working edit")
+        (self.root / "missing").unlink()
+        report = self.run_scu("verd", error="2 of 3 deck file(s) need attention")
+        table, attention = report.split("Needs attention:", 1)
+        self.assertIn("matches", table)
+        self.assertIn('Deck "missing", file "missing": missing', attention)
+        self.assertIn('Deck "changed", file "changed": differs', attention)
+        self.assertNotIn("removed", report)
+        self.assertNotIn('"ok"', attention)
+        self.assertFalse((self.root / ".scu-exports.json").exists())
 
 
     def test_verification_attention_reports_nonregular_outputs_and_continues(self):
@@ -1114,8 +1105,8 @@ int mkstemp(char *pattern) {
         output.mkdir()
         report = self.run_scu("verd", "od=.", error="1 of 2 deck file(s) need attention")
         table, attention = report.split("Needs attention:\n", 1)
-        self.assertRegex(table, r"ok +extract +1.0-0.000 +1.0-0.000 +current")
-        self.assertIn('Deck "bad", file "bad": unavailable:', attention)
+        self.assertRegex(table, r"(?m)^ok +ok +1\.0-0\.000 +matches$")
+        self.assertIn('Deck "bad", file "bad": unavailable', attention)
         self.assertIn("Expected a regular file", attention)
         self.assertNotIn('Deck "ok"', attention)
         self.assertTrue(output.is_dir())
@@ -1123,13 +1114,15 @@ int mkstemp(char *pattern) {
 
     def test_export_manifests_reject_corruption_and_reserved_output_paths(self):
         self.store("main", b"source")
-        manifest = self.root / ".scu-exports.json"
+        self.run_scu("relv")
+        manifest = self.root / "release/.scu-exports.json"
         manifest.write_text("invalid JSON")
         output = self.root / "output"
         output.write_bytes(b"keep")
-        self.run_scu("extd", "main", "output", error="Export manifest")
+        self.run_scu("relv", error="Export manifest")
         self.assertEqual(output.read_bytes(), b"keep")
         manifest.unlink()
+        self.run_scu("relv")
         self.run_scu("extd", "main", "output", "build=no", "overwrite=yes")
         saved = manifest.read_bytes()
         self.run_scu("extd", "main", manifest, error="reserved for the SCU export manifest")
@@ -1138,7 +1131,7 @@ int mkstemp(char *pattern) {
         document["files"][0]["file"] = "../escape"
         document["files"][0].pop("file_bytes", None)
         manifest.write_text(json.dumps(document))
-        self.run_scu("verd", "od=.", error="invalid or duplicate file name")
+        self.run_scu("verd", "od=release", error="invalid or duplicate file name")
         self.assertFalse((self.root.parent / "escape").exists())
 
     def test_export_manifest_updates_are_serialized_across_libraries(self):
@@ -1149,16 +1142,42 @@ int mkstemp(char *pattern) {
         source.write_bytes(b"second")
         self.run_scu(other, "impd", "second", source.name)
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as workers:
-            tasks = [workers.submit(self.run_scu, "extd", "first", "first"),
-                     workers.submit(self.run_scu, other, "extd", "second", "second")]
+            tasks = [workers.submit(self.run_scu, "relv"),
+                     workers.submit(self.run_scu, other, "relv")]
             for task in tasks:
                 task.result()
-        manifest = json.loads((self.root / ".scu-exports.json").read_bytes())
-        self.assertEqual({e["file"] for e in manifest["files"]}, {"first", "second", "other-source"})
-        self.assertIn("Verified 1", self.run_scu("verd", "od=."))
-        self.assertIn("Verified 2", self.run_scu(other, "verd", "od=."))
+        manifest = json.loads((self.root / "release/.scu-exports.json").read_bytes())
+        self.assertEqual({e["file"] for e in manifest["files"]}, {"first", "other-source"})
+        self.assertIn("Verified 1", self.run_scu("verd", "od=release"))
+        self.assertIn("Verified 1", self.run_scu(other, "verd", "od=release"))
         self.run_scu("verify_audit_trail")
         self.run_scu(other, "verify_audit_trail")
+
+    @unittest.skipUnless(shutil.which("gdb"), "Requires GDB to pause the first mkdir")
+    def test_release_directory_created_by_peer_during_mkdir(self):
+        other = self.root / "other.sqlite"
+        self.run_scu(other, "inil")
+        self.store("first", b"first")
+        (self.root / "second").write_bytes(b"second")
+        self.run_scu(other, "impd", "second", "second")
+
+        # Stop the first release at the mkdir syscall, after any existence check.
+        # Finish a second release before letting that syscall return EEXIST.
+        peer = shlex.join([str(SCU), str(other), "relv"])
+        result = subprocess.run([
+            "gdb", "-nx", "-batch", "-ex", "catch syscall mkdir mkdirat",
+            "-ex", "run", "-ex", "disable 1", "-ex", "shell " + peer,
+            "-ex", "continue", "-ex", "quit $_exitcode", "--args", str(SCU), "relv",
+        ], cwd=self.root, env=dict(os.environ, LC_ALL="C"), capture_output=True, text=True, timeout=30)
+        if "ptrace: Operation not permitted" in result.stderr:
+            self.skipTest("The host does not permit tracing a child process")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("call to syscall mkdir", result.stdout)
+        release = self.root / "release"
+        self.assertEqual((release / "first").read_bytes(), b"first")
+        self.assertEqual((release / "second").read_bytes(), b"second")
+        manifest = json.loads((release / ".scu-exports.json").read_bytes())
+        self.assertEqual({entry["file"] for entry in manifest["files"]}, {"first", "second"})
 
     def configure_file_patterns(self, patterns, library=None):
         editor = self.root / ".set-patterns.py"
@@ -4844,15 +4863,16 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         self.assertIn("build failed", self.run_scu("disat", "1"))
 
     def test_review_unicode_export_manifest_roundtrips_in_c_locale(self):
-        self.store("main", b"bytes")
+        (self.root / "é.scu").write_bytes(b"bytes")
+        self.run_scu("impd", "main", "é.scu")
         for locale in ("C", "C.UTF-8"):
-            result = subprocess.run([SCU, "extd", "main", "é.scu"], cwd=self.root,
+            result = subprocess.run([SCU, "relv"], cwd=self.root,
                                     capture_output=True, env=dict(os.environ, LC_ALL=locale))
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual((self.root / "é.scu").read_bytes(), b"bytes")
-            manifest = json.loads((self.root / ".scu-exports.json").read_bytes())
+            manifest = json.loads((self.root / "release/.scu-exports.json").read_bytes())
             self.assertEqual(manifest["files"][0]["file_bytes"], "é.scu".encode().hex())
-            result = subprocess.run([SCU, "verd", "od=."], cwd=self.root,
+            result = subprocess.run([SCU, "verd", "od=release"], cwd=self.root,
                                     capture_output=True, env=dict(os.environ, LC_ALL=locale))
             self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -4900,7 +4920,7 @@ int mkstemp(char *pattern) {
         document["format"] = 1
         document["pending"] = {"entry": entry, "previous_sha256": ""}
         path.write_text(json.dumps(document))
-        self.assertIn("Verified 32", self.run_scu("verd"))
+        self.assertIn("Verified 32", self.run_scu("verd", "od=scu$release_directory"))
         self.assertNotIn("pending", json.loads(path.read_bytes()))
         self.run_scu("verat")
 
@@ -4917,7 +4937,7 @@ int mkstemp(char *pattern) {
             self.assertEqual((self.root / "release/inherited.pas").read_bytes(), expected)
         self.assertEqual((self.root / "release/new.pas").read_bytes(), b"1.1 $SCU_DATE scu$VERSION SCU$LIBRARY_VERSION\n")
         self.assertFalse((self.root / "inherited.pas").exists())
-        self.assertIn("Verified 2", self.run_scu("verd"))
+        self.assertIn("Verified 2", self.run_scu("verd", "od=scu$release_directory"))
         payload = self.read_library()["revisions"][0]
         self.assertNotIn("copy_metadata", payload)
         self.run_scu("verat")
@@ -4945,7 +4965,7 @@ int mkstemp(char *pattern) {
         self.assertTrue((directory / "other.pas").exists())
         records = json.loads((directory / ".scu-exports.json").read_bytes())["files"]
         self.assertEqual([r["file"] for r in records], ["kept.pas"])
-        self.assertIn("No errors were found", self.run_scu("verd"))
+        self.assertIn("No errors were found", self.run_scu("verd", "od=scu$release_directory"))
         self.run_scu("verat")
 
     def test_release_cleanup_refuses_edited_tracked_files_and_preserves_working_sources(self):
@@ -4978,7 +4998,7 @@ int mkstemp(char *pattern) {
         manifest = directory / ".scu-exports.json"
         pending = json.loads(manifest.read_bytes())["pending"]["entries"]
         self.assertTrue(any(p.get("delete") for p in pending))
-        self.assertIn("No errors were found", self.run_scu("verd"))
+        self.assertIn("No errors were found", self.run_scu("verd", "od=scu$release_directory"))
         repaired = json.loads(manifest.read_bytes())
         self.assertNotIn("pending", repaired)
         self.assertEqual([r["file"] for r in repaired["files"]], ["main.pas"])
@@ -4991,13 +5011,13 @@ int mkstemp(char *pattern) {
         directory = self.root / "release"
         self.crash_export_write(2, directory, "relv")
         (directory / "gone.pas").write_bytes(b"recreated externally")
-        report = self.run_scu("verd", error="need attention")
+        report = self.run_scu("verd", "od=scu$release_directory", error="need attention")
         self.assertIn("interrupted", report)
         self.assertEqual((directory / "gone.pas").read_bytes(), b"recreated externally")
         self.run_scu("relv", error="overwrite=yes")
         self.run_scu("relv", "overwrite=yes")
         self.assertFalse((directory / "gone.pas").exists())
-        self.assertIn("No errors were found", self.run_scu("verd"))
+        self.assertIn("No errors were found", self.run_scu("verd", "od=scu$release_directory"))
 
     def test_extraction_builds_in_library_directory_and_publication_never_builds(self):
         self.store("main.pas", b"SCU$VERSION"); self.store("other.pas", b"other")
@@ -5017,7 +5037,7 @@ int mkstemp(char *pattern) {
         self.run_scu("extd", "main.pas", error="Build command failed")
         self.assertIn("build failed", self.run_scu("disat", "1"))
         self.run_scu("relv")
-        self.assertIn("No errors were found", self.run_scu("verd"))
+        self.assertIn("No errors were found", self.run_scu("verd", "od=scu$release_directory"))
         self.run_scu("verat")
 
     def test_release_directory_configuration_removed_commands_and_help(self):
@@ -5058,12 +5078,12 @@ int mkstemp(char *pattern) {
         self.crash_export_write(2, directory, "relv")
         self.assertEqual((directory / "main.pas").read_bytes(), b"old")
         self.assertEqual((directory / "gone.pas").read_bytes(), b"gone")
-        self.run_scu("verd", error="need attention")
+        self.run_scu("verd", "od=scu$release_directory", error="need attention")
         self.assertEqual((directory / ".scu-exports.json").read_bytes(), previous)
         self.assertEqual((directory / "gone.pas").read_bytes(), b"gone")
         self.run_scu("relv")
         self.assertFalse((directory / "gone.pas").exists())
-        self.assertIn("No errors were found", self.run_scu("verd"))
+        self.assertIn("No errors were found", self.run_scu("verd", "od=scu$release_directory"))
 
     def test_release_macro_output_limit_preserves_previous_release(self):
         self.store("main", b"old")
@@ -5115,7 +5135,7 @@ int mkstemp(char *pattern) {
         self.run_scu("relv")
         self.assertFalse((self.root / "release/Main.pas").exists())
         self.assertEqual((self.root / "release/Renamed.pas").read_bytes(), b"new 1.1\n")
-        self.assertIn("No errors were found", self.run_scu("verd"))
+        self.assertIn("No errors were found", self.run_scu("verd", "od=scu$release_directory"))
         self.run_scu("verat")
 
     def test_review_l8_arbitrary_filenames_and_long_manifest_keys_remain_distinct(self):
@@ -5130,11 +5150,11 @@ int mkstemp(char *pattern) {
         self.assertEqual(len(manifest["files"]), 5)
         self.assertEqual({r["file"] for r in manifest["files"]}, set(names))
         self.assertIn("5 unchanged", self.run_scu("impd"))
-        self.assertIn("Verified 5", self.run_scu("verd"))
+        self.assertIn("Verified 5", self.run_scu("verd", "od=scu$release_directory"))
         self.assertIn("Verified 5", self.run_scu("verd", "od=."))
         self.run_scu("verat")
 
-    def test_review_l9_import_refreshes_observed_sources_and_deletions(self):
+    def test_live_verification_after_import_and_deletion(self):
         self.configure_file_patterns(["*.pas"])
         source = self.root / "Main.pas"
         source.write_bytes(b"first")
@@ -5142,33 +5162,28 @@ int mkstemp(char *pattern) {
         self.assertIn("No errors were found", self.run_scu("verd", "od=."))
         source.write_bytes(b"second")
         self.run_scu("impd")
-        record, = json.loads((self.root / ".scu-exports.json").read_bytes())["files"]
-        self.assertEqual(record["deck_version"], "1.0-0.001")
-        self.assertEqual(record["sha256"], hashlib.sha256(b"second").hexdigest())
+        self.assertFalse((self.root / ".scu-exports.json").exists())
         self.assertIn("No errors were found", self.run_scu("verd", "od=."))
         source.unlink()
         self.run_scu("impd")
-        self.assertEqual(json.loads((self.root / ".scu-exports.json").read_bytes())["files"], [])
+        self.assertFalse((self.root / ".scu-exports.json").exists())
         self.assertIn("No errors were found", self.run_scu("verd", "od=."))
 
-    def test_review_l9_observation_replays_after_commit_before_manifest_write(self):
+    def test_import_and_verification_need_no_working_observation_queue(self):
         source = self.root / "Main.pas"
         source.write_bytes(b"committed source")
-        self.crash_export_write(1, self.root, "impd", "main.pas", source.name)
-        with closing(sqlite3.connect(self.library)) as database:
-            self.assertEqual(database.execute("SELECT count(*) FROM deck_revisions").fetchone(), (1,))
-            self.assertEqual(database.execute("SELECT count(*) FROM pending_working_exports").fetchone(), (1,))
-        self.assertIn("No errors were found", self.run_scu("verd", "od=."))
-        with closing(sqlite3.connect(self.library)) as database:
-            self.assertEqual(database.execute("SELECT count(*) FROM pending_working_exports").fetchone(), (0,))
-        self.assertEqual(source.read_bytes(), b"committed source")
-        self.run_scu("verat")
+        self.run_scu("impd", "logical", source.name)
+        self.assertIn("Verified 1", self.run_scu("verd"))
+        with closing(sqlite3.connect(self.library)) as db:
+            self.assertFalse(db.execute("SELECT 1 FROM sqlite_master WHERE name='pending_working_exports'").fetchone())
+        self.assertFalse((self.root / ".scu-exports.json").exists())
 
-    def test_review_l9_audit_failure_rolls_back_pending_observations_and_source_revision(self):
+
+    def test_import_audit_failure_preserves_working_file_and_stored_revision(self):
         source = self.root / "main.pas"
         source.write_bytes(b"old")
         self.run_scu("impd", "main.pas")
-        manifest = (self.root / ".scu-exports.json").read_bytes()
+        manifest = self.root / ".scu-exports.json"
         with closing(sqlite3.connect(self.library, isolation_level=None)) as db:
             db.execute("CREATE TRIGGER reject_import BEFORE INSERT ON audit_records "
                        "WHEN json_extract(substr(NEW.line,66), '$.phase') = 'end' "
@@ -5177,8 +5192,7 @@ int mkstemp(char *pattern) {
             source.write_bytes(b"new")
             self.run_scu("impd", "main.pas", error="injected audit write failure")
             self.assertEqual(db.execute("SELECT count(*) FROM deck_revisions").fetchone(), (1,))
-            self.assertEqual(db.execute("SELECT count(*) FROM pending_working_exports").fetchone(), (0,))
-        self.assertEqual((self.root / ".scu-exports.json").read_bytes(), manifest)
+        self.assertFalse(manifest.exists())
         self.assertEqual(source.read_bytes(), b"new")
 
     def test_review_f8_unchanged_publication_keeps_file_inode_and_timestamp(self):
@@ -5189,7 +5203,7 @@ int mkstemp(char *pattern) {
         self.run_scu("relv")
         after = source.stat()
         self.assertEqual((after.st_ino, after.st_mtime_ns), (before.st_ino, before.st_mtime_ns))
-        self.assertIn("No errors were found", self.run_scu("verd"))
+        self.assertIn("No errors were found", self.run_scu("verd", "od=scu$release_directory"))
 
 
     def test_review_x15_stale_private_stages_are_recovered_after_sigkill(self):
@@ -5203,13 +5217,13 @@ int mkstemp(char *pattern) {
         self.assertEqual(stages[0].stat().st_mode & 0o777, 0o700)
         self.run_scu("relv")
         self.assertEqual(list(directory.glob(".scu-stage-*")), [])
-        self.assertIn("No errors were found", self.run_scu("verd"))
+        self.assertIn("No errors were found", self.run_scu("verd", "od=scu$release_directory"))
 
     def test_review_x17_copy_warning_is_once_per_release_and_verification(self):
         self.store("main", b"//SCU_COPY missing\n//SCU_COPY also_missing\n")
         self.store("second", b"//SCU$COPY missing\n")
-        for command in ("relv", "verd"):
-            result = subprocess.run([SCU, command], cwd=self.root, capture_output=True, text=True, timeout=10)
+        for command in [("relv",), ("verd", "od=scu$release_directory")]:
+            result = subprocess.run([SCU, *command], cwd=self.root, capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stderr.count("COPY is no longer expanded"), 1, result.stderr)
         self.assertEqual((self.root / "release/main").read_bytes(), b"//SCU_COPY missing\n//SCU_COPY also_missing\n")
@@ -5355,7 +5369,7 @@ int mkstemp(char *pattern) {
         self.assertEqual(result.returncode, 143, result.stderr)
         self.assertEqual((directory / "main").read_bytes(), b"source")
         self.assertEqual(list(directory.glob(".scu-stage-*")), [])
-        self.assertIn("No errors were found", self.run_scu("verd"))
+        self.assertIn("No errors were found", self.run_scu("verd", "od=scu$release_directory"))
 
 
     def test_review_raw_filename_bytes_survive_scan_and_release(self):
@@ -5433,23 +5447,20 @@ int mkstemp(char *pattern) {
         self.run_scu("extv", "build=no"); self.run_scu("relv")
         for index, name in enumerate(names):
             self.assertEqual((self.root / "release" / name).read_bytes(), str(index).encode())
-        self.assertIn("No errors were found", self.run_scu("verd"))
+        self.assertIn("No errors were found", self.run_scu("verd", "od=scu$release_directory"))
         self.assertIn("No errors were found", self.run_scu("verd", "od=."))
         self.run_scu("verat")
 
-    def test_review_b_l11_bad_observation_does_not_block_other_entries_or_exports(self):
+    def test_oversized_working_file_does_not_block_other_checks_or_extraction(self):
         self.configure_file_patterns(["*.pas"])
         for name in ("big.pas", "good.pas"): (self.root / name).write_bytes(b"original")
-        self.crash_export_write(1, self.root, "impd")
+        self.run_scu("impd")
         with (self.root / "big.pas").open("wb") as stream:
             stream.truncate(64 * 1024 * 1024 + 1)
         result = self.run_scu("verd", "od=.", error="need attention")
-        self.assertIn("untracked", result)
-        manifest = json.loads((self.root / ".scu-exports.json").read_bytes())
-        self.assertEqual([entry["file"] for entry in manifest["files"]], ["good.pas"])
+        self.assertIn("unavailable", result)
+        self.assertIn("good.pas", result)
         self.run_scu("extd", "good.pas", "build=no")
-        with closing(sqlite3.connect(self.library)) as db:
-            self.assertEqual(db.execute("SELECT count(*) FROM pending_working_exports").fetchone(), (0,))
         (self.root / "retrieved").mkdir()
         self.run_scu("extv", "od=retrieved", "build=no")
         self.assertEqual((self.root / "retrieved/big.pas").read_bytes(), b"original")
@@ -5476,6 +5487,7 @@ int mkstemp(char *pattern) {
   return next(pattern);
 }
 ''')
+        self.run_scu("conl", "vt=version.h")
         script = self.root / "commands.txt"
         script.write_text("impd main.pas Main.pas\ncred should-not-run\n")
         result = subprocess.run([SCU, "!" + str(script)], cwd=self.root, capture_output=True,
@@ -5484,8 +5496,6 @@ int mkstemp(char *pattern) {
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Import was saved", result.stderr)
         self.assertEqual([r["deck"] for r in self.read_library()["revisions"]], ["main.pas"])
-        with closing(sqlite3.connect(self.library)) as db:
-            self.assertEqual(db.execute("SELECT count(*) FROM pending_working_exports").fetchone(), (1,))
         self.assertIn("No errors were found", self.run_scu("verd", "od=."))
         self.run_scu("verat")
 
@@ -5657,7 +5667,7 @@ char *mkdtemp(char *pattern) {
         self.assertTrue(all(not path.exists() for path in paths))
         self.assertFalse(stage.exists())
         self.run_scu("relv")
-        self.assertIn("No errors were found", self.run_scu("verd"))
+        self.assertIn("No errors were found", self.run_scu("verd", "od=scu$release_directory"))
 
     def test_review_c_x19_real_scu_holds_stage_lock_until_killed(self):
         self.store("main", b"staged source")
@@ -5707,7 +5717,7 @@ int mkstemp(char *pattern) {
             self.assertEqual(second.returncode, 0, error)
             self.assertEqual(list(directory.glob(".scu-stage-*")), [])
             self.assertEqual((directory / "main").read_bytes(), b"staged source")
-            self.assertIn("No errors were found", self.run_scu("verd"))
+            self.assertIn("No errors were found", self.run_scu("verd", "od=scu$release_directory"))
             self.run_scu("verat")
         finally:
             for process in (first, second):

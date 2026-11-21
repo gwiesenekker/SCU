@@ -5,7 +5,7 @@ unit ScuExportManifest;
 interface
 
 uses
-  Classes, Contnrs, ScuSQLiteRevision, ScuErrors, ScuExportTypes, ScuLocks, ScuExportNames;
+  Classes, Contnrs, ScuLibrary, ScuSQLiteRevision, ScuErrors, ScuExportTypes, ScuLocks, ScuExportNames;
 
 const
   ExportManifestName = '.scu-exports.json';
@@ -24,6 +24,8 @@ type
   TExportManifest = class
   private
     FPath, FStageDirectory: string;
+    FReleaseManifest: Boolean;
+    FWorkingLibrary: TDeckLibrary; // Assigned only for manifest-free working batches.
     FRevisions: TSQLiteRevisionStore; // Borrowed while planning publication.
     FStageLock: TFileLock;
     FFiles: TFPHashObjectList;
@@ -31,6 +33,8 @@ type
     FPending, FPlanned: TObjectList;
     FPlanNames: TFPHashList;
     FFileKeys: TExportFileKeys;
+    procedure Initialize(const Directory: string);
+    function MatchesWorkingFile(Mode: TExportMode; const Deck: string; const Bytes: RawByteString): Boolean;
     function FileKey(const Value: RawByteString): string;
     procedure ValidatePlanPath(const LibraryPath, OutputPath: string);
     function GetCount: Integer;
@@ -43,18 +47,17 @@ type
     procedure RequireStoredSource(const Entry: TExportRecord; const Path: string; const Bytes: RawByteString);
   public
     constructor Create(const Directory: string; Revisions: TSQLiteRevisionStore = nil);
+    constructor CreateWorking(const Directory: string; LibraryFile: TDeckLibrary; Revisions: TSQLiteRevisionStore);
     destructor Destroy; override;
     // Recovery is explicit and must run while the caller holds the directory lock.
     procedure Recover;
     function TracksFile(const LibraryPath, FileName: string): Boolean;
-    function FileMode(const FileName: RawByteString): TExportMode;
     procedure PlanExport(const LibraryPath, OutputPath, Deck, Version, DeckVersion: string;
       Mode: TExportMode; const ExpansionUTC, Prefix: string; const Bytes: RawByteString;
       ReplaceExisting: Boolean = False);
     procedure PlanDelete(const LibraryPath, OutputPath, Version: string; ReplaceExisting: Boolean = False);
-    procedure Observe(const Entry: TExportRecord; Removed: Boolean);
-    procedure SaveObservations;
     function Publish(out Rows: TExportResults): Integer;
+    property ReleaseManifest: Boolean read FReleaseManifest;
     property Count: Integer read GetCount;
     property Entries[Index: Integer]: TExportRecord read GetEntry; default;
   end;
@@ -62,7 +65,7 @@ type
 implementation
 
 uses
-  SysUtils, FPJSON, DateUtils, ScuClock, ScuCodec, ScuFiles, ScuJSON,
+  ScuDeckExport, SysUtils, FPJSON, DateUtils, ScuClock, ScuCodec, ScuFiles, ScuJSON,
   ScuSignals, ScuLibraryNames, ScuLibraryModel, ScuVersions, ScuCleanupFiles, ScuLibraryPaths
   {$IFDEF WINDOWS}, Windows, ScuPlatformPathsWindows{$ENDIF};
 
@@ -227,14 +230,27 @@ end;
 constructor TExportManifest.Create(const Directory: string; Revisions: TSQLiteRevisionStore);
 begin
   inherited Create;
+  Initialize(Directory);
   FRevisions := Revisions;
+  Load;
+end;
+
+constructor TExportManifest.CreateWorking(const Directory: string; LibraryFile: TDeckLibrary; Revisions: TSQLiteRevisionStore);
+begin
+  inherited Create;
+  Initialize(Directory);
+  FWorkingLibrary := LibraryFile;
+  FRevisions := Revisions;
+end;
+
+procedure TExportManifest.Initialize(const Directory: string);
+begin
   FPath := IncludeTrailingPathDelimiter(CanonicalDirectory(Directory)) + ExportManifestName;
   FFiles := TFPHashObjectList.Create(True);
   FPending := TObjectList.Create(True);
   FPlanned := TObjectList.Create(True);
   FPlanNames := TFPHashList.Create;
   FFileKeys := TExportFileKeys.Create;
-  Load;
 end;
 
 destructor TExportManifest.Destroy;
@@ -272,6 +288,7 @@ var
   procedure LoadPending(Item: TJSONObject);
   begin
     Entry := ReadRecord(TJSONObject(Field(Item, 'entry', jtObject, Context)), Context);
+    if Entry.Mode = emExpand then FReleaseManifest := True;
     Previous := Field(Item, 'previous_sha256', jtString, Context).AsString;
     if (Previous <> '') and not IsHexDigest(Previous, 64) then
       raise EScuError.Create(Context + ': invalid previous output checksum.');
@@ -295,6 +312,7 @@ begin
       Document := ParseObject(ReadBytes(FPath, MaxDeckSize), Context);
       if not (IntegerField(Document, 'format', Context) in [1, 2]) then
         raise EScuError.Create(Context + ': unsupported format.');
+      FReleaseManifest := Document.Get('purpose', '') = 'release';
       Files := TJSONArray(Field(Document, 'files', jtArray, Context));
       for Index := 0 to Files.Count - 1 do
       begin
@@ -302,6 +320,7 @@ begin
         if not (Files[Index] is TJSONObject) then
           raise EScuError.Create(Context + ': expected a file record.');
         Entry := ReadRecord(TJSONObject(Files[Index]), Context);
+        if Entry.Mode = emExpand then FReleaseManifest := True;
         if Assigned(FFiles.Find(FileKey(Entry.FileName))) then
           raise EScuError.Create(Context + ': invalid or duplicate file name: "' + StringToJSONString(Entry.FileName) + '".');
         Install(Entry);
@@ -395,6 +414,7 @@ begin
   Document := TJSONObject.Create;
   try
     Document.Add('format', 2);
+    Document.Add('purpose', 'release');
     Files := TJSONArray.Create;
     Document.Add('files', Files);
     for Index := 0 to Count - 1 do Files.Add(RecordJSON(Entries[Index]));
@@ -460,41 +480,16 @@ begin
   Result := Assigned(Item) and SameExportLibrary(Item.Data.LibraryPath, CanonicalFile(LibraryPath));
 end;
 
-function TExportManifest.FileMode(const FileName: RawByteString): TExportMode;
-var Item: TExportItem;
+function TExportManifest.MatchesWorkingFile(Mode: TExportMode; const Deck: string; const Bytes: RawByteString): Boolean;
+var Index: Integer;
 begin
-  Item := TExportItem(FPlanNames.Find(FileKey(FileName)));
-  if not Assigned(Item) then Item := TExportItem(FFiles.Find(FileKey(FileName)));
-  if Assigned(Item) then Result := Item.Data.Mode else Result := emExtract;
-end;
-
-procedure TExportManifest.Observe(const Entry: TExportRecord; Removed: Boolean);
-var Path: string; Existing: TExportItem;
-begin
-  ValidateSourceFileName(Entry.FileName);
-  Path := IncludeTrailingPathDelimiter(ExtractFileDir(FPath)) + Entry.FileName;
-  CheckExportTarget(Path);
-  // Observations are hints. A changed, unreadable, non-regular or oversized
-  // working file must not block other observations or later commands.
-  try
-    if Removed then
-    begin
-      Existing := TExportItem(FFiles.Find(FileKey(Entry.FileName)));
-      if not RegularFileExists(Path) and Assigned(Existing) and
-        SameExportLibrary(Existing.Data.LibraryPath, Entry.LibraryPath) and (Existing.Data.Mode = emExtract) then
-        RemoveRecord(Entry.FileName);
-    end
-    else if RegularFileExists(Path) and (AuditSHA256(ReadBytes(Path, MaxDeckSize, [rbNoFollow])) = Entry.SHA256) then
-      Install(Entry);
-  except
-    on E: EScuError do Exit;
+  if Mode = emExtract then Exit(FRevisions.MatchesDeckHistory(Deck, Bytes));
+  for Index := FWorkingLibrary.VersionCount - 1 downto 0 do
+  begin
+    CheckSessionInterrupt;
+    if RenderTracker(FWorkingLibrary, FWorkingLibrary.VersionHistory[Index].Name) = Bytes then Exit(True);
   end;
-end;
-
-procedure TExportManifest.SaveObservations;
-begin
-  CompactRecords;
-  Save;
+  Result := False;
 end;
 
 procedure TExportManifest.RequireStoredSource(const Entry: TExportRecord; const Path: string; const Bytes: RawByteString);
@@ -530,12 +525,20 @@ begin
   Existing := TExportItem(FFiles.Find(FileKey(Name)));
   if (Previous <> '') and (Previous <> AuditSHA256(Bytes)) and not ReplaceExisting then
   begin
-    if not Assigned(Existing) then raise EExportOverwriteRequired.Create(OutputPath, 'Untracked');
-    if not SameExportLibrary(Existing.Data.LibraryPath, CanonicalLibrary) then
-      raise EExportOverwriteRequired.Create(OutputPath, 'Other library');
-    if Existing.Data.Interrupted then raise EExportOverwriteRequired.Create(OutputPath, 'Interrupted export');
-    if Existing.Data.SHA256 <> Previous then raise EExportOverwriteRequired.Create(OutputPath, 'Locally modified');
-    RequireStoredSource(Existing.Data, OutputPath, OnDisk);
+    if Assigned(FWorkingLibrary) then
+    begin
+      if not MatchesWorkingFile(Mode, Deck, OnDisk) then
+        raise EExportOverwriteRequired.Create(OutputPath, 'Unrecognized contents');
+    end
+    else
+    begin
+      if not Assigned(Existing) then raise EExportOverwriteRequired.Create(OutputPath, 'Untracked');
+      if not SameExportLibrary(Existing.Data.LibraryPath, CanonicalLibrary) then
+        raise EExportOverwriteRequired.Create(OutputPath, 'Other library');
+      if Existing.Data.Interrupted then raise EExportOverwriteRequired.Create(OutputPath, 'Interrupted export');
+      if Existing.Data.SHA256 <> Previous then raise EExportOverwriteRequired.Create(OutputPath, 'Locally modified');
+      RequireStoredSource(Existing.Data, OutputPath, OnDisk);
+    end;
   end;
   if FPlanNames.Find(FileKey(Name)) <> nil then
     raise EScuError.Create('Duplicate output path in export batch: "' + OutputPath + '".');
@@ -629,17 +632,24 @@ begin
   Result := 0;
   RowCount := 0;
   SetLength(Rows, FPlanned.Count);
-  if FPlanned.Count = 0 then Exit;
   if FPending.Count <> 0 then raise EScuError.Create('Another export batch still needs recovery.');
-  Save(True);
-  for Index := 0 to FPlanned.Count - 1 do
+  if FPlanned.Count = 0 then
   begin
-    Plan := TExportPlan(FPlanned[Index]);
-    RecoveryPlan := TExportPlan.Create;
-    RecoveryPlan.Data := Plan.Data;
-    RecoveryPlan.PreviousHash := Plan.PreviousHash;
-    RecoveryPlan.DeleteOutput := Plan.DeleteOutput;
-    FPending.Add(RecoveryPlan);
+    if not Assigned(FWorkingLibrary) and not RegularFileExists(FPath) then Save;
+    Exit;
+  end;
+  if not Assigned(FWorkingLibrary) then
+  begin
+    Save(True);
+    for Index := 0 to FPlanned.Count - 1 do
+    begin
+      Plan := TExportPlan(FPlanned[Index]);
+      RecoveryPlan := TExportPlan.Create;
+      RecoveryPlan.Data := Plan.Data;
+      RecoveryPlan.PreviousHash := Plan.PreviousHash;
+      RecoveryPlan.DeleteOutput := Plan.DeleteOutput;
+      FPending.Add(RecoveryPlan);
+    end;
   end;
   for Index := 0 to FPlanned.Count - 1 do
   begin
@@ -672,11 +682,13 @@ begin
       end;
       if Plan.Data.Mode = emTracker then Rows[RowCount].TrackerFile := Plan.Data.FileName;
       Inc(RowCount);
-      Install(Plan.Data);
+      if not Assigned(FWorkingLibrary) then Install(Plan.Data);
     end;
   end;
-  CompactRecords;
-  Save;
+  if not Assigned(FWorkingLibrary) then
+  begin
+    CompactRecords; Save;
+  end;
   for Index := 0 to FPlanned.Count - 1 do
     if TExportPlan(FPlanned[Index]).StageFile <> '' then DeleteStageFile(TExportPlan(FPlanned[Index]).StageFile);
   FPending.Clear;

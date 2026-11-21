@@ -48,15 +48,6 @@ begin
   Database.Execute('PRAGMA user_version = 6');
 end;
 
-procedure CreateWorkingExports(Database: TSQLiteConnection);
-begin
-  Database.Execute('CREATE TABLE IF NOT EXISTS pending_working_exports (' +
-    'file_key TEXT PRIMARY KEY, file_name BLOB NOT NULL, deck_name TEXT NOT NULL, ' +
-    'library_version TEXT NOT NULL, deck_version TEXT NOT NULL, sha256 TEXT NOT NULL, ' +
-    'removed INTEGER NOT NULL CHECK (removed IN (0, 1))); ' +
-    'DROP TABLE IF EXISTS expansion_checkpoints; PRAGMA user_version = 7');
-end;
-
 procedure CreateImportManifests(Database: TSQLiteConnection);
 begin
   Database.Execute('CREATE TABLE IF NOT EXISTS version_import_manifests (' +
@@ -71,7 +62,7 @@ begin
   if ID = ApplicationID then
   begin
     Result := StrToIntDef(Database.Scalar('PRAGMA user_version'), 0);
-    if not (Result in [1..8]) then
+    if not (Result in [1..9]) then
       raise EScuError.Create('Unsupported SQLite library schema in "' + Database.Path + '".');
     if not Database.ReadOnly then
     begin
@@ -100,13 +91,18 @@ begin
       end;
       if Result = 6 then
       begin
-        CreateWorkingExports(Database);
+        Database.Execute('DROP TABLE IF EXISTS expansion_checkpoints');
         Result := 7;
       end;
       if Result = 7 then
       begin
         CreateImportManifests(Database);
         Result := 8;
+      end;
+      if Result = 8 then
+      begin
+        Database.Execute('DROP TABLE IF EXISTS pending_working_exports; PRAGMA user_version = 9');
+        Result := 9;
       end;
     end;
     Exit;
@@ -124,9 +120,9 @@ begin
   CreateAuditState(Database);
   CreateCopyMetadata(Database);
   CreateDeletionIndex(Database);
-  CreateWorkingExports(Database);
   CreateImportManifests(Database);
-  Result := 8;
+  Database.Execute('PRAGMA user_version = 9');
+  Result := 9;
 end;
 
 end.

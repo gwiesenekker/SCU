@@ -45,19 +45,33 @@ begin
   if Result then Name := FSearch.Name;
 end;
 procedure EnsureRealReleaseDirectory(const Path: string);
-var Info: Stat;
+var
+  Info: Stat;
+  Error: Integer;
+  Parent: string;
 begin
-  if fpLStat(Path, Info) = 0 then
+  if fpLStat(Path, Info) <> 0 then
   begin
-    if not FPS_ISDIR(Info.st_mode) then
-      raise EScuError.Create('Expected a real export directory, not a file or symbolic link: "' + Path + '".');
-    Exit;
+    Error := fpGetErrNo;
+    if Error <> ESysENOENT then
+      RaiseSystemError('Could not inspect export directory "' + Path + '"', Error);
+    Parent := ExtractFileDir(ExcludeTrailingPathDelimiter(Path));
+    if (Parent <> '') and (Parent <> Path) and not DirectoryExists(Parent) then
+      EnsureRealReleaseDirectory(Parent);
+    if fpMkDir(Path, &777) = 0 then
+    begin
+      SyncParent(Path);
+      Exit;
+    end;
+    Error := fpGetErrNo;
+    if Error <> ESysEEXIST then
+      RaiseSystemError('Could not create export directory "' + Path + '"', Error);
+    // Another publisher created the entry. Validate it without following links.
+    if fpLStat(Path, Info) <> 0 then
+      RaiseSystemError('Could not inspect export directory "' + Path + '"', fpGetErrNo);
   end;
-  if fpGetErrNo <> ESysENOENT then
-    RaiseSystemError('Could not inspect export directory "' + Path + '"', fpGetErrNo);
-  if not ForceDirectories(Path) then
-    RaiseSystemError('Could not create export directory "' + Path + '"', fpGetErrNo);
-  SyncParent(Path);
+  if not FPS_ISDIR(Info.st_mode) then
+    raise EScuError.Create('Expected a real export directory, not a file or symbolic link: "' + Path + '".');
 end;
 function ReleaseFileEligible(const Path: string; AllowMissing: Boolean): Boolean;
 var Info: Stat;

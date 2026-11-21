@@ -117,20 +117,16 @@ class PortableCliTests(unittest.TestCase):
 
     def store(self, name, source, *options):
         # Library fixtures have no persistent working files. Real import workflows
-        # below use run_scu directly and exercise their manifest observations.
+        # below use run_scu directly and retain the working files.
         (self.root / "input").write_bytes(source)
         path = self.root / name
         previous = path.read_bytes() if path.exists() else None
-        manifest = self.root / ".scu-exports.json"
-        tracking = manifest.read_bytes() if manifest.exists() else None
         path.write_bytes(source)
         try:
             self.run_scu("import_deck", name, path.name, *options)
         finally:
             if previous is None: path.unlink(missing_ok=True)
             else: path.write_bytes(previous)
-            if tracking is None: manifest.unlink(missing_ok=True)
-            else: manifest.write_bytes(tracking)
 
 
     def read_library(self):
@@ -257,10 +253,10 @@ class PortableCliTests(unittest.TestCase):
         self.assertIn(expanded, self.run_scu("extd", "version.h", "v=1.0", "o=y"))
         self.assertIn(b'"1.0"', header.read_bytes())
         self.assertNotIn("version.h", self.run_scu("disdl"))
-        self.assertEqual(len(self.read_library()["revisions"]), 1)
+        self.assertIn("alternate.h", self.run_scu("disdl"))
         self.run_scu("conl", "vt=")
         self.assertNotIn(expanded, self.run_scu("extv"))
-        self.assertIn(ignored, self.run_scu("impd"))
+        self.assertIn("version.h", self.run_scu("impd"))
         self.run_scu("impd", "version.h")
         self.assertIn("version.h", self.run_scu("disdl"))
         header.write_bytes(b"ordinary deck now")
@@ -791,6 +787,47 @@ class PortableCliTests(unittest.TestCase):
         self.run_scu("impd", "original", "shared")
         self.run_scu("verat")
 
+    def test_raw_extraction_recognizes_same_deck_history_without_manifest(self):
+        old = b"old\r\n"
+        current = b"new\n"
+        self.store("book.c", old)
+        self.store("book.c", b"intermediate")
+        self.run_scu("locv", "Baseline")
+        self.run_scu("crev", "1.1")
+        self.store("book.c", current)
+        self.store("other.c", b"only in the other deck")
+        qa = self.root / "qa"
+        qa.mkdir()
+        target = qa / "alternate"
+        target.write_bytes(old)
+        self.run_scu("extd", "book.c", "of=qa/alternate")
+        self.assertEqual(target.read_bytes(), current)
+        target.write_bytes(old)
+        self.run_scu("extd", "book.c", "of=qa/alternate")
+        self.assertEqual(target.read_bytes(), current)
+        for unknown in (b"old\n", b"only in the other deck"):
+            target.write_bytes(unknown)
+            self.run_scu("extd", "book.c", "of=qa/alternate", error="overwrite=yes")
+            self.assertEqual(target.read_bytes(), unknown)
+
+        self.run_scu("extd", "other.c", "of=qa/alternate")
+        self.run_scu("extd", "book.c", "of=qa/alternate", error="overwrite=yes")
+
+        working = qa / "book.c"
+        working.write_bytes(old)
+        (qa / "other.c").write_bytes(b"unrecorded edit")
+        self.run_scu("extv", "od=qa", error="overwrite=yes")
+        self.assertEqual(working.read_bytes(), old)
+        (qa / "other.c").unlink()
+        self.run_scu("extv", "od=qa")
+        self.assertEqual(working.read_bytes(), current)
+        self.run_scu("relv")
+        published = self.root / "release" / "book.c"
+        self.assertTrue((published.parent / ".scu-exports.json").is_file())
+        published.write_bytes(old)
+        self.run_scu("relv", error="overwrite=yes")
+        self.assertEqual(published.read_bytes(), old)
+
     def test_deleted_revision_working_files_require_explicit_overwrite(self):
         self.store("source", b"baseline")
         self.run_scu("locv", "Baseline")
@@ -802,7 +839,7 @@ class PortableCliTests(unittest.TestCase):
         elsewhere.mkdir()
         self.run_scu("extv", "od=elsewhere")
         self.run_scu("delv", "1.1", "dr=y")
-        self.assertIn("Deleted revision", self.run_scu("extv", error="overwrite=yes"))
+        self.assertIn("Unrecognized contents", self.run_scu("extv", error="overwrite=yes"))
         self.assertEqual(working.read_bytes(), b"only surviving copy")
         self.run_scu("crev", "1.1")
         working.write_bytes(b"different content under the reused number")
@@ -1104,15 +1141,15 @@ class PortableCliTests(unittest.TestCase):
         directory.mkdir()
         self.run_scu("extd", "edited", "of=outputs/edited")
         manifest = directory / ".scu-exports.json"
-        before = manifest.read_bytes()
+        self.assertFalse(manifest.exists())
         (directory / "edited").write_bytes(b"local edit")
         (directory / "identical").write_bytes(b"stored source")
         (directory / "untracked").write_bytes(b"untracked work")
         self.run_scu("conl", "build_command=echo built > build-marker")
         result = self.run_scu("extv", "od=outputs", error="require overwrite=yes. No decks were extracted.")
         self.assertEqual(self.table_data(result).splitlines(),
-                         ["edited\t1.0-0.000\tLocally modified\tedited", "untracked\t1.0-0.000\tUntracked\tuntracked"])
-        self.assertEqual(manifest.read_bytes(), before)
+                         ["edited\t1.0-0.000\tUnrecognized contents\tedited", "untracked\t1.0-0.000\tUnrecognized contents\tuntracked"])
+        self.assertFalse(manifest.exists())
         self.assertFalse((directory / "absent").exists())
         self.assertFalse((self.root / "build-marker").exists())
         self.assertEqual((directory / "edited").read_bytes(), b"local edit")
@@ -1149,9 +1186,7 @@ class PortableCliTests(unittest.TestCase):
                                  "inherited  1.0-0.000     Unchanged", "zebra      1.1-0.001     Created",
                                  "Wrote 2 deck(s) for version 1.1, 1 unchanged"])
         self.assertEqual((self.root / "zebra").read_bytes(), b"latest")
-        manifest = json.loads((self.root / ".scu-exports.json").read_bytes())
-        self.assertEqual({e["deck_name"]: e["deck_version"] for e in manifest["files"]},
-                         {"alpha": "1.1-0.000", "zebra": "1.1-0.001", "inherited": "1.0-0.000"})
+        self.assertFalse((self.root / ".scu-exports.json").exists())
         self.run_scu("locv", "d=Second")
         self.run_scu("crev", "1.2")
         self.assertIn("Wrote 0 deck(s) for version 1.2, 3 unchanged", self.run_scu("extv"))
@@ -1163,27 +1198,46 @@ class PortableCliTests(unittest.TestCase):
         self.run_scu("locv", "d=First")
         self.run_scu("crev", "1.1")
         self.store("main", b"current")
-        self.run_scu("extd", "main", "output", "v=1.0", "r=0.000")
-        output = self.run_scu("verd", "od=.", error="need attention")
-        self.assertIn("outdated", output)
-        self.assertIn("1.0-0.000", output)
+        self.run_scu("extd", "main", "v=1.0", "r=0.000")
+        output = self.run_scu("verd", error="need attention")
+        self.assertIn("differs", output)
         self.assertIn("1.1-0.000", output)
-        self.assertIn("Verified 1", self.run_scu("verd", "od=.", "--version", "1.0"))
-        self.run_scu("extd", "main", "output")
-        (self.root / "output").write_bytes(b"local")
-        output = self.run_scu("verd", "od=.", error="need attention")
-        self.assertIn("locally modified", output)
+        self.assertRegex(self.run_scu("verd", "od=.", "--version", "1.0"),
+                         r"(?m)^main +main +1\.0-0\.000 +matches$")
+        self.run_scu("extd", "main")
+        (self.root / "main").write_bytes(b"local")
+        output = self.run_scu("verd", error="need attention")
+        self.assertIn("differs", output)
         self.assertNotIn("outdated", output)
 
+
+    def test_empty_release_has_a_manifest_and_empty_extraction_does_not(self):
+        self.run_scu("extv", "b=n")
+        self.assertFalse((self.root / ".scu-exports.json").exists())
+        self.run_scu("relv")
+        manifest = json.loads((self.root / "release/.scu-exports.json").read_bytes())
+        self.assertEqual(manifest["purpose"], "release")
+        self.assertEqual(manifest["files"], [])
+        self.assertIn("Verified 0", self.run_scu("verd", "od=scu$release_directory"))
+
+    def test_obsolete_library_directory_manifest_is_ignored(self):
+        self.store("main", b"source")
+        manifest = self.root / ".scu-exports.json"
+        manifest.write_bytes(b"obsolete")
+        self.run_scu("extv", "b=n")
+        self.assertIn("Verified 1", self.run_scu("verd"))
+        self.assertEqual(manifest.read_bytes(), b"obsolete")
 
     def test_verify_decks_handles_untracked_files_and_never_creates_a_manifest(self):
         self.store("main", b"source")
         (self.root / "main").write_bytes(b"source")
-        self.assertIn("untracked", self.run_scu("verd", "od=.", error="need attention"))
+        self.run_scu("locv", "d=First")
+        self.run_scu("crev", "1.1")
+        self.assertRegex(self.run_scu("verd"), r"(?m)^main +main +1\.0-0\.000 +matches$")
         self.assertFalse((self.root / ".scu-exports.json").exists())
         directory = self.root / "empty"
         directory.mkdir()
-        self.assertIn("Verified 0", self.run_scu("verd", "od=empty"))
+        self.assertIn("missing", self.run_scu("verd", "od=empty", error="need attention"))
         self.assertFalse((directory / ".scu-exports.json").exists())
         help_text = self.run_scu("disc", "verd")
         self.assertIn("verify_decks, verd", help_text)
@@ -1807,7 +1861,7 @@ class PortableCliTests(unittest.TestCase):
         self.assertEqual((self.root / "release/main").read_bytes(), expected)
         self.run_scu("relv")
         self.assertEqual((self.root / "release/main").read_bytes(), expected)
-        self.assertIn("No errors were found", self.run_scu("verd"))
+        self.assertIn("No errors were found", self.run_scu("verd", "od=scu$release_directory"))
 
 
     def test_release_version_name_alias_and_canonical_audit_command(self):

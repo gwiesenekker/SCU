@@ -6,8 +6,8 @@ function VerificationDirectory(const Context: TCommandContext): string;
 function VerifyDecks(var Context: TCommandContext): string;
 implementation
 uses
-  ScuArchiveCompatibility, ScuWorkingExports, Classes, SysUtils, FPJSON, ScuCodec, ScuErrors, ScuDeckExport, ScuExportTypes, ScuExportManifest,
-  ScuFiles, ScuExportPaths, ScuLibrary, ScuSignals, ScuTable, ScuTerminal, ScuExportNames;
+  ScuArchiveCompatibility, Classes, SysUtils, FPJSON, ScuCodec, ScuErrors, ScuDeckExport, ScuExportTypes, ScuExportManifest,
+  ScuFiles, ScuLibraryNames, ScuExportPaths, ScuLibrary, ScuSignals, ScuTable, ScuTerminal, ScuExportNames;
 type
   TDeckFileIssue = (dfMissing, dfEdited, dfOutdated, dfDeleted, dfInterrupted, dfUntracked, dfUnavailable);
   TDeckFileIssues = set of TDeckFileIssue;
@@ -33,6 +33,7 @@ type
   public
     constructor Create(const Context: TCommandContext);
     destructor Destroy; override;
+    function RunWorking: string;
     function Run: string;
   end;
 
@@ -242,19 +243,67 @@ begin
   end;
 end;
 
+function TDeckVerifier.RunWorking: string;
+var Entry: TDeckListEntry; Source: TDeckSource; Path, Name, Status, Detail: string; Table: TScuTable;
+begin
+  Table := TScuTable.Create(['File', 'Deck name', 'Deck version', 'Status']);
+  try
+    for Entry in FContext.LibraryFile.DeckList(FContext.Snapshots.Selected.LibraryRevision) do
+    begin
+      CheckSessionInterrupt;
+      Name := Entry.Name;
+      Detail := '';
+      try
+        Source := FContext.LibraryFile.Extract(FContext.Database, Entry.Name, Entry.Sequence);
+        Name := Source.SourcePath;
+        ValidateSourceFileName(Name);
+        Path := IncludeTrailingPathDelimiter(FContext.OutputDirectory) + Name;
+        CheckExportTarget(Path);
+        if not RegularFileExists(Path) then Status := 'missing'
+        else if ReadBytes(Path, MaxDeckSize, [rbNoFollow]) = Source.Bytes then Status := 'matches'
+        else Status := 'differs';
+      except
+        on E: EScuError do begin Status := 'unavailable'; Detail := ' (' + E.Message + ')'; end;
+      end;
+      if Status <> 'matches' then
+        FAttention.Add(Format('Deck "%s", file "%s": %s%s', [Entry.Name, StringToJSONString(Name), Status, Detail]));
+      Table.AddRow([Name, Entry.Name, Entry.DeckVersion, Status]);
+      Inc(FCount);
+    end;
+    Table.WriteTo(FContext.Output, FContext.Output.Columns);
+    if FContext.LibraryFile.VersionTracker <> '' then
+      FContext.Output.WriteLine(FContext.LibraryFile.VersionTracker + ' has been ignored (version tracker)');
+    WriteAttention;
+    if FAttention.Count > 0 then
+    begin
+      FContext.Output.Flush;
+      raise EScuError.CreateFmt('%d of %d deck file(s) need attention.', [FAttention.Count, FCount]);
+    end;
+    Result := Format('Verified %d deck file(s) against version %s. No errors were found.', [FCount, FContext.Snapshots.Selected.Version]);
+  finally Table.Free; end;
+end;
+
 function TDeckVerifier.Run: string;
 var
   Manifest: TExportManifest;
   Files: TStringList;
   Index: Integer;
   Detail: string;
+  ConfiguredRelease: Boolean;
 begin
   RequireArchiveSourceNames(FContext.LibraryFile, FContext.Database);
-  if SameExportLibrary(FContext.OutputDirectory, ExtractFileDir(CanonicalFile(FContext.LibraryPath))) then
-    RefreshWorkingExports(FContext.Database, FContext.LibraryPath);
+  if SameExportLibrary(FContext.OutputDirectory, ExtractFileDir(CanonicalFile(FContext.LibraryPath))) then Exit(RunWorking);
+  ConfiguredRelease := SameExportLibrary(FContext.OutputDirectory, ResolveReleaseDirectory(
+    FContext.LibraryPath, FContext.LibraryFile.ReleaseDirectory));
+  if not RegularFileExists(IncludeTrailingPathDelimiter(FContext.OutputDirectory) + ExportManifestName) then
+  begin
+    if ConfiguredRelease then raise EScuError.Create('Missing release manifest in ' + FContext.OutputDirectory);
+    Exit(RunWorking);
+  end;
   Manifest := TExportManifest.Create(FContext.OutputDirectory);
   Files := nil;
   try
+    if not ConfiguredRelease and not Manifest.ReleaseManifest then Exit(RunWorking);
     Manifest.Recover;
     Files := TStringList.Create;
     Files.CaseSensitive := True; Files.Sorted := True;

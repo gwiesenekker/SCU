@@ -511,7 +511,7 @@ before Windows can normalize them; DOS, UNC and their extended forms are
 supported, while device namespaces are refused. Existing directory/reparse
 outputs and DOS short-name aliases are refused; use the full filename instead.
 
-Manifest records, recovery intents and queued working-file observations use the
+Release manifest records and recovery intents use the
 same Windows checks. Case-insensitive ordinal filename comparisons prevent two
 spellings of the same Windows output from creating separate manifest identities;
 a version containing colliding source names is rejected before exporting any
@@ -640,18 +640,10 @@ scu project.sqlite release_version
 
 `import_deck` (`impd`) without a deck name scans `file_patterns` in the library
 directory, importing new and changed files and recording deletion revisions for
-missing tracked files. Unchanged bytes and source associations create no revision. Working-file manifest
-observations are queued transactionally with the imported revision and audit,
-then applied after commit, creating `.scu-exports.json` beside the library on the
-first import. A later extraction or verification retries pending updates after
-interruption, without writing source files. Observations for unreadable,
-oversized or changed files are ignored rather than blocking other files. Those
-files still need attention or explicit restoration. Ctrl+C during this refresh
-stops a command file and reports that the import itself was already saved. Decks created without
+missing tracked files. Unchanged bytes and source associations create no revision. Imports need no manifest or observation queue. Decks created without
 a backing source file remain outside the deletion scan. With a deck name, import
 one file: `import_deck main.pas source_file=main.pas`. A source filename must have
-no directory component. SCU never imports a tracked generated release file as
-working source.
+no directory component. Keep released files in a separate directory from working sources.
 
 `create_deck` (`cred`) creates an empty deck or accepts `from_file=...`.
 `edit_deck` (`edid`) edits a temporary copy in the configured editor and stores
@@ -663,7 +655,7 @@ versions retain the deck, and it can be recreated later.
 
 `extract_deck` (`extd`) writes one deck's original bytes. `extract_version` (`extv`)
 writes the complete selected version, including inherited decks. Both use the selected revision's recorded source filename (falling back to its
-deck ID when none was recorded), default to the library directory, maintain its `.scu-exports.json`,
+deck ID when none was recorded), default to the library directory,
 and run the configured build command after successful extraction. COPY text and
 macros are preserved in ordinary working files. No `.scu` suffix is added.
 
@@ -673,15 +665,15 @@ To generate a version header, run `conl version_tracker=version.h`. SCU stores t
 
 `extd`, `extv`, and `relv` write the tracker beside their outputs and report `version.h has been expanded` when they create or replace it. If its bytes already match, they report `version.h is unchanged`. Historical exports use the same template with the selected library version. Date and time macros use the template’s modification time. The tracker has no deck revision, so `SCU$DECK_VERSION` stays literal. Overwrite protection applies if you edit the generated file.
 
-After a successful `impd`, SCU refreshes the version tracker in the library directory for the current version. This works for pattern scans and single-file imports, even when no decks changed. SCU reports whether the tracker was expanded or is unchanged. If a differing tracker file is untracked or locally edited, the import keeps it and reports the conflict. To replace it explicitly, use `extd version.h o=y b=n`. Importing does not run the build.
+After a successful `impd`, SCU refreshes the version tracker in the library directory for the current version. This works for pattern scans and single-file imports, even when no decks changed. SCU reports whether the tracker was expanded or is unchanged. SCU can replace a working tracker that matches the current template rendered for an earlier library version. If it cannot recognize the bytes, it keeps the file and reports the conflict. To replace it explicitly, use `extd version.h o=y b=n`. Importing does not run the build.
 
-Working-file imports and manifest verification report `version.h has been ignored (version tracker)` and exclude it from deck counts. Choose a filename distinct from existing decks and their working files. Clear the filename with `conl version_tracker=` to disable generation and keep the template for later.
+Working-file imports and verification report `version.h has been ignored (version tracker)` and exclude it from deck counts. Choose a filename distinct from existing decks and their working files. Clear the filename with `conl version_tracker=` to disable generation and keep the template for later.
 
 Builds run from the **library directory**, even if an explicit output path is
 supplied. The shell receives the absolute output file or directory as `$1` and
 empty standard input. At a terminal a build can use `/dev/tty`. `build=no` skips
 the build; an empty `build_command` does nothing. A failed build retains the
-extracted files and their manifest and records the failure in the audit/history.
+extracted files and records the failure in the audit/history.
 SCU invokes a bulk build once, after all files have been extracted.
 
 ```sh
@@ -693,8 +685,10 @@ scu extract_version version=1.1
 `extract_deck` reports the output path and whether it wrote the file or found matching contents.
 `extract_version` and `release_version` list each selected deck with its version and file status (`Created`, `Replaced`, or `Unchanged`). Their summaries count files actually written and report how many already matched.
 `extv` lists every deck that requires `overwrite=yes` with its deck version, conflict status, and output filename. Resolve those conflicts or explicitly allow replacement before retrying.
-Existing identical files can be tracked without replacement. Differing untracked
-or locally edited files require `overwrite=yes`. Extraction can explicitly restore
+Existing identical files are reported as unchanged. For ordinary working files,
+`extd` and `extv` can also replace bytes matching any surviving revision of the
+same deck. SCU filters by SHA-1 and confirms the
+source bytes. Other differing working files require `overwrite=yes`. Extraction can explicitly restore
 working sources; no export may overwrite SQLite storage. Separate sessions
 serialize exports and builds targeting the same output directory. A build may
 run a nested extraction with `build=no`, synchronously retaining the inherited
@@ -837,12 +831,12 @@ cancels the current input or operation. No GNU Readline dependency is required.
 
 ## Verify extracted and released files
 
-Every output directory has its own JSON `.scu-exports.json`. Each record stores
+Only release publication maintains a JSON manifest, normally `release/.scu-exports.json`. Each record stores
 the library, deck, selected version, actual deck version, mode, checksum, and
 expansion metadata. Filenames and library paths retain their exact byte identity
 separately from readable UTF-8 labels. Legacy manifest formats remain readable.
 
-Before exporting a batch, SCU stages rendered bytes in a private PID-tagged
+Before publishing a release, SCU stages rendered bytes in a private PID-tagged
 `.scu-stage-*` directory inside the output directory and writes one intent array.
 A held file lock identifies a live stage, independently of local PIDs, including
 on shared filesystems with working advisory locks. Recovery removes unlocked
@@ -870,13 +864,13 @@ outputs. Corrupt manifests report how to restore a backup or reset tracking.
 
 ```sh
 scu verify_decks
-scu verify_decks output_directory='scu$library_directory'
+scu verify_decks output_directory='scu$release_directory'
 scu verify_decks version=1.1
 ```
 
-Verification defaults to `scu$release_directory` and `scu$current_version`. It
-compares raw extracts with stored bytes and releases with freshly expanded release
-macros. It reports current, outdated, edited, missing, deleted, untracked,
+Verification defaults to the library directory and the current version. It reads each live deck’s recorded filename directly, including inherited decks, and shows the resolved revision in the `Deck version` column. The status is `matches` for an exact match, or `differs`, `missing` or `unavailable`. It ignores unrelated files and the configured tracker. An arbitrary filename supplied to `extd of=...` is not remembered. Working extraction preflights the whole batch, writes each file atomically, and can be rerun after interruption. Extraction, import and working verification do not write a manifest.
+
+Use `verd od=scu$release_directory` for a release, or specify the alternate publication directory. Release verification compares the recorded outputs to freshly expanded release macros. It reports current, outdated, edited, missing, deleted, untracked,
 unavailable, or interrupted files, followed by a needs-attention list explaining
 each problem. A clean run ends with `No errors were found.` Problems produce a
 nonzero exit status. Deleting a deck does not immediately change exports; release
@@ -903,11 +897,9 @@ filename is rejected at import or creation. Linux distinguishes `Makefile` and
 deck identifiers by their exact spelling on both platforms.
 
 After deleting a version with `delete_revisions=yes`, an extracted working file
-may be the only copy of a revision. SCU checks the recorded deck version and
-its source checksum before replacing differing bytes, including in alternate
-output directories. Even if you reuse the version number, you must explicitly
-supply `overwrite=yes` to replace such a file. A cleared or renamed tracker
-can become an ordinary deck via an explicit `import_deck filename`.
+may be the only copy of a revision. SCU checks the surviving revisions of the selected deck before replacing
+differing working bytes, including in alternate output directories. Even if you reuse the version number, you must explicitly
+supply `overwrite=yes` to replace such a file. Once a tracker is cleared or renamed, its old file is an ordinary working file and can be imported by name or by a matching pattern.
 
 The library-wide `file_patterns` attribute is a JSON list, empty by default.
 Use `edit_file_patterns` (`edifp`) to open the list in the configured editor,
@@ -1536,9 +1528,9 @@ Those edits must be preserved separately before switching libraries. Single-deck
 extraction to an explicit, literal `output_file` remains available for rescue:
 `scu OLD.sqlite extract_deck main.pas output_file=rescued-main.pas build=no`.
 
-Schema 8 adds a SQLite table for version import manifests. SCU upgrades the
+Schema 9 removes the obsolete queue for working manifest updates. Schema 8 added a SQLite table for version import manifests. SCU upgrades the
 schema on a writable open, including an audited display command. The upgrade is one-way. The upgrade preserves historical decks and audit
-records. Use a schema-8 CLI and GUI with upgraded libraries.
+records. Use a schema-9 CLI and GUI with upgraded libraries. Existing working manifests beside the library are ignored and left on disk.
 
 Schema 7 removes obsolete expansion checkpoints and upgrades libraries in place.
 This is a one-way upgrade: binaries from 6afc937 and earlier cannot reopen a

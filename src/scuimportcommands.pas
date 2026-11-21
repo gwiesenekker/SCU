@@ -14,15 +14,14 @@ procedure RefreshImportedFiles(const Context: TCommandContext);
 implementation
 
 uses
-  ScuArchiveCompatibility, ScuWorkingExports, ScuExportTypes, ScuLibraryNames, Classes, Contnrs, SysUtils, ScuCodec, ScuErrors, ScuFiles, ScuFileScan, ScuLibrary,
-  ScuExportCommands, ScuExportManifest, ScuSignals, ScuTable, ScuTerminal, ScuPlatformPaths;
+  ScuArchiveCompatibility, ScuLibraryNames, Classes, Contnrs, SysUtils, ScuCodec, ScuErrors, ScuFiles, ScuFileScan, ScuLibrary,
+  ScuExportCommands, ScuSignals, ScuTable, ScuTerminal, ScuPlatformPaths;
 
 type
   TDeckImporter = class
   private
     FRows: TStringList;
     FNew, FChanged, FDeleted, FUnchanged: Integer;
-    FExports: TExportManifest;
   public
     constructor Create;
     destructor Destroy; override;
@@ -41,7 +40,6 @@ end;
 
 destructor TDeckImporter.Destroy;
 begin
-  FExports.Free;
   FRows.Free;
   inherited Destroy;
 end;
@@ -54,36 +52,12 @@ var
   Sequence: Integer;
   Existed: Boolean;
   Status: string;
-  Entry: TExportRecord;
-  Selection: TDeckSelection;
 begin
   CheckSessionInterrupt;
-  if not Assigned(FExports) then
-  begin
-    FExports := TExportManifest.Create(ExtractFileDir(Context.LibraryPath));
-    FExports.Recover;
-  end;
-  case FExports.FileMode(RelativePath) of
-    emTracker: if not Context.Command.Provided['deck_name'] then
-      begin
-        Context.Output.WriteLine(RelativePath + ' has been ignored (version tracker). Use import_deck with the deck name to adopt this former tracker.');
-        Exit;
-      end;
-    emExpand: raise EScuError.Create('Refusing to import generated expansion "' + Path + '". Edit the stored template with edit_deck instead.');
-  end;
   Bytes := ReadBytes(Path, MaxDeckSize, [rbNoFollow]);
   Existed := Context.LibraryFile.TryDeckSnapshot(Deck, Context.LibraryFile.Revision, Snapshot);
   Sequence := Context.LibraryFile.Store(Context.Database, Deck, Bytes, [],
     PrefixArgument(Context.Command), RelativePath);
-  Selection := Context.LibraryFile.SelectDeck(Deck, '', '');
-  Entry := Default(TExportRecord);
-  Entry.FileName := RelativePath;
-  Entry.Deck := Deck;
-  Entry.LibraryVersion := Selection.Snapshot.Version;
-  if Sequence = 0 then Entry.DeckVersion := Context.LibraryFile.DeckVersion[Selection.RootRevision]
-  else Entry.DeckVersion := Context.LibraryFile.DeckVersion[Sequence];
-  Entry.SHA256 := AuditSHA256(Bytes);
-  QueueWorkingExport(Context.Database, Entry);
   if Sequence = 0 then
   begin
     Inc(FUnchanged);
@@ -105,16 +79,8 @@ end;
 procedure TDeckImporter.Deleted(var Context: TCommandContext; const Deck: string);
 var
   Sequence: Integer;
-  Entry: TExportRecord;
 begin
   CheckSessionInterrupt;
-  Entry := Default(TExportRecord);
-  Entry.FileName := Context.LibraryFile.DeckSourcePath(Context.Database, Deck);
-  Entry.Deck := Deck;
-  Entry.LibraryVersion := Context.LibraryFile.CurrentVersion;
-  Entry.DeckVersion := Context.LibraryFile.DeckVersion[Context.LibraryFile.SelectDeck(Deck, '', '').RootRevision];
-  Entry.SHA256 := AuditSHA256('');
-  QueueWorkingExport(Context.Database, Entry, True);
   Sequence := Context.LibraryFile.Delete(Context.Database, Deck);
   FRows.Add(Deck + #9 + Context.LibraryFile.DeckVersion[Sequence] + #9 + 'deleted');
   Inc(FDeleted);
@@ -211,21 +177,8 @@ end;
 procedure RefreshImportedFiles(const Context: TCommandContext);
 begin
   try
-    Context.Database.BeginTransaction;
-    CheckSessionInterrupt;
-    RefreshWorkingExports(Context.Database, Context.LibraryPath);
-    CheckSessionInterrupt;
-    Context.Database.Commit;
-  except
-    on E: ECommandCancelled do
-    begin
-      raise ECommandCancelled.Create('Import was saved; working-file manifest refresh was cancelled and remains pending.');
-    end;
-    on E: Exception do
-      raise EScuError.Create('Import was saved; its working-file manifest update remains pending: ' + E.Message);
-  end;
-  try
     RefreshImportedTracker(Context);
+    CheckSessionInterrupt;
   except
     on E: ECommandCancelled do
       raise ECommandCancelled.Create('Import was saved; version tracker refresh was cancelled. Run import_deck again to retry.');
