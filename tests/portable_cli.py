@@ -282,6 +282,15 @@ class PortableCliTests(unittest.TestCase):
         self.store("main.c", b"source")
         self.run_scu("conl", "vt=main.c", error="already uses tracker name")
 
+    def test_display_library_prints_template_below_its_label(self):
+        template = self.root / "template.txt"
+        template.write_bytes(b"first\r\n\r\n  indented\r\nlast")
+        self.run_scu("conl", "vt=version.h", "ttf=template.txt")
+        self.assertIn("version_tracker_template\nfirst\n\n  indented\nlast\n", self.run_scu("disl"))
+        template.write_bytes(b"")
+        self.run_scu("conl", "ttf=template.txt")
+        self.assertRegex(self.run_scu("disl"), r"(?m)^version_tracker_template +\(not set\)$")
+
     def test_edit_tracker_persists_multiline_library_metadata(self):
         if WINE:
             self.skipTest("Editor fixture uses native Python")

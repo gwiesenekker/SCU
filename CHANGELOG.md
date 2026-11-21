@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Display the version tracker template below its label in `disl`, starting at the left margin.
+
 - Allow library version increments down to `0.0000000001` for automatic version creation.
 
 - Refresh the configured version tracker after a successful import, including scans with no changed decks.

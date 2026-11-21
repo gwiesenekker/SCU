@@ -110,7 +110,11 @@ begin
     if (Configuration.Names[Index] = 'version_tracker_template') and
       (Configuration.Items[Index].JSONType = jtString) and
       (Configuration.Items[Index].AsString <> '') then
-      WriteRow(Name, DisplayText(AdjustLineBreaks(Configuration.Items[Index].AsString, tlbsLF), True))
+    begin
+      Sink.WriteLine(FormatTerminalLines(Name, Columns));
+      Sink.WriteLine(FormatTerminalLines(DisplayText(
+        AdjustLineBreaks(Configuration.Items[Index].AsString, tlbsLF), True), Columns));
+    end
     else
       WriteRow(Name, DisplayValue(Configuration.Items[Index]));
   end;
