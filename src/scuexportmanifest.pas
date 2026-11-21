@@ -647,7 +647,8 @@ begin
         if Actual = '' then Rows[RowCount].Status := esCreated
         else Rows[RowCount].Status := esReplaced;
       end;
-      if Plan.Data.Mode <> emTracker then Inc(RowCount);
+      if Plan.Data.Mode = emTracker then Rows[RowCount].TrackerFile := Plan.Data.FileName;
+      Inc(RowCount);
       Install(Plan.Data);
     end;
   end;

@@ -664,7 +664,7 @@ In **Edit → Preferences**, use **File patterns** to edit the filenames and wil
 
 To generate a version header, run `conl version_tracker=version.h`. SCU stores the template in the library configuration. Its default C header defines `PROJECT_VERSION` as `"SCU$VERSION"`. Use `edit_version_tracker` (`edivt`) to edit the multiline template in the configured editor.
 
-`extd`, `extv`, and `relv` write the tracker beside their outputs and report `version.h has been expanded`, even when the existing bytes match. Historical exports use the same template with the selected library version. Date and time macros use the template’s modification time. The tracker has no deck revision, so `SCU$DECK_VERSION` stays literal. Overwrite protection applies if you edit the generated file.
+`extd`, `extv`, and `relv` write the tracker beside their outputs and report `version.h has been expanded` when they create or replace it. If its bytes already match, they report `version.h is unchanged`. Historical exports use the same template with the selected library version. Date and time macros use the template’s modification time. The tracker has no deck revision, so `SCU$DECK_VERSION` stays literal. Overwrite protection applies if you edit the generated file.
 
 Working-file imports and manifest verification report `version.h has been ignored (version tracker)` and exclude it from deck counts. Choose a filename distinct from existing decks and their working files. Clear the filename with `conl version_tracker=` to disable generation and keep the template for later.
 

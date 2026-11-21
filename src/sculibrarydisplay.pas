@@ -145,7 +145,8 @@ begin
     for Row in Rows do
     begin
       CheckSessionInterrupt;
-      Table.AddRow([DisplayText(Row.Deck), Row.DeckVersion, StatusText[Row.Status]]);
+      if Row.TrackerFile = '' then
+        Table.AddRow([DisplayText(Row.Deck), Row.DeckVersion, StatusText[Row.Status]]);
     end;
     Table.WriteTo(Sink, Sink.Columns);
   finally

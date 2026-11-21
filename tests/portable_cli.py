@@ -225,8 +225,17 @@ class PortableCliTests(unittest.TestCase):
         header = self.root / "version.h"
         self.assertIn(b'#define PROJECT_VERSION "1.1"', header.read_bytes())
         self.assertEqual((self.root / "main.c").read_bytes(), b"/* SCU$VERSION */")
-        self.assertIn("Wrote 0 deck(s)", self.run_scu("extv"))
+        stamp = header.stat().st_mtime_ns
+        for args in [("extd", "main.c"), ("extv",)]:
+            result = self.run_scu(*args)
+            self.assertIn("version.h is unchanged", result.splitlines())
+            self.assertNotIn(expanded, result)
+            self.assertEqual(header.stat().st_mtime_ns, stamp)
+        result = self.run_scu("extd", "version.h", "of=alternate.h")
+        self.assertIn("alternate.h has been expanded", result.splitlines())
+        self.assertIn("version.h is unchanged", result.splitlines())
         self.assertIn(expanded, self.run_scu("relv", "v=1.0"))
+        self.assertIn("version.h is unchanged", self.run_scu("relv", "v=1.0").splitlines())
         self.assertIn(b'"1.0"', (self.root / "release/version.h").read_bytes())
         header.write_bytes(b"hand edited")
         for args in [("impd",), ("impd", "version.h"), ("verd", "od=.")]:

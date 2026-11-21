@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Extraction and release report whether they wrote the version tracker or found it unchanged.
+
 - Show empty file patterns as `(not set)` in the library summary.
 
 - Store an optional `version_tracker` template in library metadata. Edit it with `edit_version_tracker`, generate it during extraction and release, and report it as ignored during working-file import and verification. GUI Preferences now has dedicated File patterns and Version tracker editors.

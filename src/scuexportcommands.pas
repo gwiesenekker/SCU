@@ -104,9 +104,13 @@ begin
     '', '', RenderTracker(Context.LibraryFile, Version), BooleanArgument(Context.Command, 'overwrite', 'no'));
 end;
 
-procedure ReportTracker(const Context: TCommandContext);
+procedure ReportTracker(const Context: TCommandContext; const Rows: TExportResults);
+var Row: TExportResult;
 begin
-  Context.Output.WriteLine(Context.LibraryFile.VersionTracker + ' has been expanded');
+  for Row in Rows do
+    if Row.TrackerFile <> '' then
+      if Row.Status = esUnchanged then Context.Output.WriteLine(Row.TrackerFile + ' is unchanged')
+      else Context.Output.WriteLine(Row.TrackerFile + ' has been expanded');
 end;
 
 function ExtractDeck(var Context: TCommandContext): string;
@@ -183,12 +187,12 @@ begin
   ScheduleBuild(Context, Path);
   if TrackerOnly then
   begin
-    ReportTracker(Context);
+    ReportTracker(Context, Rows);
     Exit('');
   end;
   Context.Snapshots.DeckVersion := ResolvedDeckVersion;
   ReportSnapshot(Context, ResolvedDeckVersion, Deck);
-  if Tracker <> '' then ReportTracker(Context);
+  if Tracker <> '' then ReportTracker(Context, Rows);
   if Written then
     Result := 'Wrote "' + StringToJSONString(Path) + '".'
   else
@@ -320,11 +324,11 @@ begin
     DeletedCount := 0;
     if Expand then DeletedCount := PlanReleaseCleanup(Context, Directory, Version, FileNames, Manifest, Removed, Preserved);
     WrittenCount := Manifest.Publish(Rows);
-    Context.FilesPublished := (Length(Rows) > 0) or (DeletedCount > 0) or (Context.LibraryFile.VersionTracker <> '');
+    Context.FilesPublished := (Length(Rows) > 0) or (DeletedCount > 0);
     if Context.LibraryFile.VersionTracker <> '' then
-      ReportTracker(Context);
+      ReportTracker(Context, Rows);
     if LegacyCopy then Context.Output.Report('Warning: COPY is no longer expanded; COPY directives are released as literal source.');
-    if Length(Rows) > 0 then WriteExportResults(Rows, Context.Output);
+    if Names.Count > 0 then WriteExportResults(Rows, Context.Output);
     for Index := 0 to Removed.Count - 1 do Context.Output.WriteLine('Removed obsolete release file "' + StringToJSONString(Removed[Index]) + '".');
     for Index := 0 to Preserved.Count - 1 do Context.Output.WriteLine('Kept untracked release file "' + StringToJSONString(Preserved[Index]) + '"; use overwrite=yes to remove it.');
     if not Expand then ScheduleBuild(Context, Directory);

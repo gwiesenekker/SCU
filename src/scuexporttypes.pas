@@ -8,7 +8,7 @@ type
   TExportMode = (emExtract, emExpand, emTracker);
   TExportStatus = (esCreated, esReplaced, esUnchanged);
   TExportResult = record
-    Deck, DeckVersion: string;
+    Deck, DeckVersion, TrackerFile: string;
     Status: TExportStatus;
   end;
   TExportResults = array of TExportResult;

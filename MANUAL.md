@@ -107,7 +107,7 @@ On the **Version tracker** tab, enter `version.h` as the output filename. The te
 
 Choose **OK** to save the settings together. **Cancel** discards the edits. In the CLI, `edifp` edits the file patterns, `conl vt=version.h` sets the tracker filename, and `edivt` opens its template in the configured editor. To load an existing template from disk, use `conl vt=version.h tracker_template_file=version.h.in`.
 
-For example, `extv v=8.1307 b=n` writes a header containing `#define PROJECT_VERSION "8.1307"` and reports `version.h has been expanded`. A single-deck extraction such as `extd book.c` also generates the header beside its output. Publishing with `relv` generates it in the release directory. These commands report expansion even when the header already matches.
+For example, `extv v=8.1307 b=n` writes a header containing `#define PROJECT_VERSION "8.1307"` and reports `version.h has been expanded`. A single-deck extraction such as `extd book.c` also generates the header beside its output. Publishing with `relv` generates it in the release directory. If the header already matches, these commands report `version.h is unchanged` and preserve its modification time.
 
 Although `*.h` matches `version.h`, a working-file scan reports `version.h has been ignored (version tracker)`. Verification also skips the generated file. Edit the template in Preferences or with `edivt` to keep changes. If you edited the generated header directly, extraction requires `overwrite=yes` to replace it.
 
