@@ -1011,7 +1011,7 @@
           "description": "New MAJOR.MINOR name, greater than the previous locked version."
         }
       ],
-      "help": "Rename the current unlocked version, including revisions already stored in it. Deck revision numbers, source bytes, and original archive provenance are preserved. Existing working files and published releases retain their contents.",
+      "help": "Rename the current unlocked version, including revisions already stored in it. Deck revision numbers, source bytes, and original archive provenance are preserved. After the rename is saved, refresh the configured version tracker beside the library without running a build. Preserve hand-edited tracker contents and report the conflict.",
       "examples": [
         {
           "command": "scu rename_version version=8.132 new_version=8.1308",

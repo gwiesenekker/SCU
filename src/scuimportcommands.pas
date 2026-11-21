@@ -177,7 +177,7 @@ end;
 procedure RefreshImportedFiles(const Context: TCommandContext);
 begin
   try
-    RefreshImportedTracker(Context);
+    RefreshWorkingTracker(Context);
     CheckSessionInterrupt;
   except
     on E: ECommandCancelled do

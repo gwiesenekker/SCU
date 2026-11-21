@@ -25,6 +25,7 @@ type
   private
     FPath, FStageDirectory: string;
     FReleaseManifest: Boolean;
+    FFormerTrackerVersion: string;
     FWorkingLibrary: TDeckLibrary; // Assigned only for manifest-free working batches.
     FRevisions: TSQLiteRevisionStore; // Borrowed while planning publication.
     FStageLock: TFileLock;
@@ -47,7 +48,8 @@ type
     procedure RequireStoredSource(const Entry: TExportRecord; const Path: string; const Bytes: RawByteString);
   public
     constructor Create(const Directory: string; Revisions: TSQLiteRevisionStore = nil);
-    constructor CreateWorking(const Directory: string; LibraryFile: TDeckLibrary; Revisions: TSQLiteRevisionStore);
+    constructor CreateWorking(const Directory: string; LibraryFile: TDeckLibrary; Revisions: TSQLiteRevisionStore;
+      const FormerTrackerVersion: string = '');
     destructor Destroy; override;
     // Recovery is explicit and must run while the caller holds the directory lock.
     procedure Recover;
@@ -235,11 +237,13 @@ begin
   Load;
 end;
 
-constructor TExportManifest.CreateWorking(const Directory: string; LibraryFile: TDeckLibrary; Revisions: TSQLiteRevisionStore);
+constructor TExportManifest.CreateWorking(const Directory: string; LibraryFile: TDeckLibrary; Revisions: TSQLiteRevisionStore;
+  const FormerTrackerVersion: string);
 begin
   inherited Create;
   Initialize(Directory);
   FWorkingLibrary := LibraryFile;
+  FFormerTrackerVersion := FormerTrackerVersion;
   FRevisions := Revisions;
 end;
 
@@ -484,6 +488,8 @@ function TExportManifest.MatchesWorkingFile(Mode: TExportMode; const Deck: strin
 var Index: Integer;
 begin
   if Mode = emExtract then Exit(FRevisions.MatchesDeckHistory(Deck, Bytes));
+  if (Mode = emTracker) and (FFormerTrackerVersion <> '') and
+    (RenderTracker(FWorkingLibrary, FFormerTrackerVersion) = Bytes) then Exit(True);
   for Index := FWorkingLibrary.VersionCount - 1 downto 0 do
   begin
     CheckSessionInterrupt;

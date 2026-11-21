@@ -71,7 +71,7 @@ const
     (Name: 'release_version'; Handler: (Mode: cmLibrary; Run: @ReleaseVersion;
       ResolveOutputDirectory: @VersionOutputDirectory; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
     (Name: 'rename_version'; Handler: (Mode: cmLibrary; Run: @RenameVersion;
-      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+      ResolveOutputDirectory: @WorkingDirectory; ReportCommitted: @RefreshRenamedTracker; OutputLockPolicy: olReuseBuild)),
     (Name: 'save_library'; Handler: (Mode: cmLibrary; Run: @SaveLibrary;
       ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
     (Name: 'unlock_version'; Handler: (Mode: cmLibrary; Run: @UnlockVersion;

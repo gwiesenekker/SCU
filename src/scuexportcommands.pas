@@ -7,7 +7,8 @@ interface
 uses
   ScuCommand, ScuCommandHandler;
 
-procedure RefreshImportedTracker(const Context: TCommandContext);
+procedure RefreshWorkingTracker(const Context: TCommandContext; const FormerVersion: string = '');
+procedure RefreshRenamedTracker(const Context: TCommandContext);
 function SingleDeckDirectory(const Context: TCommandContext): string;
 function VersionOutputDirectory(const Context: TCommandContext): string;
 function ExtractDeck(var Context: TCommandContext): string;
@@ -112,7 +113,7 @@ begin
       else Context.Output.WriteLine(Row.TrackerFile + ' has been expanded');
 end;
 
-procedure RefreshImportedTracker(const Context: TCommandContext);
+procedure RefreshWorkingTracker(const Context: TCommandContext; const FormerVersion: string);
 var
   Manifest: TExportManifest;
   Rows: TExportResults;
@@ -121,7 +122,7 @@ begin
   Tracker := Context.LibraryFile.VersionTracker;
   if Tracker = '' then Exit;
   Path := IncludeTrailingPathDelimiter(Context.OutputDirectory) + Tracker;
-  Manifest := TExportManifest.CreateWorking(Context.OutputDirectory, Context.LibraryFile, Context.Database.Revisions);
+  Manifest := TExportManifest.CreateWorking(Context.OutputDirectory, Context.LibraryFile, Context.Database.Revisions, FormerVersion);
   try
     Manifest.Recover;
     try
@@ -138,6 +139,19 @@ begin
     ReportTracker(Context, Rows);
   finally
     Manifest.Free;
+  end;
+end;
+
+procedure RefreshRenamedTracker(const Context: TCommandContext);
+begin
+  try
+    RefreshWorkingTracker(Context, Context.Command['version']);
+    CheckSessionInterrupt;
+  except
+    on E: ECommandCancelled do
+      raise ECommandCancelled.Create('Version was renamed; version tracker refresh was cancelled.');
+    on E: Exception do
+      raise EScuError.Create('Version was renamed; could not refresh the version tracker: ' + E.Message);
   end;
 end;
 

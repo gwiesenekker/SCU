@@ -882,8 +882,27 @@ class PortableCliTests(unittest.TestCase):
         self.run_scu("delv", "1.2", "dr=y")
         self.run_scu("verat")
 
+    def test_rename_version_refreshes_the_configured_working_tracker(self):
+        self.run_scu("conl", "vt=version.h", "bc=exit 1")
+        header = self.root / "version.h"
+        self.assertIn("version.h has been expanded", self.run_scu("renv", "1.0", "8.132"))
+        old = header.read_bytes()
+        self.assertIn(b'"8.132"', old)
+        self.assertIn("version.h has been expanded", self.run_scu("renv", "8.132", "8.1308"))
+        expected = old.replace(b'"8.132"', b'"8.1308"')
+        self.assertEqual(header.read_bytes(), expected)
+        header.write_bytes(expected + b"// local edit")
+        self.assertIn("was left untouched", self.run_scu("renv", "8.1308", "8.1309"))
+        self.assertEqual(header.read_bytes(), expected + b"// local edit")
+        self.assertEqual(self.read_library()["header"]["current_version"], "8.1309")
+        self.run_scu("verat")
+
     def test_rename_imported_version_rollback_and_recovery(self):
         self.store("main", b"source")
+        self.run_scu("conl", "vt=version.h")
+        self.run_scu("extd", "version.h", "b=n")
+        tracker = self.root / "version.h"
+        original_tracker = tracker.read_bytes()
         manifest = {"format": 1, "version": "1.0", "source_archive": "archive",
                     "history": [], "files": []}
         (self.root / "manifest.json").write_text(json.dumps(manifest))
@@ -896,6 +915,7 @@ class PortableCliTests(unittest.TestCase):
                 BEGIN SELECT RAISE(ABORT, 'injected rename failure'); END;
             """)
             self.run_scu("renv", "1.0", "2.0", error="injected rename failure")
+            self.assertEqual(tracker.read_bytes(), original_tracker)
             db.execute("DROP TRIGGER reject_rename")
             self.assertEqual(db.execute("SELECT library_version FROM deck_revisions").fetchall(), [("1.0",)])
             self.assertEqual(db.execute("SELECT version FROM version_import_manifests").fetchall(), [("1.0",)])

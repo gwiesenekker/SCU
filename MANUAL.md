@@ -52,7 +52,7 @@ Use `disl` to see whether the current version is locked or unlocked and inspect 
 
 ## Understand versions and revisions
 
-To correct the current unlocked version name, enter `renv 8.132 8.1308` (after version 8.1307). This keeps each deck’s revision number and contents. An inherited deck retains its original deck version. Earlier audit entries and existing release files retain their historical names.
+To correct the current unlocked version name, enter `renv 8.132 8.1308` (after version 8.1307). This keeps each deck’s revision number and contents. An inherited deck retains its original deck version. SCU refreshes the configured working version tracker after saving the rename. It preserves a hand-edited tracker and reports the conflict. Earlier audit entries and existing release files retain their historical names.
 
 A library version groups changes across decks. Each deck has its own revision within that version. For example, `1.1-0.000` is the first stored revision of a deck in library version 1.1. An edit advances that deck's revision. A deck inherited unchanged from 1.0 can still show `1.0-0.000` when you view version 1.1. Deleting a deck preserves it in earlier snapshots.
 

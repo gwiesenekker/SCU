@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refresh the working version tracker after `renv`, recognizing its generated contents under the former version name and preserving local edits.
+
 - Add `rename_version` (`renv`) to correct the name of the current unlocked version while preserving deck revisions and original archive provenance.
 
 - Show `Matches` in the `extv` table and summary when working files already match their selected deck revisions.
