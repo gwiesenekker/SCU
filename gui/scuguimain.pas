@@ -91,6 +91,7 @@ type
   protected
     function ConfirmDeckClose(Document: TScuEditorTab): Integer; virtual;
     procedure DisplayCommandError(const CommandName, Details: string); virtual;
+    function ConfirmUnlock(const Version: string): Boolean; virtual;
     function PromptNewVersion(var Version: string): Boolean; virtual;
   public
     constructor Create(AOwner: TComponent); override;
@@ -454,7 +455,7 @@ begin
     begin
       Directory := MakeTempDirectory('scu-gui-tracker');
       Path := IncludeTrailingPathDelimiter(Directory) + 'template.txt';
-      AtomicWrite(Path, Dialog.TrackerField.Text);
+      AtomicWrite(Path, Dialog.TrackerBytes);
       Parameters[High(Parameters)] := 'tracker_template_file=' + Path;
     end;
     Job := AddJob('configure_library', Parameters);
@@ -719,10 +720,22 @@ begin
   except on E: Exception do CommandError('lock_version', E.Message); end;
 end;
 
+function TScuMainForm.ConfirmUnlock(const Version: string): Boolean;
+begin
+  Result := MessageDlg('Unlock version ' + Version + '?',
+    'Reopening this version clears its lock time and description. The audit trail keeps the previous lock record.',
+    mtConfirmation, [mbYes, mbNo], 0, mbNo) = mrYes;
+end;
+
 procedure TScuMainForm.UnlockVersionClick(Sender: TObject);
+var Version: string;
 begin
   if (FLibraryPath = '') or (Busy and not Comparing) then Exit;
   try
+    Version := ReadGuiLibraryState(FLibraryPath, False).CurrentVersion;
+    if not ConfirmUnlock(Version) then Exit;
+    if ReadGuiLibraryState(FLibraryPath, False).CurrentVersion <> Version then
+      raise Exception.Create('The current version changed while confirming the unlock.');
     CancelScheduledPreview;
     FLastError := '';
     AddJob('unlock_version', []); StartNext;

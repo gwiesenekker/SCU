@@ -99,11 +99,17 @@ begin
   raise EScuError.Create('Child environment value is too long: ' + Name);
 end;
 function ResolveWindowsExecutable(const Name: string): string;
-var Buffer, WideName: UnicodeString; Count: DWORD;
+var Buffer, WideName, SearchPath: UnicodeString; Count: DWORD;
 begin
   if (Name = '') or (Pos(#0, Name) <> 0) then raise EScuError.Create('Expected a child executable name.');
   WideName := UTF8Decode(Name); SetLength(Buffer, 32768);
-  Count := SearchPathW(nil, PWideChar(WideName), '.exe', Length(Buffer), PWideChar(Buffer), nil);
+  if (ExtractFilePath(Name) = '') and (ExtractFileDrive(Name) = '') then
+  begin
+    SearchPath := UTF8Decode(WindowsEnvironmentValue('PATH'));
+    if SearchPath = '' then raise EScuError.Create('Could not find executable "' + Name + '" on PATH.');
+    Count := SearchPathW(PWideChar(SearchPath), PWideChar(WideName), '.exe', Length(Buffer), PWideChar(Buffer), nil);
+  end
+  else Count := SearchPathW(nil, PWideChar(WideName), '.exe', Length(Buffer), PWideChar(Buffer), nil);
   if (Count = 0) or (Count >= DWORD(Length(Buffer))) then
     RaiseSystemError('Could not find executable "' + Name + '"', GetLastError);
   SetLength(Buffer, Count); Result := UTF8Encode(Buffer);

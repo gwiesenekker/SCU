@@ -339,7 +339,7 @@ propagates through enumeration without being converted into a scan error.
 Windows patterns support `*`, `?`, bracket sets/ranges and `!`/`^` negation,
 with Windows case folding; `?` matches one Unicode scalar, including an emoji.
 A leading dot must be matched explicitly and `*.*` requires a literal dot.
-POSIX named character classes remain a Linux feature. Source ownership uses an
+Windows rejects POSIX named character classes such as `[[:alpha:]]` when configuring or scanning patterns and before release cleanup. Use bracket ranges for portable patterns. Source ownership uses an
 ordinal case-insensitive sorted index on Windows and rejects ambiguous owners.
 Filenames that cannot be deck names retain the same `file-<SHA-256>` mapping of
 their UTF-8 bytes, using Windows' native hash API rather than the Unix codec
@@ -897,6 +897,18 @@ Use `display_command` for argument aliases, types, descriptions, and examples.
 
 ## Configure external-editor file patterns
 
+Each live deck owns its working filename. Creating a second deck with the same
+filename is rejected at import or creation. Linux distinguishes `Makefile` and
+`makefile`; Windows treats those working filenames as aliases. Commands look up
+deck identifiers by their exact spelling on both platforms.
+
+After deleting a version with `delete_revisions=yes`, an extracted working file
+may be the only copy of a revision. SCU checks the recorded deck version and
+its source checksum before replacing differing bytes, including in alternate
+output directories. Even if you reuse the version number, you must explicitly
+supply `overwrite=yes` to replace such a file. A cleared or renamed tracker
+can become an ordinary deck via an explicit `import_deck filename`.
+
 The library-wide `file_patterns` attribute is a JSON list, empty by default.
 Use `edit_file_patterns` (`edifp`) to open the list in the configured editor,
 with one wildcard or exact filename per line:
@@ -1016,7 +1028,7 @@ receive deterministic `import-file-` deck names based on the original path's
 SHA-256 digest. The manifest retains the exact original spelling and path.
 Use `disl json=yes` to read the `import_manifest` object in each imported version.
 SCU stores it separately in SQLite when locking the version and checks its SHA-256
-during audit verification. A real archive file named `scu-import-manifest.json`
+during audit verification. The manifest describes the original archive. Reopening a version preserves that provenance. Relocking with `import_manifest_file` explicitly replaces it. A real archive file named `scu-import-manifest.json`
 imports as an ordinary source file. Libraries imported by earlier releases retain
 their historical manifest deck. To use version metadata for an old archive,
 run the importer again with a new destination library.
@@ -1525,7 +1537,7 @@ extraction to an explicit, literal `output_file` remains available for rescue:
 `scu OLD.sqlite extract_deck main.pas output_file=rescued-main.pas build=no`.
 
 Schema 8 adds a SQLite table for version import manifests. SCU upgrades the
-schema on a writable open. The upgrade preserves historical decks and audit
+schema on a writable open, including an audited display command. The upgrade is one-way. The upgrade preserves historical decks and audit
 records. Use a schema-8 CLI and GUI with upgraded libraries.
 
 Schema 7 removes obsolete expansion checkpoints and upgrades libraries in place.

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Reject conflicting working filenames on import or creation. Protect extracted files from deleted revisions even after their deck version number is reused.
+- Allow an explicit import of a former version tracker and replacement of archive provenance when relocking a version.
+- Preserve uniform editor line endings, guard mixed endings, and defer whole-deck comparisons while typing. Correct GUI child exit codes and Windows preference paths, editor lookup and process cleanup.
+- Let Lazarus select its configured compiler for a default Windows GUI build.
+
 - Show the SCU release number and abbreviated build commit ID as one string in `scu --version` and **Help → About SCU**. The initial release number is `1.0`.
 
 - Display the version tracker template below its label in `disl`, starting at the left margin.

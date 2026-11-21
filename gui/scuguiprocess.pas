@@ -26,19 +26,12 @@ function TGuiCommandProcess.GetRunning: Boolean;
 begin Result := Assigned(FProcess); end;
 destructor TGuiCommandProcess.Destroy;
 begin
-  if Assigned(FProcess) then
-  begin
-    // Normal close is refused while busy; this is only exceptional shutdown.
-    {$IFDEF WINDOWS}
-    try
-      if Assigned(FJob) then FJob.TerminateAndWait;
-    finally FreeAndNil(FJob); FreeAndNil(FProcess); end;
-    {$ELSE}
-    if FProcess.Running then FProcess.Terminate(143);
-    {$ENDIF}
-    FProcess.Free;
-  end;
-  {$IFDEF WINDOWS}FJob.Free;{$ENDIF}
+  {$IFDEF WINDOWS}
+  FJob.Free; // Closing the job retires the command and its descendants.
+  {$ELSE}
+  if Assigned(FProcess) and FProcess.Running then FProcess.Terminate(143);
+  {$ENDIF}
+  FProcess.Free;
   inherited Destroy;
 end;
 procedure TGuiCommandProcess.Start(const Executable, LibraryPath: string; Command: TScuCommand);
@@ -68,7 +61,7 @@ begin
   except
     {$IFDEF WINDOWS}
     if Assigned(FProcess) and FProcess.Running then
-    begin FProcess.Terminate(1); WaitForSingleObject(FProcess.ProcessHandle, INFINITE); end;
+    begin FProcess.Terminate(1); end;
     FreeAndNil(FJob);
     {$ENDIF}
     FreeAndNil(FProcess); raise;
@@ -82,7 +75,7 @@ begin
   // Retire pipe-inheriting descendants once the command exits, then drain the
   // final buffered bytes. A background child must not keep the GUI busy forever.
   if Assigned(FJob) and not FProcess.Running then
-  begin FJob.TerminateAndWait; FreeAndNil(FJob); end;
+    FreeAndNil(FJob); // Kill-on-close retires descendants without blocking the event loop.
   {$ENDIF}
   // Bound each tick so a noisy compiler cannot starve the window event loop.
   Budget := 256 * 1024;
@@ -96,7 +89,7 @@ begin
   end;
   if not FProcess.Running and (FProcess.Output.NumBytesAvailable = 0) then
   begin
-    Code := FProcess.ExitStatus;
+    Code := FProcess.ExitCode;
     {$IFDEF WINDOWS}FreeAndNil(FJob);{$ENDIF}
     FreeAndNil(FProcess);
     if Assigned(FOnFinished) then FOnFinished(Self, Code);

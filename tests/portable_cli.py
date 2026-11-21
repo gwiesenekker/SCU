@@ -162,13 +162,25 @@ class PortableCliTests(unittest.TestCase):
         foreign = "Linux" if host == "Windows" else "Windows"
         self.assertEqual(self.read_library()["header"]["platform"], host)
         for name in ("Makefile", "makefile", "MAKEFILE", "ordinary", "gone"):
-            self.run_scu("cred", name)
+            if host == "Windows" and name in ("makefile", "MAKEFILE"):
+                self.run_scu("cred", name, error='already belongs to deck "Makefile"')
+                # Model a foreign library using distinct deck identifiers with valid local outputs.
+                source = "lower-source" if name == "makefile" else "upper-source"
+                (self.root / source).write_text(name)
+                self.run_scu("impd", name, source)
+            else:
+                self.run_scu("cred", name)
         self.run_scu("deld", "gone")
         self.run_scu("locv", "First")
         self.run_scu("crev", "1.1")
         self.assertNotIn("Warning", self.run_scu("disl"))
         document = self.read_library()
         document["header"]["platform"] = foreign
+        if host == "Windows":
+            for entry in document["revisions"]:
+                if entry["deck"] in ("makefile", "MAKEFILE"):
+                    entry["source_path"] = entry["deck"]
+                    entry["source_path_bytes"] = entry["deck"].encode().hex()
         recovery = self.root / "foreign.json"
         recovery.write_text(json.dumps(document))
         restored = self.root / "foreign.sqlite"
@@ -249,6 +261,10 @@ class PortableCliTests(unittest.TestCase):
         self.run_scu("conl", "vt=")
         self.assertNotIn(expanded, self.run_scu("extv"))
         self.assertIn(ignored, self.run_scu("impd"))
+        self.run_scu("impd", "version.h")
+        self.assertIn("version.h", self.run_scu("disdl"))
+        header.write_bytes(b"ordinary deck now")
+        self.assertIn("changed", self.run_scu("impd"))
         self.run_scu("verat")
 
     def test_import_refreshes_tracker_from_committed_current_version(self):
@@ -757,6 +773,46 @@ class PortableCliTests(unittest.TestCase):
             self.run_scu('extv', option, error='Unknown argument')
         self.assertNotIn('replace (', self.run_scu('disc', 'extv'))
 
+    def test_posix_named_character_class_selection(self):
+        (self.root / "bx.c").write_text("source")
+        pattern = 'fp=["[[:alpha:]]x.c"]'
+        if WINE or os.name == "nt":
+            self.run_scu("conl", pattern, error="POSIX named character classes")
+        else:
+            self.run_scu("conl", pattern)
+            self.assertIn("bx.c", self.run_scu("impd"))
+
+    def test_live_decks_require_distinct_output_files(self):
+        (self.root / "shared").write_text("source")
+        self.run_scu("impd", "Original", "shared")
+        self.run_scu("impd", "original", "shared", error='already belongs to deck "Original"')
+        self.run_scu("cred", "shared", error='already belongs to deck "Original"')
+        self.run_scu("deld", "Original")
+        self.run_scu("impd", "original", "shared")
+        self.run_scu("verat")
+
+    def test_deleted_revision_working_files_require_explicit_overwrite(self):
+        self.store("source", b"baseline")
+        self.run_scu("locv", "Baseline")
+        self.run_scu("crev", "1.1")
+        working = self.root / "source"
+        working.write_bytes(b"only surviving copy")
+        self.run_scu("impd", "source")
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        self.run_scu("extv", "od=elsewhere")
+        self.run_scu("delv", "1.1", "dr=y")
+        self.assertIn("Deleted revision", self.run_scu("extv", error="overwrite=yes"))
+        self.assertEqual(working.read_bytes(), b"only surviving copy")
+        self.run_scu("crev", "1.1")
+        working.write_bytes(b"different content under the reused number")
+        self.run_scu("impd", "source")
+        self.run_scu("extd", "source", "of=elsewhere/source", error="overwrite=yes")
+        self.assertEqual((elsewhere / "source").read_bytes(), b"only surviving copy")
+        self.run_scu("extd", "source", "of=elsewhere/source", "o=y")
+        self.assertEqual((elsewhere / "source").read_bytes(), working.read_bytes())
+        self.run_scu("verat")
+
     def test_delete_only_an_empty_open_successor(self):
         self.run_scu("delv", "1.0", error="only library version")
         self.store("main", b"preserved")
@@ -800,6 +856,12 @@ class PortableCliTests(unittest.TestCase):
         self.run_scu("unlv")
         self.run_scu("locv", "Rechecked")
         self.assertEqual(json.loads(self.run_scu("disl", "j=y"))["versions"][-1]["import_manifest"], manifest)
+        self.run_scu("unlv")
+        manifest["source_archive"] = "corrected archive"
+        (self.root / "manifest.json").write_text(json.dumps(manifest))
+        self.run_scu("locv", "Corrected provenance", "imf=manifest.json")
+        self.assertEqual(json.loads(self.run_scu("disl", "j=y"))["versions"][-1]["import_manifest"], manifest)
+        self.run_scu("verat")
         self.run_scu("unlv")
         self.run_scu("delv", "1.1")
         self.run_scu("verat")

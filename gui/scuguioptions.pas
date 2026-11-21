@@ -11,7 +11,7 @@ type
     FFields: array[0..5] of TEdit;
     FInitial: array[0..5] of string;
     FBuild, FPatterns, FTracker: TMemo;
-    FInitialBuild, FInitialPatterns, FInitialTracker: string;
+    FTrackerEnding, FInitialBuild, FInitialPatterns, FInitialTracker: string;
     FChanges: TStringList;
     procedure PickFont(Sender: TObject);
     procedure UpdateFontPreview;
@@ -25,12 +25,13 @@ type
     property Pages: TPageControl read FPages;
     function LibraryField(Index: Integer): TEdit;
     property BuildField: TMemo read FBuild;
+    function TrackerBytes: string;
     function TrackerChanged: Boolean;
     property TrackerField: TMemo read FTracker;
     property PatternsField: TMemo read FPatterns;
   end;
 implementation
-uses SysUtils, Dialogs, ExtCtrls, ButtonPanel, ScuLibraryNames, ScuLibraryHeader;
+uses ScuGuiLineEndings, SysUtils, Dialogs, ExtCtrls, ButtonPanel, ScuLibraryNames, ScuLibraryHeader;
 const Names: array[0..5] of string = ('comment_prefix','editor','version_increment','revision_increment','release_directory','version_tracker');
   Keys: array[0..5] of string = ('comment_prefix','editor','version_increment','revision_increment','release_directory','version_tracker');
   Titles: array[0..5] of string = ('Default comment string (new decks)','External editor (JSON argument array)',
@@ -87,7 +88,14 @@ begin
   FTracker := TMemo.Create(Self); FTracker.Parent := TrackerPage; FTracker.Align := alClient;
   FTracker.BorderSpacing.Around := 8; FTracker.ScrollBars := ssAutoBoth; FTracker.WordWrap := False;
   FTracker.Font.Assign(InitialFont);
-  FTracker.Text := Configuration.Get('version_tracker_template', DefaultTrackerTemplate);
+  FInitialTracker := Configuration.Get('version_tracker_template', DefaultTrackerTemplate);
+  FTracker.ReadOnly := not UniformLineEnding(FInitialTracker, FTrackerEnding);
+  Note := TLabel.Create(Self); Note.Parent := TrackerPage; Note.Align := alBottom;
+  Note.AutoSize := True; Note.WordWrap := True;
+  Note.BorderSpacing.Around := 8;
+  if FTracker.ReadOnly then Note.Caption := 'Mixed line endings. Use edit_version_tracker to edit this template.'
+  else Note.Caption := 'Template macros: SCU$VERSION, SCU$DATE, SCU$TIME, SCU$DATE_TIME.';
+  FTracker.Text := AdjustLineBreaks(FInitialTracker);
   FInitialTracker := FTracker.Text;
   Container := Row(Self, Scroll, 'Build command (run from the library directory)');
   FBuild := TMemo.Create(Self); FBuild.Parent := Container; FBuild.Align := alTop; FBuild.Height := 70; FBuild.Top := 10000;
@@ -121,8 +129,12 @@ begin
     if Dialog.Execute then begin FFont.Assign(Dialog.Font); UpdateFontPreview; end;
   finally Dialog.Free; end;
 end;
+function TScuOptionsDialog.TrackerBytes: string;
+begin
+  Result := StringReplace(AdjustLineBreaks(FTracker.Text, tlbsLF), #10, FTrackerEnding, [rfReplaceAll]);
+end;
 function TScuOptionsDialog.TrackerChanged: Boolean;
-begin Result := Assigned(FTracker) and (FTracker.Text <> FInitialTracker); end;
+begin Result := Assigned(FTracker) and not FTracker.ReadOnly and (FTracker.Text <> FInitialTracker); end;
 procedure TScuOptionsDialog.CollectChanges;
 var I: Integer; Patterns: TJSONArray;
 begin

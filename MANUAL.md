@@ -25,7 +25,7 @@ display_deck_list
 lock_version description="First working release"
 ```
 
-Check the import summary before locking. Patterns select files directly beside the library. A later scan of the same patterns records new files, changed files, and deletions of previously tracked working files that have disappeared. An unchanged file keeps its deck version.
+Check the import summary before locking. Patterns select files directly beside the library. A later scan of the same patterns records new files, changed files, and deletions of previously tracked working files that have disappeared. An unchanged file keeps its deck version. Each deck needs a distinct working filename on the host. For patterns shared across Linux and Windows, use bracket ranges such as `[a-z]`. Windows folds filename case and rejects POSIX named classes such as `[[:alpha:]]`.
 
 Successful modifications save automatically. Enter `quit` or press Ctrl+D at an empty prompt to leave. To open the same library in the GUI, run `scu-gui project.sqlite` or choose **File → Open library**.
 
@@ -45,6 +45,8 @@ disvd of=unified isc=no ilsh=no
 ```
 
 Test your working files. When satisfied, enter `locv` at the SCU prompt or run `scu ln=project.sqlite locv` from the shell. Both open the configured external editor. Write a summary on the first line, then add as many paragraphs as needed. Use `disvh dd=full` to read the complete description below its version row, with the original paragraph breaks. Save the file and close the editor to lock the version. An empty description cancels the lock. In a shell script, supply it on the command line, for example `scu project.sqlite locv description="Fix board initialization"`.
+
+Deleting revisions can leave a working file as the only copy of its contents. The next extraction reports a conflict if it would replace those bytes. Inspect or copy the file before using `overwrite=yes`. This protection also applies to alternate output directories and reused version numbers.
 
 Use `disl` to see whether the current version is locked or unlocked and inspect library settings, or `disl json=yes` for the full JSON header including version history.
 
@@ -74,7 +76,7 @@ To undo an accidental `crev 8.1307`, enter `delv 8.1307`. This returns to the pr
 
 Deck names are case-sensitive. Use the spelling shown by `disdl`. Scanning or importing a new file named `Makefile` uses `Makefile` as its deck name. Command and argument abbreviations still accept either case.
 
-The archive importer strips one leading `// SCU REVISION` header before storing a deck. Extraction returns the remaining bytes. Archive imports attach their original file lists, checksums, filename mappings and HISTORY entries to each locked version. Use `disl json=yes` to read the version’s `import_manifest`. The import manifest stays in the version metadata.
+The archive importer strips one leading `// SCU REVISION` header before storing a deck. Extraction returns the remaining bytes. Archive imports attach their original file lists, checksums, filename mappings and HISTORY entries to each locked version. Use `disl json=yes` to read the version’s `import_manifest`. The import manifest describes the original archive and stays in the version metadata on unlock. Supply a new `import_manifest_file` when relocking to replace it.
 
 By default `disvh` shows the ten most recent versions. `disdd` compares the previous and current **stored revisions of one deck**. `disvd` compares **two library versions** across all decks.
 

@@ -63,9 +63,36 @@ begin
     raise EScuError.CreateFmt('Source filename "%s" is reserved for the export manifest.', [Name]);
 end;
 
+{$IFDEF WINDOWS}
+function HasNamedClass(const Pattern: string): Boolean;
+var I, J: Integer; InSet: Boolean;
+begin
+  InSet := False;
+  for I := 1 to Length(Pattern) do
+    case Pattern[I] of
+      '[': begin
+        if InSet and (Copy(Pattern, I, 2) = '[:') then
+        begin
+          J := I + 2;
+          while (J <= Length(Pattern)) and (Pattern[J] in ['a'..'z','A'..'Z']) do Inc(J);
+          if (J > I + 2) and (Copy(Pattern, J, 2) = ':]') then Exit(True);
+        end;
+        InSet := True;
+      end;
+      ']': InSet := False;
+    end;
+  Result := False;
+end;
+{$ENDIF}
+
 procedure ValidateFilePattern(const Pattern: string);
 begin
   ValidateRelativeSourcePath(Pattern);
+  {$IFDEF WINDOWS}
+  if HasNamedClass(Pattern) then
+    raise EScuError.Create('POSIX named character classes in file pattern "' + Pattern +
+      '" are unsupported on Windows. Use a bracket range such as [a-z] instead.');
+  {$ENDIF}
   if (Pos('/', Pattern) > 0) or (Pos('\', Pattern) > 0) then
     raise EScuError.Create('File patterns must select files directly in the library directory; subdirectories are not supported yet.');
 end;

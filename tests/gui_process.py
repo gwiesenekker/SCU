@@ -54,7 +54,7 @@ class GuiProcessTests(unittest.TestCase):
         self.assertTrue(path.is_dir())
         blocker = self.root / 'file'
         blocker.write_bytes(b'keep')
-        self.probe('directory', blocker, error=b'')
+        self.probe('directory', blocker, error=b'preferences directory')
         self.assertEqual(blocker.read_bytes(), b'keep')
 
     @unittest.skipUnless(WINDOWS, 'Windows console-free backend build')

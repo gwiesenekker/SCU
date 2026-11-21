@@ -121,7 +121,7 @@ begin
   Tracker := Context.LibraryFile.VersionTracker;
   if Tracker = '' then Exit;
   Path := IncludeTrailingPathDelimiter(Context.OutputDirectory) + Tracker;
-  Manifest := TExportManifest.Create(Context.OutputDirectory);
+  Manifest := TExportManifest.Create(Context.OutputDirectory, Context.Database.Revisions);
   try
     Manifest.Recover;
     try
@@ -193,7 +193,7 @@ begin
   CheckSessionInterrupt;
   if SameExportLibrary(ExtractFileDir(Path), ExtractFileDir(CanonicalFile(Context.LibraryPath))) then
     RefreshWorkingExports(Context.Database, Context.LibraryPath);
-  Manifest := TExportManifest.Create(ExtractFileDir(Path));
+  Manifest := TExportManifest.Create(ExtractFileDir(Path), Context.Database.Revisions);
   try
     Manifest.Recover;
     if TrackerOnly then PlanTracker(Context, Manifest, Path, Context.Snapshots.Selected.Version)
@@ -299,7 +299,7 @@ begin
     {$IFDEF WINDOWS}PreflightVersionNames(Context, Names, Directory);{$ENDIF}
     if SameExportLibrary(Directory, ExtractFileDir(CanonicalFile(Context.LibraryPath))) then
       RefreshWorkingExports(Context.Database, Context.LibraryPath);
-    Manifest := TExportManifest.Create(Directory);
+    Manifest := TExportManifest.Create(Directory, Context.Database.Revisions);
     Manifest.Recover;
     ExpansionUTC := UtcTimestamp(UtcNow);
     LegacyCopy := False;

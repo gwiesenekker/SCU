@@ -39,8 +39,9 @@ def build_gui(args, output):
         unit.set('Value', str((ROOT / template).parent / unit.get('Value')))
         filename = output / Path(template).name
         tree.write(filename, encoding='utf-8', xml_declaration=True)
-        command = [args.lazbuild, '--build-all', '--os=win64', '--cpu=x86_64', '--widgetset=win32',
-                   '--compiler=' + args.fpc]
+        command = [args.lazbuild, '--build-all', '--os=win64', '--cpu=x86_64', '--widgetset=win32']
+        if args.fpc != 'fpc':
+            command.append('--compiler=' + (shutil.which(args.fpc) or args.fpc))
         command += ['--opt=' + subprocess.list2cmdline([option]) for option in args.fpc_option]
         command.append(str(filename))
         subprocess.run(command, cwd=ROOT, check=True)

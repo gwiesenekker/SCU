@@ -5,6 +5,7 @@ unit ScuPlatformPathsWindows;
 interface
 
 uses Classes;
+procedure EnsureStateDirectory(const Path: string);
 
 procedure LoadInvocationArguments(Arguments: TStrings);
 
@@ -21,6 +22,25 @@ function PathsEqual(const Left, Right: string): Boolean;
 implementation
 
 uses Windows, SysUtils, ScuErrors;
+procedure EnsureStateDirectory(const Path: string);
+var Attributes: DWORD; Parent: string;
+begin
+  Attributes := GetFileAttributesW(PWideChar(NativeFilePath(Path)));
+  if Attributes <> INVALID_FILE_ATTRIBUTES then
+  begin
+    if (Attributes and FILE_ATTRIBUTE_DIRECTORY) = 0 then raise EScuError.Create('Expected a state directory: ' + Path);
+    Exit;
+  end;
+  Parent := ExtractFileDir(ExcludeTrailingPathDelimiter(Path));
+  if (Parent = '') or (Parent = Path) then RaiseSystemError('Could not locate state directory ' + Path, GetLastError);
+  EnsureStateDirectory(Parent);
+  if CreateDirectoryW(PWideChar(NativeFilePath(Path)), nil) then Exit;
+  if GetLastError <> ERROR_ALREADY_EXISTS then RaiseSystemError('Could not create state directory ' + Path, GetLastError);
+  Attributes := GetFileAttributesW(PWideChar(NativeFilePath(Path)));
+  if (Attributes = INVALID_FILE_ATTRIBUTES) or ((Attributes and FILE_ATTRIBUTE_DIRECTORY) = 0) then
+    raise EScuError.Create('Expected a state directory: ' + Path);
+end;
+
 
 type
   TWideArgumentArray = array[0..65535] of PWideChar;

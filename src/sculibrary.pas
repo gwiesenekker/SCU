@@ -5,7 +5,7 @@ unit ScuLibrary;
 interface
 
 uses
-  Classes, Contnrs, FPJSON, ScuLibraryTypes, ScuLibraryQueries, ScuLibraryModel, ScuLibraryStore, ScuVersions, ScuSQLite{$IFDEF WINDOWS}, ScuExportNames{$ENDIF};
+  Classes, Contnrs, FPJSON, ScuLibraryTypes, ScuLibraryQueries, ScuLibraryModel, ScuLibraryStore, ScuVersions, ScuSQLite, ScuExportNames;
 
 const
   CurrentDeckVersionSelector = ScuLibraryTypes.CurrentDeckVersionSelector;
@@ -38,12 +38,15 @@ type
 
   TDeckLibrary = class
   strict private
+    FOutputOwners: TFPHashList;
+    FOutputKeys: TExportFileKeys;
     FWorkingSources: TFPHashList;
     {$IFDEF WINDOWS}FWorkingSourceKeys: TExportFileKeys;{$ENDIF}
     FStore: TLibraryStore;
     FQueries: TLibraryQueries;
     FModified: Boolean;
     FChangeCount: QWord;
+    procedure CheckOutputOwner(Database: TSQLiteLibrary; const Name, Path: string);
     procedure MarkModified;
     function Versions: TVersionHistory;
     function GetRevision: Integer;
@@ -177,6 +180,8 @@ end;
 
 destructor TDeckLibrary.Destroy;
 begin
+  FOutputOwners.Free;
+  FOutputKeys.Free;
   FWorkingSources.Free;
   {$IFDEF WINDOWS}FWorkingSourceKeys.Free;{$ENDIF}
   FQueries.Free;
@@ -253,6 +258,31 @@ begin
     raise EScuError.CreateFmt('Version %s is locked. Start a new version first.', [CurrentVersion]);
 end;
 
+procedure TDeckLibrary.CheckOutputOwner(Database: TSQLiteLibrary; const Name, Path: string);
+var Entry: TDeckListEntry; Key, SourceName: string; Sequence: PtrInt; Owners: TFPHashList;
+begin
+  if not Assigned(FOutputOwners) then
+  begin
+    if not Assigned(FOutputKeys) then FOutputKeys := TExportFileKeys.Create;
+    Owners := TFPHashList.Create;
+    try
+      for Entry in DeckList(Revision) do
+      begin
+        CheckSessionInterrupt;
+        if FStore[Entry.Sequence - 1].Loaded then SourceName := FStore[Entry.Sequence - 1].SourcePath
+        else SourceName := Database.Revisions.ReadSourcePath(Entry.Sequence);
+        Key := FOutputKeys.Key(SourceName);
+        Owners.Add(Key, Pointer(PtrInt(Entry.Sequence)));
+      end;
+      FOutputOwners := Owners;
+    except Owners.Free; raise; end;
+  end;
+  Sequence := PtrInt(FOutputOwners.Find(FOutputKeys.Key(Path)));
+  if (Sequence <> 0) and (FStore[Sequence - 1].Name <> Name) then
+    raise EScuError.CreateFmt('Source filename "%s" already belongs to deck "%s".',
+      [Path, FStore[Sequence - 1].Name]);
+end;
+
 function TDeckLibrary.Store(Database: TSQLiteLibrary; const Deck: string; const Source: RawByteString;
   Options: TDeckStoreOptions; const Prefix: string; const SourcePath: string): Integer;
 var
@@ -283,6 +313,8 @@ begin
   if (VersionTracker <> '') and
     (SameStoragePath(StoredPath, VersionTracker) or SameStoragePath(Name, VersionTracker)) then
     raise EScuError.Create(VersionTracker + ' is the library version tracker. Use edit_version_tracker.');
+  if not Assigned(Previous) or Previous.Deleted or (Previous.SourcePath <> StoredPath) then
+    CheckOutputOwner(Database, Name, StoredPath);
   CommentPrefix := Prefix;
   if (CommentPrefix = '') and Assigned(Previous) then
     CommentPrefix := Previous.CommentPrefix;
@@ -302,6 +334,10 @@ begin
   Payload.Add('source_path_bytes', EncodeBytesHex(StoredPath));
   Payload.Add('file_backed', FileBacked);
   Result := AppendDeckRevision(Name, Payload);
+  if Assigned(FOutputOwners) then
+    if Assigned(Previous) and (Previous.SourcePath <> StoredPath) then FreeAndNil(FOutputOwners)
+    else if FOutputOwners.Find(FOutputKeys.Key(StoredPath)) = nil then
+      FOutputOwners.Add(FOutputKeys.Key(StoredPath), Pointer(PtrInt(Result)));
 end;
 
 function TDeckLibrary.StoredSourcePath(Database: TSQLiteLibrary; Sequence: Integer): string;
@@ -391,6 +427,7 @@ begin
   Payload.Add('source_path_bytes', EncodeBytesHex(FStore.PayloadAt(PreviousRevision - 1, Database).SourcePath));
   Payload.Add('file_backed', FStore.PayloadAt(PreviousRevision - 1, Database).FileBacked);
   Result := AppendDeckRevision(Name, Payload);
+  FreeAndNil(FOutputOwners);
 end;
 
 function TDeckLibrary.RevisionDeletedAt(Sequence: Integer): Boolean;
@@ -678,6 +715,7 @@ var
 begin
   Base := VersionHistory[VersionCount - 1].BaseRevision;
   FStore.Header.DeleteVersion(Name, Revision, DeleteRevisions);
+  FreeAndNil(FOutputOwners);
   while Revision > Base do
     FStore.RemoveLast;
   if Base = 0 then

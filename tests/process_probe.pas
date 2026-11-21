@@ -115,6 +115,13 @@ begin
   try
     try
       Mode := Arg(1);
+      {$IFDEF WINDOWS}
+      if Mode = 'resolve' then
+      begin
+        SetEnvironmentVariableW('PATH', PWideChar(UTF8Decode(Arg(2))));
+        WriteLn(ResolveWindowsExecutable(Arg(3)));
+      end else
+      {$ENDIF}
       if Mode = 'echo' then
       begin
         for Index := 2 to ArgCount do HexLine('arg', Arg(Index));

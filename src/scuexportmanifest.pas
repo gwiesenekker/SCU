@@ -5,7 +5,7 @@ unit ScuExportManifest;
 interface
 
 uses
-  Classes, Contnrs, ScuErrors, ScuExportTypes, ScuLocks, ScuExportNames;
+  Classes, Contnrs, ScuSQLiteRevision, ScuErrors, ScuExportTypes, ScuLocks, ScuExportNames;
 
 const
   ExportManifestName = '.scu-exports.json';
@@ -24,6 +24,7 @@ type
   TExportManifest = class
   private
     FPath, FStageDirectory: string;
+    FRevisions: TSQLiteRevisionStore; // Borrowed while planning publication.
     FStageLock: TFileLock;
     FFiles: TFPHashObjectList;
     FRemovedCount: Integer;
@@ -39,8 +40,9 @@ type
     procedure CompactRecords;
     procedure Save(IncludePlan: Boolean = False);
     procedure Load;
+    procedure RequireStoredSource(const Entry: TExportRecord; const Path: string; const Bytes: RawByteString);
   public
-    constructor Create(const Directory: string);
+    constructor Create(const Directory: string; Revisions: TSQLiteRevisionStore = nil);
     destructor Destroy; override;
     // Recovery is explicit and must run while the caller holds the directory lock.
     procedure Recover;
@@ -163,7 +165,7 @@ begin
   except on E: EScuError do raise EScuError.Create(Context + ': ' + E.Message); end;
   if (Name = '') or (Name = '.') or (Name = '..') or (Pos(#0, Name) > 0) or
     (ExtractFileName(Name) <> Name) or (Name = ExportManifestName) then
-    raise EScuError.Create(Context + ': invalid or duplicate file name.');
+    raise EScuError.Create(Context + ': invalid or duplicate file name: "' + StringToJSONString(Name) + '".');
   if Assigned(Entry.Find('library_bytes')) then
     Result.LibraryPath := DecodeKey(Field(Entry, 'library_bytes', jtString, Context).AsString, Context)
   else
@@ -222,9 +224,10 @@ begin
   end;
 end;
 
-constructor TExportManifest.Create(const Directory: string);
+constructor TExportManifest.Create(const Directory: string; Revisions: TSQLiteRevisionStore);
 begin
   inherited Create;
+  FRevisions := Revisions;
   FPath := IncludeTrailingPathDelimiter(CanonicalDirectory(Directory)) + ExportManifestName;
   FFiles := TFPHashObjectList.Create(True);
   FPending := TObjectList.Create(True);
@@ -273,7 +276,7 @@ var
     if (Previous <> '') and not IsHexDigest(Previous, 64) then
       raise EScuError.Create(Context + ': invalid previous output checksum.');
     if FPlanNames.Find(FileKey(Entry.FileName)) <> nil then
-      raise EScuError.Create(Context + ': duplicate pending file name.');
+      raise EScuError.Create(Context + ': duplicate pending file name: ' + StringToJSONString(Entry.FileName));
     Plan := TExportPlan.Create;
     Plan.Data := Entry;
     Plan.PreviousHash := Previous;
@@ -300,7 +303,7 @@ begin
           raise EScuError.Create(Context + ': expected a file record.');
         Entry := ReadRecord(TJSONObject(Files[Index]), Context);
         if Assigned(FFiles.Find(FileKey(Entry.FileName))) then
-          raise EScuError.Create(Context + ': invalid or duplicate file name.');
+          raise EScuError.Create(Context + ': invalid or duplicate file name: "' + StringToJSONString(Entry.FileName) + '".');
         Install(Entry);
       end;
       if Assigned(Document.Find('pending')) then
@@ -494,6 +497,13 @@ begin
   Save;
 end;
 
+procedure TExportManifest.RequireStoredSource(const Entry: TExportRecord; const Path: string; const Bytes: RawByteString);
+begin
+  if Entry.Mode <> emExtract then Exit;
+  if not Assigned(FRevisions) or not FRevisions.HasSource(Entry.Deck, Entry.DeckVersion, DeckSHA1(Bytes)) then
+    raise EExportOverwriteRequired.Create(Path, 'Deleted revision');
+end;
+
 procedure TExportManifest.PlanExport(const LibraryPath, OutputPath, Deck, Version, DeckVersion: string;
   Mode: TExportMode; const ExpansionUTC, Prefix: string; const Bytes: RawByteString;
   ReplaceExisting: Boolean);
@@ -501,6 +511,7 @@ var
   Plan: TExportPlan;
   Existing: TExportItem;
   Name, Previous, CanonicalLibrary: string;
+  OnDisk: RawByteString;
   Stream: TFileStream;
 begin
   if FPending.Count <> 0 then
@@ -510,7 +521,11 @@ begin
   ValidateExportFileName(Name);
   CheckExportTarget(OutputPath);
   Previous := '';
-  if RegularFileExists(OutputPath) then Previous := AuditSHA256(ReadBytes(OutputPath, MaxDeckSize));
+  if RegularFileExists(OutputPath) then
+  begin
+    OnDisk := ReadBytes(OutputPath, MaxDeckSize);
+    Previous := AuditSHA256(OnDisk);
+  end;
   CanonicalLibrary := CanonicalFile(LibraryPath);
   Existing := TExportItem(FFiles.Find(FileKey(Name)));
   if (Previous <> '') and (Previous <> AuditSHA256(Bytes)) and not ReplaceExisting then
@@ -520,6 +535,7 @@ begin
       raise EExportOverwriteRequired.Create(OutputPath, 'Other library');
     if Existing.Data.Interrupted then raise EExportOverwriteRequired.Create(OutputPath, 'Interrupted export');
     if Existing.Data.SHA256 <> Previous then raise EExportOverwriteRequired.Create(OutputPath, 'Locally modified');
+    RequireStoredSource(Existing.Data, OutputPath, OnDisk);
   end;
   if FPlanNames.Find(FileKey(Name)) <> nil then
     raise EScuError.Create('Duplicate output path in export batch: "' + OutputPath + '".');
@@ -558,6 +574,7 @@ var
   Plan: TExportPlan;
   Existing: TExportItem;
   Name, Previous: string;
+  OnDisk: RawByteString;
 begin
   if FPending.Count <> 0 then raise EScuError.Create('Recover pending exports before planning cleanup.');
   ValidatePlanPath(LibraryPath, OutputPath);
@@ -569,7 +586,11 @@ begin
   if FPlanNames.Find(FileKey(Name)) <> nil then
     raise EScuError.Create('Duplicate output path in release cleanup.');
   Previous := '';
-  if RegularFileExists(OutputPath) then Previous := AuditSHA256(ReadBytes(OutputPath, MaxDeckSize));
+  if RegularFileExists(OutputPath) then
+  begin
+    OnDisk := ReadBytes(OutputPath, MaxDeckSize);
+    Previous := AuditSHA256(OnDisk);
+  end;
   Existing := TExportItem(FFiles.Find(FileKey(Name)));
   if (Previous <> '') and not ReplaceExisting and
     (not Assigned(Existing) or (not SameExportLibrary(Existing.Data.LibraryPath, CanonicalFile(LibraryPath)))) then
@@ -577,6 +598,8 @@ begin
   if Assigned(Existing) and not ReplaceExisting and (Previous <> '') and
     ((Existing.Data.SHA256 <> Previous) or (not SameExportLibrary(Existing.Data.LibraryPath, CanonicalFile(LibraryPath)))) then
     raise EScuError.Create('Refusing to remove edited release output "' + OutputPath + '". Use overwrite=yes to remove it explicitly.');
+  if (Previous <> '') and not ReplaceExisting and Assigned(Existing) then
+    RequireStoredSource(Existing.Data, OutputPath, OnDisk);
   Plan := TExportPlan.Create;
   FPlanned.Add(Plan);
   FPlanNames.Add(FileKey(Name), Plan);

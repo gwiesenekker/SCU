@@ -64,9 +64,9 @@ begin
     FExports.Recover;
   end;
   case FExports.FileMode(RelativePath) of
-    emTracker:
+    emTracker: if not Context.Command.Provided['deck_name'] then
       begin
-        Context.Output.WriteLine(RelativePath + ' has been ignored (version tracker)');
+        Context.Output.WriteLine(RelativePath + ' has been ignored (version tracker). Use import_deck with the deck name to adopt this former tracker.');
         Exit;
       end;
     emExpand: raise EScuError.Create('Refusing to import generated expansion "' + Path + '". Edit the stored template with edit_deck instead.');

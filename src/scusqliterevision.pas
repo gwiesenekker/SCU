@@ -17,6 +17,8 @@ type
   public
     constructor Create(Database: TSQLiteConnection; SchemaVersion: Integer);
     function StateKey: string;
+    function ReadSourcePath(Sequence: Integer): RawByteString;
+    function HasSource(const Deck, DeckVersion, SHA1: string): Boolean;
     function RevisionCount: Integer;
     // The caller owns the returned JSON object.
     function ReadMetadata: TJSONObject;
@@ -34,7 +36,7 @@ type
 implementation
 
 uses
-  SysUtils, ScuErrors, ScuJSON, ScuRevisionJSON;
+  SysUtils, ScuErrors, ScuCodec, ScuJSON, ScuRevisionJSON;
 
 constructor TSQLiteRevisionStore.Create(Database: TSQLiteConnection; SchemaVersion: Integer);
 begin
@@ -46,6 +48,36 @@ end;
 function TSQLiteRevisionStore.StateKey: string;
 begin
   Result := FDatabase.Scalar('SELECT identity || '':'' || generation FROM library WHERE id = 1');
+end;
+
+function TSQLiteRevisionStore.ReadSourcePath(Sequence: Integer): RawByteString;
+var Statement: TSQLiteStatement;
+begin
+  // Return just the filename; building the ownership index must not retain
+  // the compressed sources of every other deck in memory.
+  Statement := FDatabase.Prepare('SELECT json_extract(payload, ''$.source_path_bytes''), ' +
+    'coalesce(json_extract(payload, ''$.source_path''), deck_name) FROM deck_revisions WHERE sequence=?');
+  try
+    Statement.Bind(1, Sequence);
+    if not Statement.Step then raise EScuError.CreateFmt('Missing deck revision %d.', [Sequence]);
+    Result := Statement.Text[0];
+    if Result <> '' then Result := DecodeBytesHex(Result, 'Deck source filename')
+    else Result := Statement.Text[1];
+  finally Statement.Free; end;
+end;
+
+function TSQLiteRevisionStore.HasSource(const Deck, DeckVersion, SHA1: string): Boolean;
+var Separator: Integer; Statement: TSQLiteStatement;
+begin
+  Separator := Pos('-', DeckVersion);
+  Statement := FDatabase.Prepare('SELECT json_extract(payload, ''$.sha1'') FROM deck_revisions ' +
+    'WHERE deck_name=? AND library_version=? AND deck_revision=? AND deleted=0');
+  try
+    Statement.Bind(1, Deck);
+    Statement.Bind(2, Copy(DeckVersion, 1, Separator - 1));
+    Statement.Bind(3, Copy(DeckVersion, Separator + 1, MaxInt));
+    Result := Statement.Step and (Statement.Text[0] = SHA1);
+  finally Statement.Free; end;
 end;
 
 function TSQLiteRevisionStore.RevisionCount: Integer;

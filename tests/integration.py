@@ -1445,6 +1445,7 @@ int mkstemp(char *pattern) {
         source = self.root / "source.scu"
         source.write_bytes(b"source")
         self.assertIn("new", self.run_scu("impd", "missing", source.name))
+        self.run_scu("deld", "missing")
         self.store("main", b"original")
         self.run_scu("conl", "ri=0.999")
         self.run_scu("impd", "main", source.name)
@@ -4781,12 +4782,12 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
             self.assertEqual(process.wait(timeout=5), 0)
 
     def test_concurrent_stores_preserve_all_revisions(self):
-        source = self.root / "input"
-        source.write_bytes(b"same bytes")
+        for number in range(8):
+            (self.root / f"deck{number}").write_bytes(b"same bytes")
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as workers:
             list(workers.map(
-                lambda number: self.run_scu("import_deck", f"deck{number}", source.name), range(8)
+                lambda number: self.run_scu("import_deck", f"deck{number}"), range(8)
             ))
         self.assertEqual(len(self.table_data(self.run_scu("disdl")).splitlines()), 8)
         self.assertIn("records=20 interrupted=0", self.run_scu("verify_audit_trail"))
@@ -5403,8 +5404,8 @@ int mkstemp(char *pattern) {
         # Reproduce the old importer's audited numeric staging associations.
         (self.root / "0").write_bytes(b"inherited")
         self.run_scu("impd", "other.pas", "0")
-        (self.root / "0").write_bytes(b"new")
-        self.run_scu("impd", "main.pas", "0")
+        (self.root / "1").write_bytes(b"new")
+        self.run_scu("impd", "main.pas", "1")
         (self.root / "manifest.json").write_text(json.dumps({
             "format": 1, "source_archive": str(archive), "history": [], "files": []}))
         self.run_scu("impd", "scu-import-manifest.json", "manifest.json")
@@ -5602,8 +5603,8 @@ char *mkdtemp(char *pattern) {
     def make_old_importer_fixture(self):
         (self.root / "0").write_bytes(b"first")
         self.run_scu("impd", "first.pas", "0")
-        (self.root / "0").write_bytes(b"second")
-        self.run_scu("impd", "second.pas", "0")
+        (self.root / "1").write_bytes(b"second")
+        self.run_scu("impd", "second.pas", "1")
         (self.root / "manifest.json").write_text(json.dumps({
             "format": 1, "source_archive": "ARCHIVE", "history": [], "files": []}))
         self.run_scu("impd", "scu-import-manifest.json", "manifest.json")

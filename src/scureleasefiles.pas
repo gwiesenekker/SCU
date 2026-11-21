@@ -69,8 +69,9 @@ end;
 procedure CollectReleaseCleanupFiles(const Directory, LibraryPath: string;
   Patterns, Selected, Tracked, Names: TStrings);
 {$IFDEF WINDOWS}
-var Selection: TStringList;
+var Selection: TStringList; Pattern: string;
 begin
+  for Pattern in Patterns do ValidateFilePattern(Pattern);
   Selection := NewCleanupFileList;
   try
     Selection.Sorted := False;

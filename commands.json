@@ -523,7 +523,7 @@
           "aliases": ["ilsh"],
           "value": "yes",
           "prompt_for_default": false,
-          "description": "Skip text lines starting with the deck comment prefix followed by ' SCU REVISION '. Set no to include them.",
+          "description": "Skip any line starting with the deck comment prefix followed by ' SCU REVISION '. Set no to include them.",
           "values": [
             {
               "name": "yes",

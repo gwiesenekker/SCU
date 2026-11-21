@@ -49,7 +49,7 @@ begin
   Field(Manifest, 'history', jtArray);
   Payload := Manifest.AsJSON;
   Result := AuditSHA256(Payload);
-  Statement := Database.Prepare('INSERT INTO version_import_manifests(version, payload) VALUES (?, ?)');
+  Statement := Database.Prepare('INSERT OR REPLACE INTO version_import_manifests(version, payload) VALUES (?, ?)');
   try
     Statement.Bind(1, Version);
     Statement.Bind(2, Payload);

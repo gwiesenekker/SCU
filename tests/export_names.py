@@ -85,7 +85,7 @@ class ExportNamesTests(unittest.TestCase):
     def recovery(self, names):
         self.initialize()
         if len(names) > 1:
-            self.cli('cred', 'other.c', 'from_file=source.c')
+            self.cli('cred', 'other.c')
         with closing(sqlite3.connect(self.library)) as db:
             document = json.loads(db.execute('SELECT payload FROM library').fetchone()[0])
             document['revisions'] = [json.loads(p) for p, in db.execute(
@@ -206,6 +206,8 @@ class ExportNamesTests(unittest.TestCase):
         restored = self.recovery(['nul.pas'])
         self.cli('extv', 'output_directory=' + argument(self.output), 'build=no',
                  library=restored, error=b'reserved device')
+        self.cli('extv', 'output_directory=' + argument(self.output), 'build=no',
+                 library=restored, error=b'nul.pas')
         self.assertEqual([p for p in self.output.iterdir() if p.name != '.scu-output.lock'], [])
 
     @unittest.skipUnless(WINDOWS, 'Windows complete release validation')

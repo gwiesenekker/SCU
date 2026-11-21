@@ -8,19 +8,33 @@ end;
 type
   TTestMainForm = class(TScuMainForm)
   public
+    AllowUnlock: Boolean;
     CloseAnswer, ClosePrompts, ErrorDialogs: Integer;
     LastDialogCommand, LastDialogDetails, PrefilledVersion: string;
     procedure AnswerLockDialog(Answer: PtrInt);
     procedure DisplayCommandError(const CommandName, Details: string); override;
+    function ConfirmUnlock(const Version: string): Boolean; override;
     function PromptNewVersion(var Version: string): Boolean; override;
     function ConfirmDeckClose(Document: TScuEditorTab): Integer; override;
   end;
+  TCountingTab = class(TScuEditorTab)
+  public
+    Reads: Integer;
+    function SourceBytes: RawByteString; override;
+  end;
   TSplitterAccess = class(TSplitter);
   TTabBarAccess = class(TScuTabBar);
+function TCountingTab.SourceBytes: RawByteString;
+begin
+  Inc(Reads);
+  Result := inherited SourceBytes;
+end;
 function TTestMainForm.ConfirmDeckClose(Document: TScuEditorTab): Integer;
 begin Inc(ClosePrompts); Result := CloseAnswer; end;
 procedure TTestMainForm.DisplayCommandError(const CommandName, Details: string);
 begin Inc(ErrorDialogs); LastDialogCommand := CommandName; LastDialogDetails := Details; end;
+function TTestMainForm.ConfirmUnlock(const Version: string): Boolean;
+begin Result := AllowUnlock and (Version = '1.0'); end;
 function TTestMainForm.PromptNewVersion(var Version: string): Boolean;
 begin PrefilledVersion := Version; Result := True; end;
 var Main: TTestMainForm; Errors: TErrorHandler; Checks: Integer; InvocationArguments: TStringList;
@@ -227,6 +241,41 @@ begin
   try PNG.Assign(Bitmap); PNG.SaveToFile(Path);
   finally PNG.Free; Bitmap.Free; end;
 end;
+procedure CheckDeckLineEndings;
+var Source: TGuiDeck; Tab: TCountingTab; Configuration: TJSONObject; Options: TScuOptionsDialog;
+begin
+  Source.SourceName := 'newline-probe';
+  Source.Bytes := 'one' + #13 + 'two' + #13;
+  Tab := TCountingTab.CreateDeck(Main, CheckArgument(1), Source.SourceName, Source);
+  try
+    Check(Tab.SourceBytes = Source.Bytes, 'Lone CR deck round trips');
+    Tab.Reads := 0;
+    Tab.Editor.SelText := 'a';
+    Tab.Editor.SelText := 'b';
+    Check((Tab.Reads = 0) and (Tab.Caption = Source.SourceName + '*'), 'Typing marks the tab without rebuilding source');
+    Check(Tab.Dirty and (Tab.Reads = 1), 'An exact dirty check reconciles the pending changes once');
+  finally Tab.Free; end;
+  Source.Bytes := Source.Bytes + #10;
+  try
+    Tab := TCountingTab.CreateDeck(Main, CheckArgument(1), Source.SourceName, Source);
+    Tab.Free;
+    Check(False, 'Accepted mixed line endings');
+  except on E: Exception do Check(Pos('Mixed line endings', E.Message) > 0, E.Message); end;
+  Configuration := TJSONObject.Create;
+  try
+    Configuration.Add('version_tracker_template', 'one' + #13#10 + 'two');
+    Options := TScuOptionsDialog.CreateOptions(Main, Main.Font, Configuration, True);
+    try
+      Options.TrackerField.Text := 'new' + LineEnding + 'text';
+      Check(Options.TrackerBytes = 'new' + #13#10 + 'text', 'Template keeps CRLF');
+    finally Options.Free; end;
+    Configuration.Strings['version_tracker_template'] := Source.Bytes;
+    Options := TScuOptionsDialog.CreateOptions(Main, Main.Font, Configuration, True);
+    try Check(Options.TrackerField.ReadOnly and not Options.TrackerChanged, 'Mixed template protected');
+    finally Options.Free; end;
+  finally Configuration.Free; end;
+end;
+
 var Tab, Other: TScuEditorTab; ListMarker: TObject; Path, OldDisk: string; I: Integer; EditorFont: TFont; BeforeAudit: Int64; OriginalBytes, OriginalDisk: RawByteString; OriginalVersion: string; Configuration: TJSONObject; State: TGuiLibraryState;
   Options: TScuOptionsDialog; VersionItem, LockItem, UnlockItem: TMenuItem; BeforeDialogs: Integer;
 begin
@@ -242,7 +291,7 @@ begin
   Errors := TErrorHandler.Create; Application.OnException := @Errors.Failed;
   Main := TTestMainForm.Create(nil);
   try
-    Main.Show; Application.ProcessMessages;
+    Main.Show; CheckDeckLineEndings; Application.ProcessMessages;
     CheckPaneDrag(Main.LogView.Parent, alBottom);
     CheckPaneDrag(Main.DeckList.Parent, alLeft);
     CheckPaneDrag(Main.DiffView.Parent, alRight);
@@ -457,6 +506,9 @@ begin
     LockItem.Click; Pump;
     Check(UnlockItem.Enabled and not LockItem.Enabled, 'Lock enables Unlock');
     UnlockItem.Click; Pump;
+    Check(ReadGuiLibraryState(CheckArgument(1)).Locked, 'Declining unlock keeps the lock description');
+    Main.AllowUnlock := True;
+    UnlockItem.Click; Pump;
     Check(not ReadGuiLibraryState(CheckArgument(1)).Locked and LockItem.Enabled, 'Unlock reopens current version');
     Application.QueueAsyncCall(@Main.AnswerLockDialog, mrOK);
     LockItem.Click; Pump;
@@ -512,7 +564,7 @@ begin
       Check(Configuration.Get('version_increment','') = '0.05', 'Version increment saved');
       Check(Configuration.Get('revision_increment','') = '0.002', 'Revision increment saved');
       Check(Configuration.Get('version_tracker','') = 'version.h', 'Version tracker saved');
-      Check(Configuration.Get('version_tracker_template','') = '#define BUILD "SCU$VERSION"' + LineEnding +
+      Check(Configuration.Get('version_tracker_template','') = '#define BUILD "SCU$VERSION"' + #10 +
         '// generated', 'Multiline tracker template persisted');
       Check(Configuration.Get('release_directory','') = 'gui-release', 'Release directory saved');
       Check(TJSONArray(Configuration.Find('file_patterns')).Count = 2, 'Monitored patterns saved');

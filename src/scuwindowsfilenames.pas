@@ -8,7 +8,7 @@ procedure ValidateWindowsOutputPath(const Path: string);
 procedure CheckWindowsOutputTarget(const Path: string);
 {$ENDIF}
 implementation
-uses SysUtils, Classes, ScuErrors{$IFDEF WINDOWS}, Windows, ScuPlatformPathsWindows{$ENDIF};
+uses SysUtils, Classes, FPJSON, ScuErrors{$IFDEF WINDOWS}, Windows, ScuPlatformPathsWindows{$ENDIF};
 {$IFDEF WINDOWS}
 function FinalPathName(Handle: THandle; Buffer: PWideChar; Capacity, Flags: DWORD): DWORD; stdcall;
   external 'kernel32.dll' name 'GetFinalPathNameByHandleW';
@@ -63,7 +63,21 @@ begin
     raise EScuError.Create('Windows ' + Kind + ' filename is reserved for SCU control files.');
 end;
 procedure ValidateWindowsFileName(const Name: RawByteString; const Kind: string);
-begin ValidateComponent(Name, Kind, True); end;
+var Hex: string;
+begin
+  try ValidateComponent(Name, Kind, True);
+  except on E: EScuError do
+    begin
+      if UTF8Encode(UTF8Decode(Name)) <> Name then
+      begin
+        SetLength(Hex, Length(Name) * 2);
+        if Name <> '' then BinToHex(PChar(Name), PChar(Hex), Length(Name));
+        raise EScuError.Create(E.Message + ' Filename bytes: ' + Hex);
+      end;
+      raise EScuError.Create(E.Message + ' Filename: "' + StringToJSONString(Name) + '".');
+    end;
+  end;
+end;
 {$IFDEF WINDOWS}
 procedure ValidateWindowsOutputPath(const Path: string);
 var Value: string; Parts: TStringList; Ch: Char; Start, Index, Slash: Integer;

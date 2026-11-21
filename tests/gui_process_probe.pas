@@ -97,7 +97,7 @@ begin
         begin
           Command.Free; Command := TScuCommand.Create('exit7', nil);
           Child.Start(RunningExecutablePath, 'child', Command); Wait;
-          if (Capture.Finished <> 2) or (Capture.Code <> {$IFDEF WINDOWS}7{$ELSE}(7 shl 8){$ENDIF}) then raise Exception.Create('Exit code not forwarded');
+          if (Capture.Finished <> 2) or (Capture.Code <> 7) then raise Exception.Create('Exit code not forwarded');
         end;
       end;
     finally Command.Free; Child.Free; Capture.Free; end;

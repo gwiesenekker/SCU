@@ -1,31 +1,36 @@
 unit ScuGuiTab;
 {$mode objfpc}{$H+}
 interface
-uses Classes, ComCtrls, SynEdit, ScuGuiReader;
+uses Classes, ExtCtrls, ComCtrls, SynEdit, ScuGuiReader;
 type
   TScuEditorTab = class(TTabSheet)
   private
     FEditor: TSynEdit;
     FDeck, FSourceName, FPath, FDiskHash, FLineBreak: string;
+    FCheck: TTimer;
+    FCached: RawByteString;
+    FBytesValid: Boolean;
     FStored, FSubmitted: RawByteString;
     FDiskExists, FDirty, FLoading: Boolean;
     FOnStateChanged: TNotifyEvent;
+    procedure Reconcile(Sender: TObject);
+    function GetDirty: Boolean;
     procedure Changed(Sender: TObject);
     procedure SetDirty(Value: Boolean);
     procedure LoadText(const Bytes: RawByteString);
   public
     constructor CreateDeck(AOwner: TComponent; const LibraryPath, Deck: string; const Source: TGuiDeck);
-    function SourceBytes: RawByteString;
+    function SourceBytes: RawByteString; virtual;
     procedure PrepareSave;
     procedure AcceptSave(const Stored: TGuiDeck);
     property Deck: string read FDeck;
     property SourceName: string read FSourceName;
-    property Dirty: Boolean read FDirty;
+    property Dirty: Boolean read GetDirty;
     property Editor: TSynEdit read FEditor;
     property OnStateChanged: TNotifyEvent read FOnStateChanged write FOnStateChanged;
   end;
 implementation
-uses ScuGuiPlatform, SysUtils, Controls, LazUTF8, ScuFiles, ScuCodec, ScuLibraryNames,
+uses ScuGuiLineEndings, ScuGuiPlatform, SysUtils, Controls, LazUTF8, ScuFiles, ScuCodec, ScuLibraryNames,
   SynHighlighterPas, SynHighlighterCpp;
 constructor TScuEditorTab.CreateDeck(AOwner: TComponent; const LibraryPath, Deck: string; const Source: TGuiDeck);
 var Working: RawByteString; Extension: string;
@@ -46,6 +51,10 @@ begin
   FEditor := TSynEdit.Create(Self);
   FEditor.Parent := Self; FEditor.Align := alClient;
   FEditor.Font.Name := DefaultGuiFont; FEditor.Font.Size := 11;
+  FCheck := TTimer.Create(Self);
+  FCheck.Enabled := False;
+  FCheck.Interval := 200;
+  FCheck.OnTimer := @Reconcile;
   FEditor.OnChange := @Changed;
   Extension := LowerCase(ExtractFileExt(FSourceName));
   if (Extension = '.pas') or (Extension = '.pp') or (Extension = '.lpr') then FEditor.Highlighter := TSynPasSyn.Create(Self)
@@ -57,9 +66,8 @@ end;
 procedure TScuEditorTab.LoadText(const Bytes: RawByteString);
 var SourceText: string; I, Start: Integer;
 begin
-  FLineBreak := #10;
-  I := Pos(#10, Bytes);
-  if (I > 1) and (Bytes[I-1] = #13) then FLineBreak := #13#10;
+  if not UniformLineEnding(Bytes, FLineBreak) then
+    raise Exception.Create('Mixed line endings in ' + FDeck + '. Use an external editor and import_deck to preserve them.');
   SourceText := StringReplace(Bytes, #13#10, #10, [rfReplaceAll]);
   SourceText := StringReplace(SourceText, #13, #10, [rfReplaceAll]);
   FLoading := True;
@@ -74,14 +82,30 @@ begin
   finally FEditor.Lines.EndUpdate; FLoading := False; end;
 end;
 function TScuEditorTab.SourceBytes: RawByteString;
-var I: Integer;
+var I: Integer; Size, Offset: SizeInt; Line: string;
 begin
-  Result := '';
+  if FBytesValid then Exit(FCached);
+  Size := 0;
   for I := 0 to FEditor.Lines.Count - 1 do
   begin
-    if I > 0 then Result := Result + FLineBreak;
-    Result := Result + FEditor.Lines[I];
+    if I > 0 then Inc(Size, Length(FLineBreak));
+    Inc(Size, Length(FEditor.Lines[I]));
   end;
+  SetLength(Result, Size);
+  Offset := 1;
+  for I := 0 to FEditor.Lines.Count - 1 do
+  begin
+    if I > 0 then
+    begin
+      Move(FLineBreak[1], Result[Offset], Length(FLineBreak));
+      Inc(Offset, Length(FLineBreak));
+    end;
+    Line := FEditor.Lines[I];
+    if Line <> '' then Move(Line[1], Result[Offset], Length(Line));
+    Inc(Offset, Length(Line));
+  end;
+  FCached := Result;
+  FBytesValid := True;
 end;
 procedure TScuEditorTab.SetDirty(Value: Boolean);
 begin
@@ -90,7 +114,23 @@ begin
   if Assigned(FOnStateChanged) then FOnStateChanged(Self);
 end;
 procedure TScuEditorTab.Changed(Sender: TObject);
-begin if not FLoading then SetDirty(SourceBytes <> FStored); end;
+begin
+  if FLoading then Exit;
+  FBytesValid := False;
+  FCheck.Enabled := False;
+  FCheck.Enabled := True;
+  SetDirty(True);
+end;
+procedure TScuEditorTab.Reconcile(Sender: TObject);
+begin
+  FCheck.Enabled := False;
+  if FDirty and (SourceBytes = FStored) then SetDirty(False);
+end;
+function TScuEditorTab.GetDirty: Boolean;
+begin
+  if FCheck.Enabled then Reconcile(nil);
+  Result := FDirty;
+end;
 procedure TScuEditorTab.PrepareSave;
 var Exists: Boolean; Bytes: RawByteString;
 begin

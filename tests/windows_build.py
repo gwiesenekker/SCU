@@ -141,6 +141,7 @@ class WindowsBuildTests(unittest.TestCase):
 
     def test_gui_build_uses_native_widgetset_local_projects_and_checks_after_build(self):
         self.args.gui = self.args.gui_test = True
+        self.args.fpc = 'fpc'
         calls = []
         templates = {name: (builder.ROOT / name).read_bytes() for name in ['gui/scu_gui.lpi', 'tests/gui_check.lpi']}
         def run(command, **kwargs):
@@ -148,6 +149,7 @@ class WindowsBuildTests(unittest.TestCase):
             if command[0] == self.args.fpc:
                 self.compile(command)
             elif command[0] == self.args.lazbuild:
+                self.assertFalse(any(arg.startswith('--compiler=') for arg in command))
                 self.assertIn('--widgetset=win32', command)
                 self.assertIn('--os=win64', command)
                 project = ET.parse(command[-1]).getroot()

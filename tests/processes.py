@@ -70,6 +70,13 @@ class ProcessTests(unittest.TestCase):
         self.assertIn(b'input-eof', result.stdout)
         self.assertIn(b'status=0', result.stdout)
 
+    @unittest.skipUnless(WINDOWS, "Windows executable lookup")
+    def test_bare_editor_resolves_from_path(self):
+        for directory in (self.directory, self.root):
+            (directory / "sample-editor.exe").touch()
+        result = self.run_probe("resolve", self.directory, "sample-editor", cwd=self.root)
+        self.assertEqual(result.stdout.decode().strip().casefold(), argument(self.directory / "sample-editor.exe").casefold())
+
     def test_nonzero_exit_status_is_preserved(self):
         self.assertIn(b'status=37', self.run_probe('run', 'self', self.directory, 'exit', '37').stdout)
 
