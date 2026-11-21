@@ -1,6 +1,6 @@
 program gui_check;
 {$mode objfpc}{$H+}
-uses {$IFDEF UNIX}cthreads,{$ENDIF} {$IFDEF WINDOWS}Windows, ScuPlatformProcessStringsWindows,{$ENDIF} Interfaces, Forms, Classes, SysUtils, Controls, StdCtrls, ExtCtrls,
+uses {$IFDEF UNIX}cthreads,{$ENDIF} {$IFDEF WINDOWS}Windows, ScuPlatformProcessStringsWindows,{$ENDIF} Interfaces, Forms, Classes, SysUtils, Controls, StdCtrls, ExtCtrls, ButtonPanel,
   ComCtrls, Graphics, Types, SynEdit, uManualForm, FPImage, Dialogs, Menus, FPJSON, ScuGuiOptions, LCLType, ScuGuiTabs, ScuGuiMain, ScuGuiTab, ScuFiles, ScuGuiReader, ScuGuiLiveDiff, ScuSQLite, ScuSQLiteDB, ScuPlatformPaths, ScuGuiPlatform;
 type TErrorHandler = class
   procedure Failed(Sender: TObject; E: Exception);
@@ -192,24 +192,30 @@ begin
   Check((Main.FromVersion.ItemIndex >= 0) and (Main.ToVersion.ItemIndex >= 0), 'Comparison selectors exist');
   Main.ToVersion.OnChange(Main.ToVersion);
 end;
+procedure SnapshotWindow(Window: TForm; const Path: string); forward;
 procedure TTestMainForm.AnswerLockDialog(Answer: PtrInt);
-var Dialog: TForm; I: Integer; Memo: TMemo; LabelFound: Boolean;
+var Dialog: TForm; I: Integer; Memo: TMemo; Buttons: TButtonPanel; LabelFound: Boolean;
 begin
   Dialog := nil;
   for I := 0 to Screen.FormCount - 1 do
     if fsModal in Screen.Forms[I].FormState then Dialog := Screen.Forms[I];
   Check(Assigned(Dialog), 'Lock description opens a modal dialog');
   Check(Dialog.Caption = 'Lock version 1.0', 'Lock dialog identifies the current version');
-  Memo := nil; LabelFound := False;
+  Memo := nil; Buttons := nil; LabelFound := False;
   for I := 0 to Dialog.ComponentCount - 1 do
   begin
+    if Dialog.Components[I] is TButtonPanel then Buttons := TButtonPanel(Dialog.Components[I]);
     if Dialog.Components[I] is TMemo then Memo := TMemo(Dialog.Components[I]);
     if Dialog.Components[I] is TLabel then
       LabelFound := LabelFound or (Pos('version 1.0', TLabel(Dialog.Components[I]).Caption) > 0);
   end;
   Check(LabelFound and Assigned(Memo), 'Current version is visible beside the multiline description');
+  if (Answer = mrCancel) and (ParamCount > 1) then
+    SnapshotWindow(Dialog, ChangeFileExt(CheckArgument(2), '-lock.png'));
   Memo.Text := 'First line' + LineEnding + 'Second line';
-  Dialog.ModalResult := Answer;
+  Check(Assigned(Buttons) and (Buttons.ButtonOrder = boDefault), 'Dialog uses platform button order');
+  Check(Buttons.OKButton.Caption = 'Lock version', 'Primary button names the action');
+  if Answer = mrCancel then Buttons.CancelButton.Click else Buttons.OKButton.Click;
 end;
 procedure SnapshotWindow(Window: TForm; const Path: string);
 var Bitmap: TBitmap; PNG: TPortableNetworkGraphic;

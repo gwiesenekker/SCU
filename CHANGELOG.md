@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Add Lock version and Unlock version to the GUI File menu. The lock dialog identifies the current version and accepts a multiline description.
+- Add Lock version and Unlock version to the GUI File menu. The lock dialog identifies the current version, accepts a multiline description, and uses the system dialog background and platform button order.
 
 - Fix dragging the deck, diff, and log pane dividers in the Linux GUI. The layout retains the selected pane proportions.
 
