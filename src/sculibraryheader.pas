@@ -52,6 +52,9 @@ type
   end;
 
 
+const
+  HostPlatform = {$IFDEF WINDOWS}'Windows'{$ELSE}{$IFDEF DARWIN}'macOS'{$ELSE}'Linux'{$ENDIF}{$ENDIF};
+
 function NewLibraryMetadata(const Version: string): TJSONObject;
 
 implementation
@@ -93,6 +96,7 @@ begin
     Header := TJSONObject.Create;
     Result.Add('header', Header);
     Header.Add('current_version', Version);
+    Header.Add('platform', HostPlatform);
     Header.Add('last_modified_deck', '');
     Header.Add('version_increment', DefaultVersionIncrement);
     Header.Add('revision_increment', DefaultRevisionIncrement);
@@ -268,6 +272,8 @@ begin
     for Index := 0 to FSerialized.Count - 1 do
       if FSerialized.Names[Index] <> 'versions' then
         Result.Add(FSerialized.Names[Index], FSerialized.Items[Index].Clone);
+    if not Assigned(Result.Find('platform')) then
+      Result.Add('platform', 'unknown');
     if not Assigned(Result.Find('file_patterns')) then
       Result.Add('file_patterns', TJSONArray.Create);
     if not Assigned(Result.Find('release_directory')) then

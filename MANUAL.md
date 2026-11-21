@@ -11,6 +11,11 @@ scu project.sqlite initialize_library
 scu project.sqlite
 ```
 
+The library summary shows the OS that created the library. When opening a
+library from another OS, check the warnings below the summary for decks whose
+output filenames could collide or be invalid. Run `disl` to repeat the check.
+An older library with no recorded platform shows `unknown`.
+
 At the `scu>` prompt, choose which files belong to the project and take the first snapshot. For a C project you might enter:
 
 ```text

@@ -24,7 +24,7 @@ function DisplayAuditTrail(var Context: TCommandContext): string;
 implementation
 
 uses
-  ScuImportManifest, ScuFiles, ScuCodec, ScuExportPaths, Classes, SysUtils, FPJSON, ScuAudit, ScuCommands, ScuErrors, ScuJSON, ScuLibrary, ScuOutput, ScuSignals, ScuVersions, ScuLibraryDisplay, ScuTable, ScuTerminal;
+  ScuLibraryPortability, ScuImportManifest, ScuFiles, ScuCodec, ScuExportPaths, Classes, SysUtils, FPJSON, ScuAudit, ScuCommands, ScuErrors, ScuJSON, ScuLibrary, ScuOutput, ScuSignals, ScuVersions, ScuLibraryDisplay, ScuTable, ScuTerminal;
 
 function InitializeLibrary(var Context: TCommandContext): string;
 begin
@@ -78,6 +78,7 @@ begin
       VersionStatus := 'unlocked';
     Configuration.Strings['current_version'] := Format('%s (%s)', [Context.LibraryFile.CurrentVersion, VersionStatus]);
     WriteLibraryConfiguration(Configuration, Context.Output, Context.Output.Columns);
+    ReportPlatformWarnings(Context, Configuration.Strings['platform']);
   finally
     Configuration.Free;
   end;

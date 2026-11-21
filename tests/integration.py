@@ -120,6 +120,7 @@ class ScuIntegration(portable_cli.PortableCliTests):
         with closing(sqlite3.connect(library)) as database:
             metadata = json.loads(database.execute("SELECT payload FROM library").fetchone()[0])
             header = metadata["header"]
+            self.assertEqual(header["platform"], "Linux")
             self.assertEqual(header["comment_prefix"], "#")
             self.assertEqual([v["name"] for v in header["versions"]], list(expected))
             self.assertTrue(all(v["locked"] and v["locked_utc"] for v in header["versions"]))
@@ -3610,6 +3611,23 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
 
         self.run_scu("extd", "sample", "result")
         self.assertEqual((self.root / "result").read_bytes(), b"prompt source\n")
+
+    def test_foreign_library_warnings_use_source_paths_and_volume_rules(self):
+        for deck, filename in (("composed", "café.c"), ("decomposed", "cafe\u0301.c"),
+                               ("device", "NUL.c"), ("removed", "aux.txt")):
+            (self.root / filename).write_text(deck)
+            self.run_scu("impd", deck, filename)
+        self.run_scu("deld", "removed")
+        document = self.read_library()
+        for origin, affected in (("Windows", {"device"}), ("macOS", {"composed", "decomposed"})):
+            document["header"]["platform"] = origin
+            recovery = self.root / "import.json"
+            recovery.write_text(json.dumps(document))
+            library = self.root / (origin + ".sqlite")
+            self.run_scu(library, "recl", recovery)
+            output = self.run_scu(library, "disl")
+            self.assertEqual(set(re.findall(r'^Warning .*?: deck "([^"]+)"', output, re.M)), affected)
+            self.run_scu(library, "verat")
 
     def test_library_columns_omit_history_and_preserve_header_and_unknown_attributes(self):
         self.run_scu("locv", "description=HISTORY_MARKER\nSecond line")

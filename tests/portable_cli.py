@@ -157,6 +157,38 @@ class PortableCliTests(unittest.TestCase):
             return [line.encode() for line, in database.execute("SELECT line FROM audit_records ORDER BY sequence")]
 
 
+    def test_creation_platform_and_cross_platform_filename_warnings(self):
+        host = "Windows" if WINE or os.name == "nt" else "Linux"
+        foreign = "Linux" if host == "Windows" else "Windows"
+        self.assertEqual(self.read_library()["header"]["platform"], host)
+        for name in ("Makefile", "makefile", "MAKEFILE", "ordinary", "gone"):
+            self.run_scu("cred", name)
+        self.run_scu("deld", "gone")
+        self.run_scu("locv", "First")
+        self.run_scu("crev", "1.1")
+        self.assertNotIn("Warning", self.run_scu("disl"))
+        document = self.read_library()
+        document["header"]["platform"] = foreign
+        recovery = self.root / "foreign.json"
+        recovery.write_text(json.dumps(document))
+        restored = self.root / "foreign.sqlite"
+        self.run_scu(restored, "recl", recovery)
+        output = self.run_scu(restored, "disl")
+        warnings = [line for line in output.splitlines() if line.startswith("Warning")]
+        self.assertEqual(len(warnings), 3)
+        for name in ("Makefile", "makefile", "MAKEFILE"):
+            self.assertTrue(any(f'deck "{name}", file "{name}"' in w for w in warnings))
+        self.assertEqual(json.loads(self.run_scu(restored, "disl", "json=yes"))["platform"], foreign)
+        self.run_scu(restored, "verat")
+
+        del document["header"]["platform"]
+        recovery.write_text(json.dumps(document))
+        legacy = self.root / "legacy.sqlite"
+        self.run_scu(legacy, "recl", recovery)
+        self.assertRegex(self.run_scu(legacy, "disl"), r"(?m)^platform +unknown$")
+        self.assertNotIn("platform", json.loads(self.run_scu(legacy, "disl", "json=yes")))
+        self.run_scu(legacy, "verat")
+
     def test_initialize_library_accepts_a_custom_initial_version(self):
         path = self.root / "custom.sqlite"
         self.assertEqual(self.run_scu(path, "inil", "v=0.003"), "Initialized version 0.003")

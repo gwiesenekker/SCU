@@ -77,6 +77,7 @@ type
     function RevisionDigest(Sequence: Integer; Database: TSQLiteLibrary): string;
     function Store(Database: TSQLiteLibrary; const Deck: string; const Source: RawByteString;
       Options: TDeckStoreOptions = []; const Prefix: string = ''; const SourcePath: string = ''): Integer;
+    function StoredSourcePath(Database: TSQLiteLibrary; Sequence: Integer): string;
     function DeckSourcePath(Database: TSQLiteLibrary; const Deck: string): string;
     function DeckFileBacked(Database: TSQLiteLibrary; const Deck: string): Boolean;
     function IsWorkingSourceFile(Database: TSQLiteLibrary; const FileName: string): Boolean;
@@ -291,6 +292,11 @@ begin
   Payload.Add('source_path_bytes', EncodeBytesHex(StoredPath));
   Payload.Add('file_backed', FileBacked);
   Result := AppendDeckRevision(Name, Payload);
+end;
+
+function TDeckLibrary.StoredSourcePath(Database: TSQLiteLibrary; Sequence: Integer): string;
+begin
+  Result := FStore.PayloadAt(Sequence - 1, Database).StoredSourcePath;
 end;
 
 function TDeckLibrary.DeckSourcePath(Database: TSQLiteLibrary; const Deck: string): string;

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Record the library creation platform and list cross-platform filename warnings in the opening summary.
+
 - Preserve deck-name case in commands, completion, file scans and archive imports. Linux libraries can track and export case-distinct sources independently.
 
 - Show why each file requires overwrite permission in the `extv` status column.

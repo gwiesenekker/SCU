@@ -3,12 +3,16 @@ unit ScuWindowsFileNames;
 interface
 procedure ValidateWindowsUTF8(const Value, Context: RawByteString);
 procedure ValidateWindowsFileName(const Name: RawByteString; const Kind: string);
+{$IFDEF WINDOWS}
 procedure ValidateWindowsOutputPath(const Path: string);
 procedure CheckWindowsOutputTarget(const Path: string);
+{$ENDIF}
 implementation
-uses Windows, SysUtils, Classes, ScuErrors, ScuPlatformPathsWindows;
+uses SysUtils, Classes, ScuErrors{$IFDEF WINDOWS}, Windows, ScuPlatformPathsWindows{$ENDIF};
+{$IFDEF WINDOWS}
 function FinalPathName(Handle: THandle; Buffer: PWideChar; Capacity, Flags: DWORD): DWORD; stdcall;
   external 'kernel32.dll' name 'GetFinalPathNameByHandleW';
+{$ENDIF}
 procedure ValidateWindowsUTF8(const Value, Context: RawByteString);
 var Wide: UnicodeString; Index: SizeInt; Code: Word;
 begin
@@ -60,6 +64,7 @@ begin
 end;
 procedure ValidateWindowsFileName(const Name: RawByteString; const Kind: string);
 begin ValidateComponent(Name, Kind, True); end;
+{$IFDEF WINDOWS}
 procedure ValidateWindowsOutputPath(const Path: string);
 var Value: string; Parts: TStringList; Ch: Char; Start, Index, Slash: Integer;
   Extended: Boolean;
@@ -154,4 +159,5 @@ begin
     raise EScuError.Create('Export filename is too long.');
   finally CloseHandle(Handle); end;
 end;
+{$ENDIF}
 end.

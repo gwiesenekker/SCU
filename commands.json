@@ -403,7 +403,7 @@
           ]
         }
       ],
-      "help": "Show the library path, followed by aligned configuration attributes and values, including current_version with its lock status in parentheses, previous_locked_version, editor, and build_command. Omit the versions array; use display_version_history for history. SCU also runs this command when opening an existing library at a terminal. Use json=yes for the complete JSON header."
+      "help": "Show the library path, followed by aligned configuration attributes and values, including current_version with its lock status in parentheses, previous_locked_version, editor, and build_command. Omit the versions array; use display_version_history for history. Show the creation platform and warn about potentially incompatible filenames in the current snapshot when opening on another OS. SCU also runs this command when opening an existing library at a terminal. Use json=yes for the complete JSON header."
     },
     {
       "name": "display_version",

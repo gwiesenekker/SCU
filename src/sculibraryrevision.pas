@@ -31,6 +31,7 @@ type
     procedure SetLegacyNumber(Value: Integer);
     procedure ValidateRecoveredSource(Sequence: Integer);
     function Decode: RawByteString;
+    function StoredSourcePath: string;
     function CloneJSON: TJSONObject;
     function Serialized: RawByteString;
     property Name: string read FName;
@@ -155,7 +156,7 @@ begin
   Result := Assigned(FPayload);
 end;
 
-function TLibraryRevision.GetSourcePath: string;
+function TLibraryRevision.StoredSourcePath: string;
 var RawPath: RawByteString;
 begin
   RequireLoaded;
@@ -163,8 +164,6 @@ begin
   if Assigned(FPayload.Find('source_path_bytes')) then
   begin
     Result := DecodeBytesHex(Field(FPayload, 'source_path_bytes', jtString, 'Deck source filename').AsString, 'Deck source filename');
-    if Pos('/', Result) > 0 then ValidateRelativeSourcePath(Result)
-    else ValidateSourceFileName(Result);
     Exit;
   end;
   if Assigned(FPayload.Find('source_path')) then
@@ -172,9 +171,15 @@ begin
     RawPath := Field(FPayload, 'source_path', jtString, 'Deck "' + Name + '" revision payload').AsString;
     SetCodePage(RawPath, CP_UTF8, False);
     Result := RawPath;
-    if Pos('/', Result) > 0 then ValidateRelativeSourcePath(Result)
-    else ValidateSourceFileName(Result);
   end;
+end;
+
+function TLibraryRevision.GetSourcePath: string;
+begin
+  Result := StoredSourcePath;
+  if not Assigned(FPayload.Find('source_path_bytes')) and not Assigned(FPayload.Find('source_path')) then Exit;
+  if Pos('/', Result) > 0 then ValidateRelativeSourcePath(Result)
+  else ValidateSourceFileName(Result);
 end;
 
 function TLibraryRevision.GetFileBacked: Boolean;

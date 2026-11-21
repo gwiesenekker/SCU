@@ -41,6 +41,7 @@ type
 
   TDeckListEntry = record
     Name, DeckVersion: string;
+    Sequence: Integer;
   end;
   TDeckListEntries = array of TDeckListEntry;
 

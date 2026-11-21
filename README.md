@@ -980,6 +980,14 @@ import time. Original date strings and HISTORY headings are retained in each
 version’s `import_manifest` metadata, alongside its exact original file
 list, filename mappings, byte counts, and SHA-1 checksums.
 
+New libraries record their creation OS in the read-only `platform` header attribute.
+Opening a library from another OS in an interactive session or GUI, or running
+`disl`, checks the current snapshot, including inherited decks. Warnings list
+deck names and their actual output filenames when case may affect exports or a
+Windows filename rule applies. For example, `Makefile` and `makefile` are distinct
+on Linux and collide on Windows. On macOS, case sensitivity depends on the volume.
+Older libraries show `platform unknown` and skip the comparison.
+
 Deck names are case-sensitive. Plain filenames retain their spelling as deck names,
 so `Makefile` is imported as `Makefile`. On Linux, `A.c` and `a.c` can be
 imported and exported side by side. Existing libraries keep their stored deck

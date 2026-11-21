@@ -103,6 +103,7 @@ begin
       if FStore[StoredIndex].Deleted then
         Continue;
       Result[Count].Name := Seen[Index];
+      Result[Count].Sequence := StoredIndex + 1;
       Result[Count].DeckVersion := DeckVersionAt(StoredIndex + 1);
       Inc(Count);
     end;
