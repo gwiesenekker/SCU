@@ -2,9 +2,13 @@ FPC ?= fpc
 FPCFLAGS ?= -O2
 LAZBUILD ?= lazbuild
 FPCRES ?= fpcres
+BINDIR ?= /tmp2/gwies/bin
 
-.PHONY: all test test-portable gui test-gui format-commands clean
+.PHONY: all install test test-portable gui test-gui format-commands clean
 all: build/scu build/commands.json
+
+install: build/scu
+	install -D -m 755 "$<" "$(BINDIR)/scu"
 
 src/scucommands.res: commands.json src/scucommands.rc tools/embed_commands.py
 	python3 tools/embed_commands.py --fpcres "$(FPCRES)"

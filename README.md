@@ -22,6 +22,10 @@ scu help
 make test
 ```
 
+Run `make install` to install the CLI as `/tmp2/gwies/bin/scu`. The target
+checks the current Git commit ID and rebuilds the executable when needed.
+To choose another directory, use `make install BINDIR="$HOME/.local/bin"`.
+
 The integration tests use Python 3 with SQLite JSON functions. Both executables
 embed the command catalog, including argument definitions, aliases and full help.
 `commands.json` is optional when deploying SCU; the required runtime libraries

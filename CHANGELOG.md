@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `make install` to build the CLI with the current commit ID and install it in `/tmp2/gwies/bin`.
+
 - Fix a Linux race when two releases first create the same output directory or its missing parents.
 
 - Remove working manifests and the SQLite working-file observation queue. `verd` compares files beside the library with the selected snapshot by default. Matching working files show `matches` in the status column and the revision in the `Deck version` column. Release publication and recovery retain their directory manifest.
