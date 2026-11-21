@@ -72,6 +72,7 @@ type
     procedure CloseDocument(Document: TScuEditorTab);
     procedure TabCloseRequested(Sender: TObject; Page: TTabSheet);
     procedure DocumentChanged(Sender: TObject);
+    procedure AboutClick(Sender: TObject);
     procedure ManualClick(Sender: TObject);
     procedure OpenClick(Sender: TObject);
     procedure CloseClick(Sender: TObject);
@@ -111,7 +112,7 @@ type
     property LastError: string read FLastError;
   end;
 implementation
-uses ButtonPanel, Dialogs, StdCtrls, LCLType, LCLProc, ScuGuiCommands, ScuGuiReader,
+uses ScuBuildInfo, ButtonPanel, Dialogs, StdCtrls, LCLType, LCLProc, ScuGuiCommands, ScuGuiReader,
   ScuLibrary, ScuLibraryPaths, ScuFiles, ScuCleanupFiles, ScuPlatformPaths;
 destructor TGuiJob.Destroy;
 begin
@@ -148,6 +149,7 @@ begin
   MenuEntry(Self, EditMenu, '&Preferences…', '', @PreferencesClick);
   HelpMenu := TMenuItem.Create(Self); HelpMenu.Caption := '&Help'; Menu.Items.Add(HelpMenu);
   MenuEntry(Self, HelpMenu, '&Manual', 'F1', @ManualClick);
+  MenuEntry(Self, HelpMenu, '&About SCU', '', @AboutClick);
   FLogMenu := TPopupMenu.Create(Self); FLogMenu.OnPopup := @LogPopup;
   FLogCopy := TMenuItem.Create(Self); FLogCopy.Caption := 'Copy'; FLogCopy.OnClick := @LogCopy; FLogMenu.Items.Add(FLogCopy);
   FLogSelectAll := TMenuItem.Create(Self); FLogSelectAll.Caption := 'Select All'; FLogSelectAll.OnClick := @LogSelectAll;
@@ -633,6 +635,11 @@ begin
   try Document.Free; finally FUpdating := False; end;
   FTabBar.ShowActiveTab; RefreshVersions; RequestDiff; RefreshActions;
 end;
+procedure TScuMainForm.AboutClick(Sender: TObject);
+begin
+  MessageDlg('About SCU', 'Source Code Utility' + LineEnding + ScuBuildVersion, mtInformation, [mbOK], 0);
+end;
+
 procedure TScuMainForm.ManualClick(Sender: TObject);
 begin
   if FManual = nil then FManual := TManualForm.Create(Self);

@@ -13,8 +13,12 @@ src/scucommands.res: commands.json src/scucommands.rc tools/embed_commands.py
 build/scucommands.res: src/scucommands.res | build
 	cp $< $@
 
-build/scu: $(wildcard src/*.pas) build/scucommands.res | build
-	$(FPC) $(FPCFLAGS) -Fu./src -FU./build -FE./build src/scu.pas
+.PHONY: FORCE
+build/scucommit.inc: FORCE tools/build_id.py | build
+	python3 tools/build_id.py $@
+
+build/scu: build/scucommit.inc $(wildcard src/*.pas) build/scucommands.res | build
+	$(FPC) $(FPCFLAGS) -Fu./src -FU./build -FE./build -Fi./build src/scu.pas
 
 build/commands.json: commands.json | build
 	cp $< $@
@@ -93,9 +97,9 @@ gui/scumanual.res: gui/scumanual.rc MANUAL.md
 	$(FPCRES) -of res $< -o $@
 
 gui: all gui/scumanual.res
-	$(LAZBUILD) $(shell test build/scu-gui -nt gui/scumanual.res || echo --build-all) --widgetset=gtk2 gui/scu_gui.lpi
+	$(LAZBUILD) $(shell test build/scu-gui -nt gui/scumanual.res && test build/scu-gui -nt build/scucommit.inc || echo --build-all) --widgetset=gtk2 gui/scu_gui.lpi
 
 test-gui: gui
-	$(LAZBUILD) $(shell test build/gui-check -nt gui/scumanual.res || echo --build-all) --widgetset=gtk2 tests/gui_check.lpi
+	$(LAZBUILD) $(shell test build/gui-check -nt gui/scumanual.res && test build/gui-check -nt build/scucommit.inc || echo --build-all) --widgetset=gtk2 tests/gui_check.lpi
 	python3 tests/gui_integration.py
 	python3 tests/gui_integration.py --embedded-catalog

@@ -27,6 +27,10 @@ embed the command catalog, including argument definitions, aliases and full help
 `commands.json` is optional when deploying SCU; the required runtime libraries
 remain necessary.
 
+### Application version
+
+Run `scu --version` or open **Help → About SCU** in the GUI to see `1.0-<abbreviated Git commit ID>`. The release number is maintained manually in `ScuReleaseVersion` in `src/scubuildinfo.pas`. The build records the checked-out commit, including when the working tree contains local edits. A source archive made with `git archive` carries the commit ID. If no commit ID is available, the suffix is `unknown`.
+
 ### Embedded command catalog
 
 The CLI and GUI use their compiled-in catalog when no `commands.json` exists
@@ -52,7 +56,10 @@ include or runtime extraction. After editing the catalog, rebuild both executabl
 
 ```sh
 python3 tools/embed_commands.py
+python3 tools/build_id.py build/scucommit.inc
 ```
+
+For a direct CLI compilation, include `-Fibuild` on the FPC command line.
 
 The resource compiler preserves the JSON bytes exactly. `make test` recompiles
 the resource to check freshness. `fpcres` is needed for building (normally included

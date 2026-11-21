@@ -686,6 +686,17 @@ class PortableCliTests(unittest.TestCase):
         shutil.copy2(SCU, executable)
         return executable
 
+    def test_version_runs_without_a_library_or_valid_catalog(self):
+        executable = self.standalone_cli()
+        executable.with_name('commands.json').write_text('{invalid')
+        work = self.root / 'empty'
+        work.mkdir()
+        result = self.invoke([executable, '--version'], cwd=work, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(result.stdout, r'\A[0-9]+(?:\.[0-9]+)+-(?:[a-f0-9]{4,64}|unknown)\n\Z')
+        self.assertEqual(result.stderr, '')
+        self.assertEqual(list(work.iterdir()), [])
+
     def test_embedded_catalog_runs_without_adjacent_json_and_ignores_cwd_catalog(self):
         executable = self.standalone_cli()
         expected = self.run_scu('help')

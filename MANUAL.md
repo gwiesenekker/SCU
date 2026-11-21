@@ -78,6 +78,8 @@ The archive importer strips one leading `// SCU REVISION` header before storing 
 
 By default `disvh` shows the ten most recent versions. `disdd` compares the previous and current **stored revisions of one deck**. `disvd` compares **two library versions** across all decks.
 
+Run `scu --version` from the shell or choose **Help → About SCU** to see the application release number and abbreviated Git commit ID as a single string. This works before opening a library.
+
 ## Use the GUI editor
 
 Select a deck in the left pane to open its editor tab. A star beside the tab name means the buffer differs from stored source. Choose **Save deck** or press Ctrl+S to record your edit. Choose **File → Lock version** to lock the saved revisions. The dialog shows the current version above the multiline description. **File → Unlock version** reopens that version for editing. To start a new version after locking, choose **File → Create new version**, accept or edit the proposed number, then save the buffer.

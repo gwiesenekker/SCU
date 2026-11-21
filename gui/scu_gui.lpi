@@ -12,6 +12,6 @@
   <CompilerOptions>
     <Version Value="11"/>
     <Target><Filename Value="../build/scu-gui"/></Target>
-    <SearchPaths><OtherUnitFiles Value="../src"/><UnitOutputDirectory Value="../build/gui"/></SearchPaths>
+    <SearchPaths><IncludeFiles Value="../build"/><OtherUnitFiles Value="../src"/><UnitOutputDirectory Value="../build/gui"/></SearchPaths>
   </CompilerOptions>
 </CONFIG>

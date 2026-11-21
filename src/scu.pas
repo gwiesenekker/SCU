@@ -3,7 +3,7 @@ program Scu;
 {$mode objfpc}{$H+}
 
 uses
-  SysUtils, {$IFDEF LINUX}BaseUnix,{$ENDIF} ScuCLI, ScuOutput, ScuPlatformPaths;
+  SysUtils, {$IFDEF LINUX}BaseUnix,{$ENDIF} ScuBuildInfo, ScuCLI, ScuOutput, ScuPlatformPaths;
 
 var
   CLI: TScuCLI;
@@ -19,6 +19,11 @@ begin
   InitializePlatformPaths;
   {$IFDEF LINUX}fpSignal(SIGPIPE, @HandleBrokenPipe);{$ENDIF}
   try
+    if (ParamCount = 1) and (ParamStr(1) = '--version') then
+    begin
+      WriteLn(ScuBuildVersion);
+      Exit;
+    end;
     CLI := TScuCLI.Create;
     try
       CLI.Run;

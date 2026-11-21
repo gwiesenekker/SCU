@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Show the SCU release number and abbreviated build commit ID as one string in `scu --version` and **Help → About SCU**. The initial release number is `1.0`.
+
 - Display the version tracker template below its label in `disl`, starting at the left margin.
 
 - Allow library version increments down to `0.0000000001` for automatic version creation.

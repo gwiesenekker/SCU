@@ -32,6 +32,7 @@ def build_gui(args, output):
         options = project.find('CompilerOptions')
         options.find('Target/Filename').set('Value', str(output / executable))
         search = options.find('SearchPaths')
+        search.find('IncludeFiles').set('Value', str(output))
         search.find('UnitOutputDirectory').set('Value', str(output / units))
         search.find('OtherUnitFiles').set('Value', str(ROOT / 'src') + ';' + str(ROOT / 'gui'))
         unit = project.find('ProjectOptions/Units/Unit0/Filename')
@@ -88,8 +89,10 @@ def build(args):
     units = output / 'units'
     units.mkdir(parents=True, exist_ok=True)
     subprocess.run([sys.executable, str(ROOT / 'tools/embed_commands.py'), '--fpcres', getattr(args, 'fpcres', 'fpcres')], cwd=ROOT, check=True)
+    subprocess.run([sys.executable, str(ROOT / 'tools/build_id.py'), str(output / 'scucommit.inc')],
+                   cwd=ROOT, check=True)
     command = [args.fpc, *args.fpc_option, '-Twin64', '-O2', '-B',
-               '-Fu' + str(ROOT / 'src'), '-FU' + str(units), '-FE' + str(output),
+               '-Fi' + str(output), '-Fu' + str(ROOT / 'src'), '-FU' + str(units), '-FE' + str(output),
                '-o' + str(output / 'scu.exe'), str(ROOT / 'src' / 'scu.pas')]
     subprocess.run(command, cwd=ROOT, check=True)
     executable = output / 'scu.exe'

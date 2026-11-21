@@ -10,6 +10,6 @@
   </ProjectOptions>
   <CompilerOptions>
     <Version Value="11"/><Target><Filename Value="../build/gui-check"/></Target>
-    <SearchPaths><OtherUnitFiles Value="../gui;../src"/><UnitOutputDirectory Value="../build/gui-test"/></SearchPaths>
+    <SearchPaths><IncludeFiles Value="../build"/><OtherUnitFiles Value="../gui;../src"/><UnitOutputDirectory Value="../build/gui-test"/></SearchPaths>
   </CompilerOptions>
 </CONFIG>

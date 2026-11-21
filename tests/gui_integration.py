@@ -69,6 +69,8 @@ with tempfile.TemporaryDirectory(prefix="scu-gui-test-") as temporary:
                  capture_output=True, text=True, timeout=120 if windows else 60, env=configuration)
     if result.returncode:
         raise AssertionError(result.stdout + result.stderr)
+    version = run(scu, '--version', cwd=work, capture_output=True, text=True, check=True).stdout.strip()
+    assert 'GUI build ' + version in result.stdout.splitlines(), result.stdout
     print(result.stdout.strip())
     preferences = json.loads((config_path / "scu/gui.json").read_text(encoding="utf-8"))
     assert preferences["editor_font_size"] == 13

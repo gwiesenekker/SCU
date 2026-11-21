@@ -1,7 +1,7 @@
 program gui_check;
 {$mode objfpc}{$H+}
 uses {$IFDEF UNIX}cthreads,{$ENDIF} {$IFDEF WINDOWS}Windows, ScuPlatformProcessStringsWindows,{$ENDIF} Interfaces, Forms, Classes, SysUtils, Controls, StdCtrls, ExtCtrls, ButtonPanel,
-  ComCtrls, Graphics, Types, SynEdit, uManualForm, FPImage, Dialogs, Menus, FPJSON, ScuGuiOptions, LCLType, ScuGuiTabs, ScuGuiMain, ScuGuiTab, ScuFiles, ScuGuiReader, ScuGuiLiveDiff, ScuSQLite, ScuSQLiteDB, ScuPlatformPaths, ScuGuiPlatform;
+  ComCtrls, Graphics, Types, ScuBuildInfo, SynEdit, uManualForm, FPImage, Dialogs, Menus, FPJSON, ScuGuiOptions, LCLType, ScuGuiTabs, ScuGuiMain, ScuGuiTab, ScuFiles, ScuGuiReader, ScuGuiLiveDiff, ScuSQLite, ScuSQLiteDB, ScuPlatformPaths, ScuGuiPlatform;
 type TErrorHandler = class
   procedure Failed(Sender: TObject; E: Exception);
 end;
@@ -90,6 +90,8 @@ var
 begin
   Entry := Main.Menu.FindItem(VK_F1, fkShortCut);
   Check(Assigned(Entry), 'Help menu contains Manual');
+  Check(Assigned(Entry.Parent.Find('&About SCU')), 'Help menu contains About SCU before opening a library');
+  WriteLn('GUI build ', ScuBuildVersion);
   Entry.Click;
   Application.ProcessMessages;
   Manual := TManualForm(Main.FindComponent('ManualWindow'));

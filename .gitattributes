@@ -7,3 +7,4 @@
 
 /src/scucommands.res -text linguist-generated=true
 /gui/scumanual.res -text linguist-generated=true
+/tools/build_id.py export-subst
