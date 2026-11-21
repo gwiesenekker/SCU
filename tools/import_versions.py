@@ -5,7 +5,7 @@ The import manifest records the size and SHA-1 of each original archive file.
 """
 
 import argparse
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
 import hashlib
@@ -131,14 +131,13 @@ def plan_import(archive, encoding, strict_history):
 
 def deck_names(snapshots):
     paths = sorted({file.relative for snapshot in snapshots for file in snapshot.files})
-    folded = Counter(path.lower() for path in paths)
     names = {}
     used = set()
     # Reserve plain names first so an encoded path cannot steal a real filename.
     for path in paths:
-        if DECK.fullmatch(path) and folded[path.lower()] == 1:
-            names[path] = path.lower()
-            used.add(path.lower())
+        if DECK.fullmatch(path):
+            names[path] = path
+            used.add(path)
     for path in paths:
         if path in names:
             continue

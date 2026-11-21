@@ -675,7 +675,7 @@ scu extract_version version=1.1
 
 `extract_deck` reports the output path and whether it wrote the file or found matching contents.
 `extract_version` and `release_version` list each selected deck with its version and file status (`Created`, `Replaced`, or `Unchanged`). Their summaries count files actually written and report how many already matched.
-`extv` lists every deck that requires `overwrite=yes` with its deck version and output filename. Resolve those conflicts or explicitly allow replacement before retrying.
+`extv` lists every deck that requires `overwrite=yes` with its deck version, conflict status, and output filename. Resolve those conflicts or explicitly allow replacement before retrying.
 Existing identical files can be tracked without replacement. Differing untracked
 or locally edited files require `overwrite=yes`. Extraction can explicitly restore
 working sources; no export may overwrite SQLite storage. Separate sessions
@@ -980,9 +980,11 @@ import time. Original date strings and HISTORY headings are retained in each
 version’s `import_manifest` metadata, alongside its exact original file
 list, filename mappings, byte counts, and SHA-1 checksums.
 
-SCU folds deck names to lowercase and restricts their characters. Plain file
-names use that lowercase form. Nested paths, unsupported names such as
-`source file.c`, and case collisions
+Deck names are case-sensitive. Plain filenames retain their spelling as deck names,
+so `Makefile` is imported as `Makefile`. On Linux, `A.c` and `a.c` can be
+imported and exported side by side. Existing libraries keep their stored deck
+names and recorded source filenames. Nested paths and unsupported names such as
+`source file.c`
 receive deterministic `import-file-` deck names based on the original path's
 SHA-256 digest. The manifest retains the exact original spelling and path.
 Use `disl json=yes` to read the `import_manifest` object in each imported version.

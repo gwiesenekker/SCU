@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Preserve deck-name case in commands, completion, file scans and archive imports. Linux libraries can track and export case-distinct sources independently.
+
+- Show why each file requires overwrite permission in the `extv` status column.
+
 - Summarize changed decks and added, changed, and deleted lines after a normal version diff. Successful unified diffs omit the summary and leave standard error empty.
 
 - List all output files requiring explicit overwrite before extracting a version or starting its build.

@@ -55,6 +55,7 @@ type
     procedure QueueSave(Document: TScuEditorTab);
     procedure SaveAll;
     procedure RefreshActions;
+    function DeckListIndex(const Deck: string): Integer;
     procedure RefreshDecks;
     procedure RefreshVersions(KeepSelection: Boolean = False);
     procedure RequestDiff;
@@ -443,6 +444,13 @@ begin
   FTabBar.RefreshTabs;
   FFromVersion.Enabled := Browsing and Assigned(ActiveDocument); FToVersion.Enabled := FFromVersion.Enabled;
 end;
+function TScuMainForm.DeckListIndex(const Deck: string): Integer;
+begin
+  for Result := 0 to FDeckList.Items.Count - 1 do
+    if FDeckList.Items[Result] = Deck then Exit;
+  Result := -1;
+end;
+
 procedure TScuMainForm.RefreshDecks;
 var Entries: TDeckListEntries; Entry: TDeckListEntry; Selected: string;
 begin
@@ -453,7 +461,7 @@ begin
   try
     FDeckList.Items.Clear;
     for Entry in Entries do FDeckList.Items.Add(Entry.Name);
-    FDeckList.ItemIndex := FDeckList.Items.IndexOf(Selected);
+    FDeckList.ItemIndex := DeckListIndex(Selected);
   finally FDeckList.Items.EndUpdate; FUpdating := False; end;
 end;
 procedure TScuMainForm.OpenInitialLibrary(const Path: string);
@@ -501,7 +509,7 @@ begin
   try
     FFromVersion.Items.Clear; FToVersion.Items.Clear; Document := ActiveDocument;
     if not Assigned(Document) then begin FDiff.Clear; Exit; end;
-    FDeckList.ItemIndex := FDeckList.Items.IndexOf(Document.Deck);
+    FDeckList.ItemIndex := DeckListIndex(Document.Deck);
     ReadGuiVersions(FLibraryPath, Document.Deck, Versions);
     FFromVersion.Items.Add(CurrentDeckVersionSelector); FFromVersion.Items.Add(PreviousDeckVersionSelector);
     FHasPrevious := Versions.Count > 1;

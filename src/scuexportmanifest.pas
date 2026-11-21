@@ -11,7 +11,13 @@ const
   ExportManifestName = '.scu-exports.json';
 
 type
-  EExportOverwriteRequired = class(EScuError);
+  EExportOverwriteRequired = class(EScuError)
+  private
+    FStatus: string;
+  public
+    constructor Create(const Path, ConflictStatus: string);
+    property Status: string read FStatus;
+  end;
   TExportMode = ScuExportTypes.TExportMode;
   TExportRecord = ScuExportTypes.TExportRecord;
 
@@ -69,6 +75,12 @@ type
     PreviousHash, StageFile: string;
     ReplaceExisting, DeleteOutput: Boolean;
   end;
+
+constructor EExportOverwriteRequired.Create(const Path, ConflictStatus: string);
+begin
+  inherited Create('Refusing to overwrite "' + Path + '" (' + ConflictStatus + '). Use overwrite=yes to replace it explicitly.');
+  FStatus := ConflictStatus;
+end;
 
 function ByteKey(const Value: RawByteString): string;
 const
@@ -498,10 +510,14 @@ begin
   if RegularFileExists(OutputPath) then Previous := AuditSHA256(ReadBytes(OutputPath, MaxDeckSize));
   CanonicalLibrary := CanonicalFile(LibraryPath);
   Existing := TExportItem(FFiles.Find(FileKey(Name)));
-  if (Previous <> '') and (Previous <> AuditSHA256(Bytes)) and not ReplaceExisting and
-    (not Assigned(Existing) or (Existing.Data.SHA256 <> Previous) or Existing.Data.Interrupted or
-      (not SameExportLibrary(Existing.Data.LibraryPath, CanonicalLibrary))) then
-    raise EExportOverwriteRequired.Create('Refusing to overwrite untracked or edited output "' + OutputPath + '". Use overwrite=yes to replace it explicitly.');
+  if (Previous <> '') and (Previous <> AuditSHA256(Bytes)) and not ReplaceExisting then
+  begin
+    if not Assigned(Existing) then raise EExportOverwriteRequired.Create(OutputPath, 'Untracked');
+    if not SameExportLibrary(Existing.Data.LibraryPath, CanonicalLibrary) then
+      raise EExportOverwriteRequired.Create(OutputPath, 'Other library');
+    if Existing.Data.Interrupted then raise EExportOverwriteRequired.Create(OutputPath, 'Interrupted export');
+    if Existing.Data.SHA256 <> Previous then raise EExportOverwriteRequired.Create(OutputPath, 'Locally modified');
+  end;
   if FPlanNames.Find(FileKey(Name)) <> nil then
     raise EScuError.Create('Duplicate output path in export batch: "' + OutputPath + '".');
   if FStageDirectory = '' then

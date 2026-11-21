@@ -119,7 +119,7 @@ class PortableCliTests(unittest.TestCase):
         # Library fixtures have no persistent working files. Real import workflows
         # below use run_scu directly and exercise their manifest observations.
         (self.root / "input").write_bytes(source)
-        path = self.root / name.lower()
+        path = self.root / name
         previous = path.read_bytes() if path.exists() else None
         manifest = self.root / ".scu-exports.json"
         tracking = manifest.read_bytes() if manifest.exists() else None
@@ -169,7 +169,7 @@ class PortableCliTests(unittest.TestCase):
     def test_delete_deck_records_history_and_preserves_earlier_source(self):
         self.store("main.pas", b"original\n", "cp=#")
         source = self.read_library()["revisions"][0]
-        self.assertIn("Deleted main.pas version 1.0 revision 0.001", self.run_scu("deld", "dn=MAIN.PAS"))
+        self.assertIn("Deleted main.pas version 1.0 revision 0.001", self.run_scu("deld", "dn=main.pas"))
         self.assertEqual(self.table_data(self.run_scu("disdl")), "")
         document = self.read_library()
         self.assertEqual(document["revisions"][0], source)
@@ -195,7 +195,7 @@ class PortableCliTests(unittest.TestCase):
         self.assertEqual(self.read_library(), before)
         events = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
         deletion = next(e for e in events if e.get("command") == "delete_deck")
-        self.assertEqual(deletion["parameters"], {"deck_name": "MAIN.PAS"})
+        self.assertEqual(deletion["parameters"], {"deck_name": "main.pas"})
         self.run_scu("verify_audit_trail")
 
 
@@ -433,7 +433,7 @@ class PortableCliTests(unittest.TestCase):
     def test_deck_history_identifies_explicit_default_and_deleted_decks(self):
         self.store("main.pas", b"main")
         self.store("other.pas", b"other")
-        self.assertEqual(self.run_scu("disd", "dn=MAIN.PAS").splitlines()[0], 'Deck "main.pas".')
+        self.assertEqual(self.run_scu("disd", "dn=main.pas").splitlines()[0], 'Deck "main.pas".')
         self.assertEqual(self.run_scu("disd").splitlines()[0], 'Deck "other.pas".')
         self.run_scu("deld", "main.pas")
         history = self.run_scu("disd")
@@ -496,7 +496,7 @@ class PortableCliTests(unittest.TestCase):
         self.store("part", b"part")
         self.store("main", b"//SCU_COPY part\n")
         for command in ("extd",):
-            for arguments in (("MAIN", "output"), ()):
+            for arguments in (("main", "output"), ()):
                 with self.subTest(command=command, arguments=arguments):
                     result = self.invoke([SCU, command, *arguments], cwd=self.root,
                                             capture_output=True, text=True, timeout=10)
@@ -784,27 +784,27 @@ class PortableCliTests(unittest.TestCase):
     def test_create_deck_creates_empty_or_imported_first_revisions(self):
         empty_digest = hashlib.sha1(b"").hexdigest()
         self.assertEqual(self.run_scu("create_deck", "Empty.pas"),
-                         "empty.pas version 1.0 revision 0.000, deck version 1.0-0.000")
+                         "Empty.pas version 1.0 revision 0.000, deck version 1.0-0.000")
         source = b"// initial source\r\n\x00\xff"
         (self.root / "initial source").write_bytes(source)
         digest = hashlib.sha1(source).hexdigest()
         self.assertEqual(self.run_scu("cred", "dn=Imported.pas", "ff=initial source"),
-                         "imported.pas version 1.0 revision 0.000, deck version 1.0-0.000")
+                         "Imported.pas version 1.0 revision 0.000, deck version 1.0-0.000")
         self.assertEqual([entry["sha1"] for entry in self.read_library()["revisions"]],
                          [empty_digest, digest])
-        self.run_scu("extract_deck", "empty.pas", "empty-output")
-        self.run_scu("extract_deck", "imported.pas", "imported-output")
+        self.run_scu("extract_deck", "Empty.pas", "empty-output")
+        self.run_scu("extract_deck", "Imported.pas", "imported-output")
         self.assertEqual((self.root / "empty-output").read_bytes(), b"")
         self.assertEqual((self.root / "imported-output").read_bytes(), source)
 
         unchanged = self.read_library()
-        self.run_scu("create_deck", "IMPORTED.pas", "initial source", error="already exists")
+        self.run_scu("create_deck", "Imported.pas", "initial source", error="already exists")
         self.run_scu("create_deck", "unreadable", "from_file=missing", error="Could not open missing")
         self.assertEqual(self.read_library(), unchanged)
         self.run_scu("lock_version", "Test version")
         self.run_scu("create_deck", "new.pas", error="is locked")
         self.run_scu("create_version", "1.1")
-        self.run_scu("create_deck", "empty.pas", error="already exists")
+        self.run_scu("create_deck", "Empty.pas", error="already exists")
 
         result = self.invoke([SCU], cwd=self.root, input="create_deck new.pas\nquis\n",
                                 capture_output=True, text=True, timeout=20)
@@ -859,7 +859,7 @@ class PortableCliTests(unittest.TestCase):
         self.run_scu("conl", "build_command=echo built > build-marker")
         result = self.run_scu("extv", "od=outputs", error="require overwrite=yes. No decks were extracted.")
         self.assertEqual(self.table_data(result).splitlines(),
-                         ["edited\t1.0-0.000\tedited", "untracked\t1.0-0.000\tuntracked"])
+                         ["edited\t1.0-0.000\tLocally modified\tedited", "untracked\t1.0-0.000\tUntracked\tuntracked"])
         self.assertEqual(manifest.read_bytes(), before)
         self.assertFalse((directory / "absent").exists())
         self.assertFalse((self.root / "build-marker").exists())
@@ -1275,36 +1275,36 @@ class PortableCliTests(unittest.TestCase):
     def test_deck_history_and_aliases_use_canonical_audit_names(self):
         self.store("Main.pas", b"first")
         self.store("shared.inc", b"unrelated")
-        self.store("main.pas", b"second")
+        self.store("Main.pas", b"second")
         self.run_scu("lock_version", "Test version")
         self.run_scu("create_version", "1.1")
         self.run_scu("lock_version", "Test version")
         self.run_scu("create_version", "1.2")
-        self.store("main.pas", b"third")
+        self.store("Main.pas", b"third")
         revisions = self.read_library()["revisions"]
-        expected = ['Deck "main.pas".', "Deck version  Modified (local TZ)            Status"] + [
+        expected = ['Deck "Main.pas".', "Deck version  Modified (local TZ)            Status"] + [
             f"{version + '-' + revisions[number - 1]['deck_revision']:<12}  "
             f"{self.local_stamp(revisions[number - 1]['modified_utc'])}  stored"
             for number, version in ((4, "1.2"), (3, "1.0"), (1, "1.0"))
         ]
         for arguments in (
-            ("display_deck", "deck_name=main.pas"),
-            ("disd", "dn=main.pas"),
-            ("disd", "main.pas"),
-            ("DISD", "DN=main.pas"),
+            ("display_deck", "deck_name=Main.pas"),
+            ("disd", "dn=Main.pas"),
+            ("disd", "Main.pas"),
+            ("DISD", "DN=Main.pas"),
         ):
             self.assertEqual(self.run_scu(*arguments).splitlines(), expected)
-        self.run_scu("DISD", "DN=", "main.pas", error="Expected integer value for limit")
+        self.run_scu("DISD", "DN=", "Main.pas", error="Expected integer value for limit")
         listing = self.table_data(self.run_scu("display_deck_list", "--version", "1.1"))
         self.assertEqual(self.table_data(self.run_scu("disdl", "v=1.1")), listing)
         self.assertEqual(self.table_data(self.run_scu("display_deck_list", "version=1.1")), listing)
         self.run_scu("disd", "dn=missing", error="does not exist")
-        self.run_scu("disd", "main.pas", "dn=main.pas", error="Duplicate argument deck_name")
+        self.run_scu("disd", "Main.pas", "dn=Main.pas", error="Duplicate argument deck_name")
 
         records = [json.loads(line.split(b" ", 1)[1]) for line in self.audit_lines()]
         displays = [event for event in records if event.get("command") == "display_deck"]
         self.assertEqual([event["parameters"] for event in displays],
-                         [{"deck_name": "main.pas", "limit": "10"}] * 4 + [{"deck_name": "missing", "limit": "10"}])
+                         [{"deck_name": "Main.pas", "limit": "10"}] * 4 + [{"deck_name": "missing", "limit": "10"}])
         lists = [event for event in records if event.get("command") == "display_deck_list"]
         self.assertEqual([event["parameters"] for event in lists], [{"version": "1.1"}] * 3)
         self.run_scu("verify_audit_trail")

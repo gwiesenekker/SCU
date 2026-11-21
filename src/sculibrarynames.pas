@@ -25,7 +25,7 @@ begin
   for Index := 2 to Length(Name) do
     if not (Name[Index] in ['a'..'z', 'A'..'Z', '0'..'9', '_', '-', '.']) then
       raise EScuError.CreateFmt('Invalid deck name "%s".', [Name]);
-  Result := LowerCase(Name);
+  Result := Name;
 end;
 
 procedure ValidateRelativeSourcePath(const Pattern: string);

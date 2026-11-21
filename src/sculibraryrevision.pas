@@ -67,9 +67,7 @@ end;
 constructor TLibraryRevision.CreateIndex(const Name, Number: string; Sequence: Integer; Deleted: Boolean);
 begin
   inherited Create;
-  FName := Name;
-  if FName <> DeckName(FName) then
-    raise EScuError.CreateFmt('Invalid deck name in revision %d.', [Sequence]);
+  FName := DeckName(Name);
   FNumber := ParseDeckNumber(Number, Sequence);
   FDeleted := Deleted;
 end;
@@ -77,9 +75,7 @@ end;
 constructor TLibraryRevision.CreatePayload(var Payload: TJSONObject; Sequence: Integer);
 begin
   inherited Create;
-  FName := Field(Payload, 'deck', jtString).AsString;
-  if FName <> DeckName(FName) then
-    raise EScuError.CreateFmt('Invalid deck name in revision %d.', [Sequence]);
+  FName := DeckName(Field(Payload, 'deck', jtString).AsString);
   FNumber := -1;
   if Assigned(Payload.Find('deck_revision')) then
     FNumber := ParseDeckNumber(Field(Payload, 'deck_revision', jtString).AsString, Sequence);

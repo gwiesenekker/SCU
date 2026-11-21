@@ -52,7 +52,7 @@ class ScanningTests(unittest.TestCase):
         (self.root / 'sub.c').mkdir()
         (self.root / 'sub.c' / 'nested.c').write_text('nested')
         self.assertEqual(self.scan('*.c'), ['a.c|a.c', 'z.c|z.c'])
-        self.assertEqual(self.scan('Makefile'), ['makefile|Makefile'])
+        self.assertEqual(self.scan('Makefile'), ['Makefile|Makefile'])
 
     def test_owners_preserve_deck_identity(self):
         self.touch('main.pas')

@@ -135,6 +135,8 @@ class ScuIntegration(portable_cli.PortableCliTests):
             actual_decks = {row.split("\t")[0] for row in self.table_data(self.run_scu(library, "disdl", "v=" + version)).splitlines()}
             self.assertEqual(actual_decks, {row["deck_name"] for row in manifest["files"]})
             for row in manifest["files"]:
+                if row["path"] in {"Makefile", "A.c", "a.c"}:
+                    self.assertEqual(row["deck_name"], row["path"])
                 data = files[row["path"]]
                 self.assertEqual(row["sha1"], hashlib.sha1(data).hexdigest())
                 self.assertEqual(row["size"], len(data))
@@ -740,7 +742,7 @@ class ScuIntegration(portable_cli.PortableCliTests):
         self.run_scu("lock_version", "Test version")
         self.run_scu("create_version", "1.1")
         self.assertEqual(self.read_library()["header"]["last_modified_deck"], "other.pas")
-        self.store("MAIN.PAS", b"new\n//SCU$VERSION\n")
+        self.store("main.pas", b"new\n//SCU$VERSION\n")
         self.assertEqual(self.read_library()["header"]["last_modified_deck"], "main.pas")
 
         self.assertEqual(self.run_scu("display_deck"), self.run_scu("display_deck", "main.pas"))
@@ -1181,7 +1183,7 @@ int mkstemp(char *pattern) {
         first = self.run_scu(library, "impd")
         self.assertIn("Imported 3 new, 0 changed, 0 deleted; 0 unchanged.", first)
         self.assertEqual(self.table_data("\n".join(first.splitlines()[:-1])).splitlines(),
-                         ["main.c\t1.0-0.000\tnew", "makefile\t1.0-0.000\tnew", "removed.c\t1.0-0.000\tnew"])
+                         ["Makefile\t1.0-0.000\tnew", "main.c\t1.0-0.000\tnew", "removed.c\t1.0-0.000\tnew"])
         self.assertEqual(self.run_scu(library, "impd"), "Imported 0 new, 0 changed, 0 deleted; 3 unchanged.")
         self.run_scu(library, "locv", "Initial snapshot")
         self.run_scu(library, "crev", "1.1")
@@ -1206,28 +1208,29 @@ int mkstemp(char *pattern) {
         self.assertEqual(self.run_scu(library, "impd"), "Imported 0 new, 0 changed, 0 deleted; 1 unchanged.")
         listing = self.table_data(self.run_scu(library, "disdl"))
         self.assertIn("main.c\t1.1-0.000", listing)
-        self.assertIn("makefile\t1.0-0.000", listing)
+        self.assertIn("Makefile\t1.0-0.000", listing)
         self.assertIn("unselected.txt\t", listing)
         self.assertNotIn("outside.c", listing)
         self.run_scu(library, "verify_audit_trail")
 
-    def test_import_scan_tracks_filename_case_and_detects_collisions(self):
+    def test_import_scan_keeps_case_distinct_decks_and_revisions(self):
         self.configure_file_patterns(["*.c"])
         source = self.root / "Main.c"
         source.write_bytes(b"source")
         self.assertIn("Imported 1 new", self.run_scu("impd"))
         self.assertEqual(self.read_library()["revisions"][-1]["source_path"], "Main.c")
         source.write_bytes(b"single deck")
-        self.assertIn("changed", self.run_scu("impd", "main.c"))
-        self.assertEqual(self.read_library()["revisions"][-1]["source_path"], "Main.c")
-        before = self.read_library()
-        (self.root / "main.c").write_bytes(b"collision")
-        self.run_scu("impd", error="both map to deck")
-        self.assertEqual(self.read_library(), before)
-        (self.root / "main.c").unlink()
+        self.assertIn("changed", self.run_scu("impd", "Main.c"))
+        (self.root / "main.c").write_bytes(b"distinct source")
+        self.assertIn("Imported 1 new", self.run_scu("impd"))
+        self.run_scu("relv")
+        self.assertEqual((self.root / "release/Main.c").read_bytes(), b"single deck")
+        self.assertEqual((self.root / "release/main.c").read_bytes(), b"distinct source")
+        self.run_scu("extd", "MAIN.C", error="does not exist")
         source.unlink()
         self.assertIn("deleted", self.run_scu("impd"))
         self.assertEqual(self.read_library()["revisions"][-1]["source_path"], "Main.c")
+        self.assertIn("main.c", self.run_scu("disdl"))
         source.write_bytes(b"recreated")
         self.assertIn("new", self.run_scu("impd"))
         self.assertEqual(self.read_library()["revisions"][-1]["deck_revision"], "0.003")
@@ -4563,6 +4566,18 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
             os.write(terminal, b'quis\n')
             self.assertEqual(process.wait(timeout=5), 0)
 
+    def test_terminal_tab_completes_exact_case_deck_names(self):
+        self.store("Makefile", b"upper")
+        self.store("makefile", b"lower")
+        with self.terminal_session(TERM="xterm") as (process, terminal, read_until):
+            read_until(b"scu> ")
+            for prefix, expected in [(b"Ma", b"upper"), (b"ma", b"lower")]:
+                os.write(terminal, b"extd " + prefix + b"\t of=result o=y\n")
+                read_until(b"scu> ")
+                self.assertEqual((self.root / "result").read_bytes(), expected)
+            os.write(terminal, b"quis\n")
+            self.assertEqual(process.wait(timeout=5), 0)
+
     def test_terminal_tab_completes_library_values_and_paths(self):
         self.store("main.pas", b"old\n")
         self.run_scu("lock_version", "Test version")
@@ -4653,8 +4668,8 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
             os.write(terminal, b"disdd of=unified fs=2.0-0.000 ts=1.0-0.000 dn=alpha-\t\n")
             self.assertIn(b"+++ alpha-old@1.0-0.000", read_until(b"scu> "))
 
-            os.write(terminal, b"extd ALPHA-OLD r=0.\t\t")
-            revisions = read_until(b"extd ALPHA-OLD r=0.000 ")
+            os.write(terminal, b"extd alpha-old r=0.\t\t")
+            revisions = read_until(b"extd alpha-old r=0.000 ")
             self.assertIn(b"r=0.000", revisions)
             self.assertNotIn(b"r=0.001", revisions)
             os.write(terminal, b"\x15disdd of=unified dn=alpha-old ts=1.0-0.000 fs=2.0-\t\n")
@@ -4675,8 +4690,8 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
             os.write(terminal, b'disdl v=1.\t\t')
             self.assertIn(b"v=1.0", read_until(b'scu> disdl v=1.'))
 
-            os.write(terminal, b"\x15extd dn=LATER v=1.\t\t")
-            matches = read_until(b"scu> extd dn=LATER v=1.")
+            os.write(terminal, b"\x15extd dn=later v=1.\t\t")
+            matches = read_until(b"scu> extd dn=later v=1.")
             self.assertNotIn(b"v=1.0", matches)
             self.assertIn(b"v=1.1", matches)
             self.assertIn(b"v=1.2", matches)
@@ -5068,13 +5083,13 @@ int mkstemp(char *pattern) {
         (self.root / "Main.pas").write_bytes(b"old SCU$VERSION\n")
         self.run_scu("impd")
         self.run_scu("extv", "build=no")
-        self.run_scu("extd", "main.pas", "build=no")
+        self.run_scu("extd", "Main.pas", "build=no")
         self.assertFalse((self.root / "main.pas").exists())
         self.assertFalse((self.root / "makefile").exists())
         self.assertIn("2 unchanged", self.run_scu("impd"))
         self.run_scu("locv", "First"); self.run_scu("crev", "1.1")
         (self.root / "Renamed.pas").write_bytes(b"new SCU$VERSION\n")
-        self.run_scu("impd", "main.pas", "Renamed.pas")
+        self.run_scu("impd", "Main.pas", "Renamed.pas")
         self.run_scu("relv", "v=1.0")
         self.assertEqual((self.root / "release/Main.pas").read_bytes(), b"old 1.0\n")
         self.assertTrue((self.root / "release/Makefile").exists())

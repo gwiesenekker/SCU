@@ -246,8 +246,8 @@ begin
         begin
           if Expand then raise;
           if not Assigned(Conflicts) then
-            Conflicts := TScuTable.Create(['Deck name', 'Deck version', 'Output file']);
-          Conflicts.AddRow([Names[Index], Rendered.DeckVersion, StringToJSONString(Rendered.FileName)]);
+            Conflicts := TScuTable.Create(['Deck name', 'Deck version', 'Status', 'Output file']);
+          Conflicts.AddRow([Names[Index], Rendered.DeckVersion, E.Status, StringToJSONString(Rendered.FileName)]);
           Inc(ConflictCount);
         end;
       end;

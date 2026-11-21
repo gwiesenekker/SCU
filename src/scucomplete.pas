@@ -368,8 +368,11 @@ begin
       CollectCompletionValues(Commands, Kind, Context, LibraryPath, Value, Values, LibraryCache, PendingLibrary);
     for Name in Values do
     begin
-      if not SameText(Copy(Name, 1, Length(Value)), Value) then
-        Continue;
+      if (Kind = ckDeck) and (Pos('$', Name) = 0) then
+      begin
+        if Copy(Name, 1, Length(Value)) <> Value then Continue;
+      end
+      else if not SameText(Copy(Name, 1, Length(Value)), Value) then Continue;
       Suffix := Copy(Name, Length(Value) + 1, MaxInt);
       if not RawValue then
         Suffix := EscapeSuffix(Suffix, Quote);
