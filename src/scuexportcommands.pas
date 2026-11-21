@@ -8,7 +8,7 @@ uses
   ScuCommand, ScuCommandHandler;
 
 procedure RefreshWorkingTracker(const Context: TCommandContext; const FormerVersion: string = '');
-procedure RefreshRenamedTracker(const Context: TCommandContext);
+procedure RefreshVersionTracker(const Context: TCommandContext);
 function SingleDeckDirectory(const Context: TCommandContext): string;
 function VersionOutputDirectory(const Context: TCommandContext): string;
 function ExtractDeck(var Context: TCommandContext): string;
@@ -142,16 +142,24 @@ begin
   end;
 end;
 
-procedure RefreshRenamedTracker(const Context: TCommandContext);
+procedure RefreshVersionTracker(const Context: TCommandContext);
+var FormerVersion, Outcome: string;
 begin
+  FormerVersion := '';
+  Outcome := 'Version was created';
+  if Context.Command.Name = 'rename_version' then
+  begin
+    FormerVersion := Context.Command['version'];
+    Outcome := 'Version was renamed';
+  end;
   try
-    RefreshWorkingTracker(Context, Context.Command['version']);
+    RefreshWorkingTracker(Context, FormerVersion);
     CheckSessionInterrupt;
   except
     on E: ECommandCancelled do
-      raise ECommandCancelled.Create('Version was renamed; version tracker refresh was cancelled.');
+      raise ECommandCancelled.Create(Outcome + '; version tracker refresh was cancelled.');
     on E: Exception do
-      raise EScuError.Create('Version was renamed; could not refresh the version tracker: ' + E.Message);
+      raise EScuError.Create(Outcome + '; could not refresh the version tracker: ' + E.Message);
   end;
 end;
 

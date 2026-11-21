@@ -171,7 +171,7 @@
           "description": "New library version. Omit to advance by version_increment."
         }
       ],
-      "help": "Lock the current version first. Supply a higher version or let SCU apply version_increment."
+      "help": "Lock the current version first. Supply a higher version or let SCU apply version_increment. After saving the new version, refresh the configured working version tracker without running a build. Preserve hand edits and report the conflict."
     },
     {
       "name": "delete_deck",

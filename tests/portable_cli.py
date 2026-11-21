@@ -226,10 +226,10 @@ class PortableCliTests(unittest.TestCase):
         self.store("main.c", b"/* SCU$VERSION */")
         self.run_scu("conl", "vt=version.h", 'fp=["*.c","*.h"]')
         self.run_scu("locv", "Initial")
-        self.run_scu("crev", "1.1")
         expanded = "version.h has been expanded"
+        self.assertIn(expanded, self.run_scu("crev", "1.1"))
         ignored = "version.h has been ignored (version tracker)"
-        self.assertIn(expanded, self.run_scu("extd", "main.c"))
+        self.assertIn("version.h is unchanged", self.run_scu("extd", "main.c"))
         header = self.root / "version.h"
         self.assertIn(b'#define PROJECT_VERSION "1.1"', header.read_bytes())
         self.assertEqual((self.root / "main.c").read_bytes(), b"/* SCU$VERSION */")
@@ -272,6 +272,7 @@ class PortableCliTests(unittest.TestCase):
         self.assertIn(b'"1.0"', header.read_bytes())
         self.run_scu("locv", "First")
         self.run_scu("crev", "1.1")
+        header.unlink()
         (self.root / "main.c").write_text("source")
         self.assertIn("version.h has been expanded", self.run_scu("impd", "main.c").splitlines())
         self.assertIn(b'"1.1"', header.read_bytes())
@@ -880,6 +881,32 @@ class PortableCliTests(unittest.TestCase):
         self.assertIn("1.2-0.002", self.run_scu("disdl"))
         self.run_scu("verat")
         self.run_scu("delv", "1.2", "dr=y")
+        self.run_scu("verat")
+
+    def test_create_version_refreshes_tracker_only_after_commit(self):
+        self.run_scu("conl", "vt=version.h", "bc=exit 1")
+        header = self.root / "version.h"
+        self.run_scu("extd", "version.h", "b=n")
+        original = header.read_bytes()
+        self.run_scu("crev", "1.1", error="Lock version 1.0")
+        self.assertEqual(header.read_bytes(), original)
+        self.run_scu("locv", "First")
+        with closing(sqlite3.connect(self.library, isolation_level=None)) as db:
+            db.executescript("""
+                CREATE TRIGGER reject_create BEFORE INSERT ON audit_records
+                WHEN json_extract(substr(NEW.line, 66), '$.success') = 1
+                BEGIN SELECT RAISE(ABORT, 'injected create failure'); END;
+            """)
+            self.run_scu("crev", error="injected create failure")
+            db.execute("DROP TRIGGER reject_create")
+        self.assertEqual(header.read_bytes(), original)
+        self.assertIn("version.h has been expanded", self.run_scu("crev"))
+        self.assertIn(b'"1.01"', header.read_bytes())
+        self.run_scu("locv", "Second")
+        header.write_text("local edit")
+        self.assertIn("version.h was left untouched", self.run_scu("crev", "1.2"))
+        self.assertEqual(header.read_text(), "local edit")
+        self.assertEqual(self.read_library()["header"]["current_version"], "1.2")
         self.run_scu("verat")
 
     def test_rename_version_refreshes_the_configured_working_tracker(self):
