@@ -16,7 +16,7 @@ type
 // Configuration is borrowed; rendering never changes the library header.
 procedure WriteLibraryConfiguration(Configuration: TJSONObject; Sink: TScuOutput; Columns: SizeInt);
 procedure WriteVersionHistoryRows(const Rows: TVersionHistoryDisplayRows; Sink: TScuOutput; Full: Boolean);
-procedure WriteExportResults(const Rows: TExportResults; Sink: TScuOutput);
+procedure WriteExportResults(const Rows: TExportResults; Mode: TExportMode; Sink: TScuOutput);
 procedure WriteDeckList(const Rows: TDeckListEntries; Sink: TScuOutput);
 procedure WriteVersionDecks(const Rows: TVersionDeckEntries; Sink: TScuOutput);
 procedure WriteDeckHistory(const Rows: TDeckHistoryEntries; Sink: TScuOutput);
@@ -142,20 +142,23 @@ begin
   end;
 end;
 
-procedure WriteExportResults(const Rows: TExportResults; Sink: TScuOutput);
+procedure WriteExportResults(const Rows: TExportResults; Mode: TExportMode; Sink: TScuOutput);
 const
   StatusText: array[TExportStatus] of string = ('Created', 'Replaced', 'Unchanged');
 var
   Table: TScuTable;
   Row: TExportResult;
+  Status: string;
 begin
   Table := TScuTable.Create(['Deck name', 'Deck version', 'Status']);
   try
     for Row in Rows do
     begin
       CheckSessionInterrupt;
-      if Row.TrackerFile = '' then
-        Table.AddRow([DisplayText(Row.Deck), Row.DeckVersion, StatusText[Row.Status]]);
+      if Row.TrackerFile <> '' then Continue;
+      Status := StatusText[Row.Status];
+      if (Mode = emExtract) and (Row.Status = esUnchanged) then Status := 'Matches';
+      Table.AddRow([DisplayText(Row.Deck), Row.DeckVersion, Status]);
     end;
     Table.WriteTo(Sink, Sink.Columns);
   finally

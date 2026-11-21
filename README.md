@@ -687,9 +687,9 @@ scu extract_version version=1.1
 ```
 
 `extract_deck` reports the output path and whether it wrote the file or found matching contents.
-`extract_version` and `release_version` list each selected deck with its version and file status (`Created`, `Replaced`, or `Unchanged`). Their summaries count files actually written and report how many already matched.
+`extract_version` and `release_version` list each selected deck with its version and file status. Both report `Created` and `Replaced`. For identical output, extraction reports `Matches` and publication reports `Unchanged`. Their summaries count files actually written and report how many already matched.
 `extv` lists every deck that requires `overwrite=yes` with its deck version, conflict status, and output filename. Resolve those conflicts or explicitly allow replacement before retrying.
-Existing identical files are reported as unchanged. For ordinary working files,
+For ordinary working files,
 `extd` and `extv` can also replace bytes matching any surviving revision of the
 same deck. SCU filters by SHA-1 and confirms the
 source bytes. Other differing working files require `overwrite=yes`. Extraction can explicitly restore

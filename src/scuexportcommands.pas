@@ -353,13 +353,16 @@ begin
     if Context.LibraryFile.VersionTracker <> '' then
       ReportTracker(Context, Rows);
     if LegacyCopy then Context.Output.Report('Warning: COPY is no longer expanded; COPY directives are released as literal source.');
-    if Names.Count > 0 then WriteExportResults(Rows, Context.Output);
+    if Names.Count > 0 then WriteExportResults(Rows, Mode, Context.Output);
     for Index := 0 to Removed.Count - 1 do Context.Output.WriteLine('Removed obsolete release file "' + StringToJSONString(Removed[Index]) + '".');
     for Index := 0 to Preserved.Count - 1 do Context.Output.WriteLine('Kept untracked release file "' + StringToJSONString(Preserved[Index]) + '"; use overwrite=yes to remove it.');
     if not Expand then ScheduleBuild(Context, Directory);
     Result := Format('Wrote %d deck(s) for version %s', [WrittenCount, Version]);
     if WrittenCount < Names.Count then
-      Result := Result + Format(', %d unchanged', [Names.Count - WrittenCount]);
+    begin
+      if Expand then Result := Result + Format(', %d unchanged', [Names.Count - WrittenCount])
+      else Result := Result + Format(', Matches: %d', [Names.Count - WrittenCount]);
+    end;
     if DeletedCount > 0 then Result := Result + Format('; removed %d obsolete file(s).', [DeletedCount]);
   finally
     Conflicts.Free;

@@ -129,6 +129,8 @@ The template belongs to the whole library. Extracting an older version uses toda
 extv build=no
 ```
 
+`extv` reports `Matches` when the working file already contains the exact bytes of the selected deck revision. The summary counts these files separately, for example `Wrote 0 deck(s) for version 8.132, Matches: 93`.
+
 Both `extd` and `extv` can replace a working file if its contents exactly match any surviving revision of the same deck. This includes an old revision you deliberately restored by hand. When `extv` encounters working files that match no such revision, it lists their deck names, versions, conflict statuses, and output filenames. The batch stops before extraction and the build. Review the list before using `extv o=y` to replace those files.
 
 To discard an external edit to `book.c`, use `extd book.c o=y b=n`. SCU reports the output path and whether it wrote the file or found matching contents. If you already imported the edit, select the version to restore, for example `extd book.c v=8.1306 b=n`.
