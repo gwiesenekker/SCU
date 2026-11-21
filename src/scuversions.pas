@@ -31,6 +31,7 @@ type
     procedure Lock(const Description, ManifestDigest: string);
     procedure Unlock;
     procedure DeleteCurrent(const Name: string; Latest: Integer; DeleteRevisions: Boolean);
+    procedure RenameCurrent(const Name, NewName: string);
     procedure Start(const Name, Prefix: string; Latest: Integer);
     function NextVersion(const Increment: string): string;
     function CommentPrefix(const Name: string): string;
@@ -240,6 +241,25 @@ begin
   FEntries[Index].Locked := False;
   FEntries[Index].LockedUTC := '';
   FEntries[Index].Description := '';
+end;
+
+procedure TVersionHistory.RenameCurrent(const Name, NewName: string);
+var
+  Index, Major: Integer;
+  Minor: Int64;
+begin
+  if Name <> Current then
+    raise EScuError.CreateFmt('Only the current version (%s) can be renamed.', [Current]);
+  if Locked then
+    raise EScuError.CreateFmt('Unlock version %s before renaming it.', [Current]);
+  ParseVersion(NewName, Major, Minor);
+  for Index := 0 to Count - 1 do
+    if FEntries[Index].Name = NewName then
+      raise EScuError.CreateFmt('Version "%s" already exists.', [NewName]);
+  if (Count > 1) and not LaterVersion(NewName, FEntries[Count - 2].Name) then
+    raise EScuError.CreateFmt('The new version must be greater than %s.', [FEntries[Count - 2].Name]);
+  Entry(Count - 1).Strings['name'] := NewName;
+  FEntries[Count - 1].Name := NewName;
 end;
 
 procedure TVersionHistory.Start(const Name, Prefix: string; Latest: Integer);

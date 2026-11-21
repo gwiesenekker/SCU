@@ -36,6 +36,7 @@ type
     procedure SetLastModifiedDeck(const Deck: string);
     function SuggestedNextVersion: string;
     procedure DeleteVersion(const Name: string; RevisionCount: Integer; DeleteRevisions: Boolean);
+    procedure RenameVersion(const Name, NewName: string);
     procedure CreateVersion(const Name: string; RevisionCount: Integer);
     function CloneJSON: TJSONObject;
     // The caller owns the configuration copy; version history is excluded.
@@ -285,6 +286,12 @@ end;
 
 function TLibraryHeader.SuggestedNextVersion: string;
 begin Result := Versions.NextVersion(FVersionIncrement); end;
+
+procedure TLibraryHeader.RenameVersion(const Name, NewName: string);
+begin
+  Versions.RenameCurrent(Name, NewName);
+  FSerialized.Strings['current_version'] := Versions.Current;
+end;
 
 procedure TLibraryHeader.CreateVersion(const Name: string; RevisionCount: Integer);
 var

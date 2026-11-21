@@ -248,6 +248,11 @@ var
   end;
 
 begin
+  if (Kind = ckVersion) and (Context.CommandName = 'rename_version') then
+  begin
+    AddLibraryValue(LibraryFile.CurrentVersion);
+    Exit;
+  end;
   Deck := Context.Deck;
   if (Kind = ckDeckVersion) and (Deck = '') then
     Deck := LibraryFile.LastModifiedDeck;

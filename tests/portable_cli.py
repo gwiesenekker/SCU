@@ -850,6 +850,68 @@ class PortableCliTests(unittest.TestCase):
         self.assertEqual((elsewhere / "source").read_bytes(), working.read_bytes())
         self.run_scu("verat")
 
+    def test_rename_version_keeps_revisions_and_inherited_deck_versions(self):
+        self.store("inherited", b"baseline")
+        self.run_scu("locv", "Baseline")
+        self.run_scu("renv", "1.0", "2.0", error="Unlock version 1.0")
+        self.run_scu("crev", "1.3")
+        self.store("main", b"first")
+        self.store("main", b"second")
+        self.store("removed", b"old")
+        self.run_scu("deld", "removed")
+        self.run_scu("renv", "1.0", "1.2", error="Only the current version")
+        for invalid, message in (("1.0", "already exists"), ("1.3", "already exists"),
+                                 ("0.9", "must be greater"), ("dev", "Invalid version")):
+            self.run_scu("renv", "1.3", invalid, error=message)
+        revisions = self.read_library()["revisions"]
+        (self.root / "main").write_bytes(b"unimported working edit")
+        self.assertEqual(self.run_scu("renv", "v=1.3", "nv=1.2"), "Renamed version 1.3 to 1.2.")
+        self.assertEqual((self.root / "main").read_bytes(), b"unimported working edit")
+        self.assertEqual(self.read_library()["revisions"], revisions)
+        listing = self.run_scu("disdl", "v=1.2")
+        self.assertIn("1.0-0.000", listing)
+        self.assertIn("1.2-0.001", listing)
+        self.assertNotIn("removed", listing)
+        self.run_scu("disv", "1.3", error="does not exist")
+        self.run_scu("extd", "main", "of=old", "v=1.2", "r=0.000")
+        self.assertEqual((self.root / "old").read_bytes(), b"first")
+        self.assertIn("rename_version version=1.3 new_version=1.2", self.run_scu("disat"))
+        self.store("main", b"third")
+        self.assertIn("1.2-0.002", self.run_scu("disdl"))
+        self.run_scu("verat")
+        self.run_scu("delv", "1.2", "dr=y")
+        self.run_scu("verat")
+
+    def test_rename_imported_version_rollback_and_recovery(self):
+        self.store("main", b"source")
+        manifest = {"format": 1, "version": "1.0", "source_archive": "archive",
+                    "history": [], "files": []}
+        (self.root / "manifest.json").write_text(json.dumps(manifest))
+        self.run_scu("locv", "Imported", "imf=manifest.json")
+        self.run_scu("unlv")
+        with closing(sqlite3.connect(self.library, isolation_level=None)) as db:
+            db.executescript("""
+                CREATE TRIGGER reject_rename BEFORE INSERT ON audit_records
+                WHEN json_extract(substr(NEW.line, 66), '$.success') = 1
+                BEGIN SELECT RAISE(ABORT, 'injected rename failure'); END;
+            """)
+            self.run_scu("renv", "1.0", "2.0", error="injected rename failure")
+            db.execute("DROP TRIGGER reject_rename")
+            self.assertEqual(db.execute("SELECT library_version FROM deck_revisions").fetchall(), [("1.0",)])
+            self.assertEqual(db.execute("SELECT version FROM version_import_manifests").fetchall(), [("1.0",)])
+        self.assertEqual(self.read_library()["header"]["current_version"], "1.0")
+        self.run_scu("rename_version", "1.0", "2.0")
+        document = self.read_library()
+        document["header"] = json.loads(self.run_scu("disl", "j=y"))
+        self.assertEqual(document["header"]["versions"][0]["import_manifest"], manifest)
+        self.run_scu("verat")
+        recovery = self.root / "renamed.json"
+        recovery.write_text(json.dumps(document))
+        restored = self.root / "restored.sqlite"
+        self.run_scu(restored, "recl", recovery)
+        self.assertIn("2.0-0.000", self.run_scu(restored, "disdl"))
+        self.run_scu(restored, "verat")
+
     def test_delete_only_an_empty_open_successor(self):
         self.run_scu("delv", "1.0", error="only library version")
         self.store("main", b"preserved")

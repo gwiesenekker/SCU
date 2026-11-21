@@ -114,6 +114,7 @@ type
     procedure LockVersion(const Description, ManifestDigest: string);
     function SuggestedNextVersion: string;
     procedure DeleteVersion(const Name: string; DeleteRevisions: Boolean);
+    procedure RenameVersion(Database: TSQLiteLibrary; const Name, NewName: string);
     procedure CreateVersion(const Name: string);
     function CurrentVersion: string;
     function VersionAt(Revision: Integer): string;
@@ -585,6 +586,13 @@ end;
 
 function TDeckLibrary.SuggestedNextVersion: string;
 begin Result := FStore.Header.SuggestedNextVersion; end;
+
+procedure TDeckLibrary.RenameVersion(Database: TSQLiteLibrary; const Name, NewName: string);
+begin
+  FStore.Header.RenameVersion(Name, NewName);
+  Database.Revisions.RenameVersionTail(VersionHistory[VersionCount - 1].BaseRevision, Revision, Name, NewName);
+  MarkModified;
+end;
 
 procedure TDeckLibrary.CreateVersion(const Name: string);
 begin

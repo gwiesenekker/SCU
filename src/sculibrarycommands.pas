@@ -15,6 +15,7 @@ procedure ReportLibraryHeader(const Context: TCommandContext);
 function ConfigureLibrary(var Context: TCommandContext): string;
 function UnlockVersion(var Context: TCommandContext): string;
 function LockVersion(var Context: TCommandContext): string;
+function RenameVersion(var Context: TCommandContext): string;
 function DeleteVersion(var Context: TCommandContext): string;
 function CreateVersion(var Context: TCommandContext): string;
 function DisplayVersion(var Context: TCommandContext): string;
@@ -181,6 +182,16 @@ begin
   end;
   Context.LibraryFile.LockVersion(Context.Command['description'], Digest);
   Result := 'Locked version ' + Context.LibraryFile.CurrentVersion;
+end;
+
+function RenameVersion(var Context: TCommandContext): string;
+var Name, NewName: string;
+begin
+  Name := Context.Command['version'];
+  NewName := Context.Command['new_version'];
+  Context.LibraryFile.RenameVersion(Context.Database, Name, NewName);
+  RenameImportManifest(Context.Database, Name, NewName);
+  Result := Format('Renamed version %s to %s.', [Name, NewName]);
 end;
 
 function DeleteVersion(var Context: TCommandContext): string;

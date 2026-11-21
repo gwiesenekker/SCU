@@ -6,6 +6,7 @@ interface
 
 uses FPJSON, ScuSQLiteDB;
 
+procedure RenameImportManifest(Database: TSQLiteConnection; const OldName, NewName: string);
 procedure RemoveImportManifest(Database: TSQLiteConnection; const Version: string);
 function StoreImportManifest(Database: TSQLiteConnection; const Version: string;
   Manifest: TJSONObject): string;
@@ -22,6 +23,17 @@ const
   DigestField = 'import_manifest_sha256';
   PayloadField = 'import_manifest';
 
+procedure RenameImportManifest(Database: TSQLiteConnection; const OldName, NewName: string);
+var Statement: TSQLiteStatement;
+begin
+  Statement := Database.Prepare('UPDATE version_import_manifests SET version=? WHERE version=?');
+  try
+    Statement.Bind(1, NewName);
+    Statement.Bind(2, OldName);
+    Statement.Step;
+  finally Statement.Free; end;
+end;
+
 procedure RemoveImportManifest(Database: TSQLiteConnection; const Version: string);
 var
   Statement: TSQLiteStatement;
@@ -35,14 +47,14 @@ begin
   end;
 end;
 
-function StoreImportManifest(Database: TSQLiteConnection; const Version: string;
+function PersistImportManifest(Database: TSQLiteConnection; const Version: string;
   Manifest: TJSONObject): string;
 var
   Payload: RawByteString;
   Statement: TSQLiteStatement;
 begin
-  if (IntegerField(Manifest, 'format') <> 1) or
-    (Field(Manifest, 'version', jtString).AsString <> Version) then
+  Field(Manifest, 'version', jtString);
+  if IntegerField(Manifest, 'format') <> 1 then
     raise EScuError.Create('Expected a format 1 import manifest for version ' + Version + '.');
   Field(Manifest, 'source_archive', jtString);
   Field(Manifest, 'files', jtArray);
@@ -57,6 +69,14 @@ begin
   finally
     Statement.Free;
   end;
+end;
+
+function StoreImportManifest(Database: TSQLiteConnection; const Version: string;
+  Manifest: TJSONObject): string;
+begin
+  if Field(Manifest, 'version', jtString).AsString <> Version then
+    raise EScuError.Create('Expected a format 1 import manifest for version ' + Version + '.');
+  Result := PersistImportManifest(Database, Version, Manifest);
 end;
 
 procedure ReadImportManifests(Database: TSQLiteConnection; Header: TJSONObject;
@@ -110,7 +130,8 @@ begin
     Item := Versions.Objects[Index];
     if not Assigned(Item.Find(DigestField)) then Continue;
     CheckSessionInterrupt;
-    Digest := StoreImportManifest(Database, Item.Strings['name'],
+    // The original archive name can differ from the renamed library version.
+    Digest := PersistImportManifest(Database, Item.Strings['name'],
       TJSONObject(Field(Item, PayloadField, jtObject)));
     if Digest <> Field(Item, DigestField, jtString).AsString then
       raise EScuError.Create('Recovered import manifest checksum mismatch for version ' + Item.Strings['name'] + '.');

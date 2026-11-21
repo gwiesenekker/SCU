@@ -29,6 +29,7 @@ type
     function ReadRevision(Sequence: Integer): TJSONObject;
     function ReadRevisionCopyMetadata(Sequence: Integer): RawByteString;
     procedure SaveMetadata(const Payload: RawByteString);
+    procedure RenameVersionTail(Base, Latest: Integer; const OldName, NewName: string);
     procedure RemoveVersionTail(KeepCount: Integer; const Version: string);
     procedure AppendRevision(Sequence: Integer;
       const Deck, Version, DeckRevision, Payload, CopyMetadata: RawByteString; Deleted: Boolean);
@@ -233,6 +234,20 @@ begin
   finally
     Statement.Free;
   end;
+end;
+
+procedure TSQLiteRevisionStore.RenameVersionTail(Base, Latest: Integer; const OldName, NewName: string);
+var Statement: TSQLiteStatement;
+begin
+  Statement := FDatabase.Prepare('UPDATE deck_revisions SET library_version=? WHERE sequence>? AND library_version=?');
+  try
+    Statement.Bind(1, NewName);
+    Statement.Bind(2, Base);
+    Statement.Bind(3, OldName);
+    Statement.Step;
+    if FDatabase.Changes <> Latest - Base then
+      raise EScuError.Create('Stored deck revisions do not match the selected version.');
+  finally Statement.Free; end;
 end;
 
 procedure TSQLiteRevisionStore.RemoveVersionTail(KeepCount: Integer; const Version: string);

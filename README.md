@@ -779,6 +779,8 @@ The audit trail retains the earlier lock. Once a successor exists, the earlier v
 
 `disvd` ends with a per-deck line summary and totals. Within each replacement block it pairs old and new lines as changed and counts the excess as added or deleted. Binary differences are listed with dashes for line counts. With `of=unified`, SCU omits the summary and version announcements so standard output contains the diff and standard error is reserved for errors.
 
+To correct the current unlocked version name, use `rename_version version=8.132 new_version=8.1308` or `renv 8.132 8.1308`. The new name must follow the preceding locked version (for example, 8.1307). A deck stored as `8.132-0.003` becomes `8.1308-0.003`; inherited decks keep their original deck versions. SCU records the rename in the audit trail and preserves the original archive manifest. Working and published files keep their existing contents. If a generated tracker still contains the old version, inspect it and use `extd version.h o=y b=n` to regenerate it (substitute your configured tracker filename).
+
 To undo an accidental `crev 8.1307`, enter `delv 8.1307`. This returns to the preceding locked version if 8.1307 is still open and has no deck revisions of its own. To remove a populated open version and its stored deck revisions, enter `delv 8.1307 delete_revisions=yes`. Earlier versions, audit history, and working files are preserved.
 
 Lock descriptions are required. To write a multiline description in the configured editor, enter `locv` at the SCU prompt or run `scu ln=project.sqlite locv` from a terminal. Save and close to lock, or leave it empty to cancel. Batch input requires an explicit description. Lock

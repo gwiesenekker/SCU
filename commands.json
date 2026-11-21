@@ -991,6 +991,35 @@
       ]
     },
     {
+      "name": "rename_version",
+      "aliases": ["renv"],
+      "summary": "Rename the current unlocked library version.",
+      "arguments": [
+        {
+          "name": "version",
+          "type": "string",
+          "aliases": ["v"],
+          "value": "scu$required",
+          "completion": "version",
+          "description": "Exact current version name."
+        },
+        {
+          "name": "new_version",
+          "type": "string",
+          "aliases": ["nv"],
+          "value": "scu$required",
+          "description": "New MAJOR.MINOR name, greater than the previous locked version."
+        }
+      ],
+      "help": "Rename the current unlocked version, including revisions already stored in it. Deck revision numbers, source bytes, and original archive provenance are preserved. Existing working files and published releases retain their contents.",
+      "examples": [
+        {
+          "command": "scu rename_version version=8.132 new_version=8.1308",
+          "description": "Correct the current version name after locking 8.1307."
+        }
+      ]
+    },
+    {
       "name": "save_library",
       "aliases": ["savl"],
       "summary": "Confirm the library is saved.",

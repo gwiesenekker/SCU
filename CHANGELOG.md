@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `rename_version` (`renv`) to correct the name of the current unlocked version while preserving deck revisions and original archive provenance.
+
 - Show `Matches` in the `extv` table and summary when working files already match their selected deck revisions.
 
 - Add `make install` to build the CLI with the current commit ID and install it in `/tmp2/gwies/bin`.
