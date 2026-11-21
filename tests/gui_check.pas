@@ -14,6 +14,7 @@ type
     function PromptNewVersion(var Version: string): Boolean; override;
     function ConfirmDeckClose(Document: TScuEditorTab): Integer; override;
   end;
+  TSplitterAccess = class(TSplitter);
   TTabBarAccess = class(TScuTabBar);
 function TTestMainForm.ConfirmDeckClose(Document: TScuEditorTab): Integer;
 begin Inc(ClosePrompts); Result := CloseAnswer; end;
@@ -42,6 +43,43 @@ begin
     if GetTickCount64 > Deadline then raise Exception.Create('GUI command timeout');
   until not Main.Busy;
   Application.ProcessMessages;
+end;
+procedure CheckPaneDrag(Pane: TWinControl; Edge: TAlign);
+var Split: TSplitterAccess; I, Initial, Requested: Integer;
+  function PaneSize: Integer;
+  begin
+    if Edge = alBottom then Result := Pane.Height else Result := Pane.Width;
+  end;
+  procedure Drag(Delta: Integer);
+  var Start, Finish: TPoint;
+  begin
+    Start := Split.ClientToScreen(Point(Split.Width div 2, Split.Height div 2));
+    Finish := Start;
+    if Edge = alBottom then Dec(Finish.Y, Delta)
+    else if Edge = alRight then Dec(Finish.X, Delta)
+    else Inc(Finish.X, Delta);
+    Split.StartSplitterMove(Start);
+    if Edge = alLeft then Split.MoveSplitter(Delta div 2)
+    else Split.MoveSplitter(-(Delta div 2));
+    Application.ProcessMessages;
+    Split.StopSplitterMove(Finish);
+    Application.ProcessMessages;
+  end;
+begin
+  Split := nil;
+  for I := 0 to Pane.Parent.ControlCount - 1 do
+    if (Pane.Parent.Controls[I] is TSplitter) and (Pane.Parent.Controls[I].Align = Edge) then
+      Split := TSplitterAccess(Pane.Parent.Controls[I]);
+  Check(Assigned(Split), 'Pane has a splitter');
+  Check(Split.ResizeControl = Pane, 'Splitter targets the adjacent pane: ' + IntToStr(Ord(Edge)));
+  Initial := PaneSize;
+  Drag(40);
+  Requested := Initial + 40;
+  Check(Abs(PaneSize - Requested) <= 1, 'Drag enlarges pane: ' + IntToStr(Ord(Edge)));
+  Main.RefreshLayout;
+  Check(Abs(PaneSize - Requested) <= 1, 'Layout keeps dragged size: ' + IntToStr(Ord(Edge)));
+  Drag(-40);
+  Check(Abs(PaneSize - Initial) <= 1, 'Reverse drag restores pane size');
 end;
 procedure CheckManual;
 var
@@ -188,6 +226,9 @@ begin
   Main := TTestMainForm.Create(nil);
   try
     Main.Show; Application.ProcessMessages;
+    CheckPaneDrag(Main.LogView.Parent, alBottom);
+    CheckPaneDrag(Main.DeckList.Parent, alLeft);
+    CheckPaneDrag(Main.DiffView.Parent, alRight);
     CheckManual;
     Check(Main.Preferences.EditorFont.Name = DefaultGuiFont, 'Platform default editor font');
     Check(Main.LogView.Font.Name = DefaultGuiFont, 'Platform default log font');

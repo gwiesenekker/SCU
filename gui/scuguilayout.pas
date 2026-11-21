@@ -6,6 +6,7 @@ type
   TScuWorkspaceForm = class(TForm)
   private
     FAdjusting: Boolean;
+    FLayoutWidth, FLayoutHeight: Integer;
     FDeckFraction, FDiffFraction, FLogFraction: Double;
     FLeftSplit, FRightSplit, FBottomSplit: TSplitter;
     procedure SplitMoved(Sender: TObject);
@@ -64,7 +65,7 @@ begin
   Row.Top := 1000;
 end;
 constructor TScuWorkspaceForm.Create(AOwner: TComponent);
-var MainMenu: TMainMenu;
+var MainMenu: TMainMenu; Content: TPanel;
 begin
   inherited CreateNew(AOwner);
   Caption := 'Source Code Utility'; Position := poScreenCenter;
@@ -81,15 +82,17 @@ begin
   FExtractButton := Button(Self, FToolbar, 'Extract deck');
   FExtractAllButton := Button(Self, FToolbar, 'Extract version');
   FCloseTabButton := Button(Self, FToolbar, 'Close tab');
-  FBottomPane := Panel(Self, Self, alBottom); FBottomPane.Height := 190;
+  Content := Panel(Self, Self, alClient);
+  FBottomPane := Panel(Self, Content, alBottom); FBottomPane.Height := 190;
   Heading(Self, FBottomPane, 'Command and build log');
   FLog := TSynEdit.Create(Self); FLog.Parent := FBottomPane; FLog.Align := alClient;
   FLog.MouseOptions := FLog.MouseOptions - [emRightMouseMovesCursor];
   FLog.ReadOnly := True; FLog.Gutter.Visible := False; FLog.RightEdge := 0;
   FLog.Font.Name := DefaultGuiFont; FLog.Font.Size := 10;
-  FBottomSplit := TSplitter.Create(Self); FBottomSplit.Parent := Self;
+  FBottomSplit := TSplitter.Create(Self); FBottomSplit.Parent := Content;
   FBottomSplit.Align := alBottom; FBottomSplit.Height := 6; FBottomSplit.OnMoved := @SplitMoved;
-  FWorkspace := Panel(Self, Self, alClient);
+  FBottomSplit.ResizeControl := FBottomPane;
+  FWorkspace := Panel(Self, Content, alClient);
   FLeftPane := Panel(Self, FWorkspace, alLeft); FLeftPane.Width := 220;
   Heading(Self, FLeftPane, 'Decks');
   FDeckList := TListBox.Create(Self); FDeckList.Parent := FLeftPane; FDeckList.Align := alClient;
@@ -115,9 +118,11 @@ end;
 procedure TScuWorkspaceForm.RefreshLayout;
 var Em, Line, LeftMin, RightMin, MiddleMin, W, H: Integer;
 begin
-  if FAdjusting or not Assigned(FWorkspace) then Exit;
+  if FAdjusting or not Assigned(FTabBar) then Exit;
   FAdjusting := True;
   try
+    FLayoutWidth := ClientWidth;
+    FLayoutHeight := ClientHeight;
     FTabBar.RefreshTabs;
     Canvas.Font.Assign(Font); Em := Max(6, Canvas.TextWidth('M')); Line := Max(14, Canvas.TextHeight('Ag'));
     LeftMin := 14 * Em; RightMin := 30 * Em; MiddleMin := 32 * Em;
@@ -130,23 +135,25 @@ begin
     FRightPane.Width := Max(RightMin, Min(Round(W * FDiffFraction), W - FLeftPane.Width - MiddleMin));
     H := ClientHeight - FToolbar.Height - FStatus.Height - FBottomSplit.Height;
     FBottomPane.Height := Max(Line * 6, Min(Round(H * FLogFraction), H - Line * 19));
-    DisableAlign;
-    try
-      FStatus.Top := ClientHeight - FStatus.Height;
-      FBottomPane.Top := ClientHeight - FStatus.Height - FBottomPane.Height;
-      FBottomSplit.Top := FBottomPane.Top - FBottomSplit.Height;
-    finally EnableAlign; end;
+    FBottomPane.Constraints.MinHeight := Line * 6;
+    FWorkspace.Constraints.MinHeight := Line * 19;
   finally FAdjusting := False; end;
 end;
 procedure TScuWorkspaceForm.SplitMoved(Sender: TObject);
 begin
   if FAdjusting or (FWorkspace.Width <= 0) or (ClientHeight <= 0) then Exit;
-  FDeckFraction := FLeftPane.Width / FWorkspace.Width;
-  FDiffFraction := FRightPane.Width / FWorkspace.Width;
-  FLogFraction := FBottomPane.Height / Max(1, ClientHeight - FToolbar.Height - FStatus.Height);
+  if Sender = FBottomSplit then
+    FLogFraction := FBottomPane.Height / Max(1, ClientHeight - FToolbar.Height - FStatus.Height - FBottomSplit.Height)
+  else if Sender = FLeftSplit then
+    FDeckFraction := FLeftPane.Width / Max(1, FWorkspace.ClientWidth - FLeftSplit.Width - FRightSplit.Width)
+  else if Sender = FRightSplit then
+    FDiffFraction := FRightPane.Width / Max(1, FWorkspace.ClientWidth - FLeftSplit.Width - FRightSplit.Width);
 end;
 procedure TScuWorkspaceForm.Resize;
-begin inherited Resize; RefreshLayout; end;
+begin
+  inherited Resize;
+  if (ClientWidth <> FLayoutWidth) or (ClientHeight <> FLayoutHeight) then RefreshLayout;
+end;
 procedure TScuWorkspaceForm.FontChanged(Sender: TObject);
 begin inherited FontChanged(Sender); RefreshLayout; end;
 procedure TScuWorkspaceForm.DoAutoAdjustLayout(const AMode: TLayoutAdjustmentPolicy;

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix dragging the deck, diff, and log pane dividers in the Linux GUI. The layout retains the selected pane proportions.
+
 - Record the library creation platform and list cross-platform filename warnings in the opening summary.
 
 - Preserve deck-name case in commands, completion, file scans and archive imports. Linux libraries can track and export case-distinct sources independently.
