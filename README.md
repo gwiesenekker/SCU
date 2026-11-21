@@ -1340,7 +1340,8 @@ sound module is missing; it does not prevent SCU from running. Installing
 `libcanberra-gtk-module` removes the message. A GTK3 module alone does not satisfy
 the GTK2 build.
 
-- **File:** Open library, Close library, Create new version, Publish version, and Quit.
+- **File:** Open library, Close library, Lock version, Unlock version, Create new version, Publish version, and Quit.
+  Lock version shows the current version and accepts a multiline description of the saved changes. Unlock version reopens the latest locked version.
   Create new version prefills the next version using `version_increment`; the
   current version must be locked first. Unsaved buffers remain in the editor
   until explicitly saved into the new version.

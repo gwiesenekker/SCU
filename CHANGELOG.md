@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add Lock version and Unlock version to the GUI File menu. The lock dialog identifies the current version and accepts a multiline description.
+
 - Fix dragging the deck, diff, and log pane dividers in the Linux GUI. The layout retains the selected pane proportions.
 
 - Record the library creation platform and list cross-platform filename warnings in the opening summary.

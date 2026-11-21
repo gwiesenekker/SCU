@@ -29,6 +29,8 @@ type
     FOpenAfterClose: string;
     FCloseTabAfter: TScuEditorTab;
     FManual: TManualForm;
+    FVersionLocked: Boolean;
+    FLockMenu, FUnlockMenu: TMenuItem;
     FOpenMenu, FCloseMenu, FCreateMenu, FPublishMenu, FQuitMenu: TMenuItem;
     FLogMenu: TPopupMenu;
     FLogCopy, FLogSelectAll: TMenuItem;
@@ -73,6 +75,9 @@ type
     procedure OpenClick(Sender: TObject);
     procedure CloseClick(Sender: TObject);
     procedure PublishClick(Sender: TObject);
+    procedure FileMenuClick(Sender: TObject);
+    procedure LockVersionClick(Sender: TObject);
+    procedure UnlockVersionClick(Sender: TObject);
     procedure CreateVersionClick(Sender: TObject);
     procedure QuitClick(Sender: TObject);
     procedure PreferencesClick(Sender: TObject);
@@ -105,7 +110,7 @@ type
     property LastError: string read FLastError;
   end;
 implementation
-uses Dialogs, StdCtrls, LCLType, LCLProc, ScuGuiCommands, ScuGuiReader,
+uses ButtonPanel, Dialogs, StdCtrls, LCLType, LCLProc, ScuGuiCommands, ScuGuiReader,
   ScuLibrary, ScuLibraryPaths, ScuFiles, ScuGuiOptions, ScuPlatformPaths;
 destructor TGuiJob.Destroy;
 begin Command.Free; inherited Destroy; end;
@@ -127,6 +132,9 @@ begin
   FTimer := TTimer.Create(Self); FTimer.Interval := 20; FTimer.OnTimer := @Tick;
   FOpenMenu := MenuEntry(Self, FFileMenu, '&Open library…', 'Ctrl+O', @OpenClick);
   FCloseMenu := MenuEntry(Self, FFileMenu, '&Close library', '', @CloseClick);
+  FFileMenu.OnClick := @FileMenuClick;
+  FLockMenu := MenuEntry(Self, FFileMenu, '&Lock version…', '', @LockVersionClick);
+  FUnlockMenu := MenuEntry(Self, FFileMenu, '&Unlock version', '', @UnlockVersionClick);
   FCreateMenu := MenuEntry(Self, FFileMenu, '&Create new version…', '', @CreateVersionClick);
   FPublishMenu := MenuEntry(Self, FFileMenu, '&Publish version…', '', @PublishClick);
   MenuEntry(Self, FFileMenu, '-', '', nil);
@@ -367,6 +375,9 @@ begin
         Job.Document.AcceptSave(ReadGuiDeck(FLibraryPath, Job.Document.Deck));
         RefreshDecks; RefreshVersions(True); FDiffPending := True;
       end;
+      if Job.Command.Name = 'lock_version' then FVersionLocked := True;
+      if (Job.Command.Name = 'unlock_version') or (Job.Command.Name = 'create_version') then
+        FVersionLocked := False;
       if (Job.Command.Name = 'create_version') or (Job.Command.Name = 'configure_library') then
       begin RefreshDecks; RefreshVersions(True); FDiffPending := Assigned(ActiveDocument); end;
       FStatus.SimpleText := Job.Command.Name + ' completed.';
@@ -435,6 +446,8 @@ begin
   Idle := not Busy; Opened := FLibraryPath <> '';
   Browsing := Idle or Comparing;
   FOpenMenu.Enabled := Idle; FCloseMenu.Enabled := Idle and Opened;
+  FLockMenu.Enabled := Browsing and Opened and not FVersionLocked;
+  FUnlockMenu.Enabled := Browsing and Opened and FVersionLocked;
   FCreateMenu.Enabled := (Idle or Comparing) and Opened;
   FPublishMenu.Enabled := Idle and Opened; FQuitMenu.Enabled := Idle;
   FSaveButton.Enabled := Idle and Assigned(ActiveDocument);
@@ -473,13 +486,14 @@ begin
   end;
 end;
 procedure TScuMainForm.OpenLibrary(const Path: string);
-var Normalized: string;
+var Normalized: string; State: TGuiLibraryState;
 begin
   if Busy then raise Exception.Create('Wait for the current command before opening a library.');
   Normalized := CanonicalFile(NormalizeLibraryName(Path));
-  ReadGuiDecks(Normalized); // Validate before replacing the existing session.
+  State := ReadGuiLibraryState(Normalized, False); // Validate before replacing the existing session.
   if FLibraryPath <> '' then
   begin RequestTransition(Normalized, False); Exit; end;
+  FVersionLocked := State.Locked;
   FLibraryPath := Normalized; FLastError := ''; Caption := 'SCU — ' + ExtractFileName(FLibraryPath);
   RefreshDecks; AddJob('display_library', []); StartNext;
 end;
@@ -621,6 +635,60 @@ begin
   if InputQuery('Publish version', 'Library version', Version) then
     try PublishVersion(Version); except on E: Exception do Error(E.Message); end;
 end;
+procedure TScuMainForm.FileMenuClick(Sender: TObject);
+begin
+  if (FLibraryPath = '') or (Busy and not Comparing) then Exit;
+  try
+    FVersionLocked := ReadGuiLibraryState(FLibraryPath, False).Locked;
+    RefreshActions;
+  except on E: Exception do Error(E.Message); end;
+end;
+
+procedure TScuMainForm.LockVersionClick(Sender: TObject);
+var Dialog: TForm; Memo: TMemo; Buttons: TButtonPanel; LabelText: TLabel;
+  Version, Description: string;
+begin
+  if (FLibraryPath = '') or (Busy and not Comparing) then Exit;
+  try
+    Version := ReadGuiLibraryState(FLibraryPath, False).CurrentVersion;
+    Dialog := TForm.CreateNew(Self);
+    try
+      Dialog.Caption := 'Lock version ' + Version;
+      Dialog.Position := poOwnerFormCenter;
+      Dialog.ClientWidth := 520; Dialog.ClientHeight := 280;
+      Dialog.BorderWidth := 8;
+      LabelText := TLabel.Create(Dialog); LabelText.Parent := Dialog; LabelText.Align := alTop;
+      LabelText.Caption := 'Describe the saved changes in version ' + Version + ':';
+      Buttons := TButtonPanel.Create(Dialog); Buttons.Parent := Dialog;
+      Buttons.ShowButtons := [pbOK, pbCancel];
+      Memo := TMemo.Create(Dialog); Memo.Parent := Dialog; Memo.Align := alClient;
+      Memo.ScrollBars := ssAutoVertical; Memo.WantReturns := True;
+      Dialog.ActiveControl := Memo;
+      repeat
+        if Dialog.ShowModal <> mrOK then Exit;
+        Description := Memo.Text;
+        if Trim(Description) <> '' then Break;
+        LabelText.Caption := 'Enter a description before locking version ' + Version + ':';
+      until False;
+    finally Dialog.Free; end;
+    if ReadGuiLibraryState(FLibraryPath, False).CurrentVersion <> Version then
+      raise Exception.Create('The current version changed while entering the description.');
+    CancelScheduledPreview;
+    FLastError := '';
+    AddJob('lock_version', ['description=' + Description]); StartNext;
+  except on E: Exception do CommandError('lock_version', E.Message); end;
+end;
+
+procedure TScuMainForm.UnlockVersionClick(Sender: TObject);
+begin
+  if (FLibraryPath = '') or (Busy and not Comparing) then Exit;
+  try
+    CancelScheduledPreview;
+    FLastError := '';
+    AddJob('unlock_version', []); StartNext;
+  except on E: Exception do CommandError('unlock_version', E.Message); end;
+end;
+
 function TScuMainForm.PromptNewVersion(var Version: string): Boolean;
 begin Result := InputQuery('Create new version', 'New library version', Version); end;
 procedure TScuMainForm.CreateVersionClick(Sender: TObject);

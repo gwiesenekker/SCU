@@ -78,7 +78,7 @@ By default `disvh` shows the ten most recent versions. `disdd` compares the prev
 
 ## Use the GUI editor
 
-Select a deck in the left pane to open its editor tab. A star beside the tab name means the buffer differs from stored source. Choose **Save deck** or press Ctrl+S to record your edit. If the library version is locked, choose **File → Create new version**, accept or edit the proposed number, then save the buffer.
+Select a deck in the left pane to open its editor tab. A star beside the tab name means the buffer differs from stored source. Choose **Save deck** or press Ctrl+S to record your edit. Choose **File → Lock version** to lock the saved revisions. The dialog shows the current version above the multiline description. **File → Unlock version** reopens that version for editing. To start a new version after locking, choose **File → Create new version**, accept or edit the proposed number, then save the buffer.
 
 The right pane compares the current stored deck revision with the live editor buffer as you type. Change either selector to compare another pair. `scu$live_deck_version` refers to unsaved editor text. `scu$current_deck_version` and `scu$previous_deck_version` refer to stored revisions. Selecting the previous revision is useful after saving an edit.
 

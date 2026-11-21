@@ -76,8 +76,11 @@ with tempfile.TemporaryDirectory(prefix="scu-gui-test-") as temporary:
     with closing(sqlite3.connect(library)) as database:
         events = [json.loads(line[65:]) for line, in database.execute("SELECT line FROM audit_records ORDER BY sequence")]
     commands = [event.get("command") for event in events if event.get("phase") == "begin"]
-    for expected in ("import_deck", "extract_deck", "extract_version", "release_version", "display_deck_diff", "create_version", "configure_library"):
+    for expected in ("import_deck", "extract_deck", "extract_version", "release_version", "display_deck_diff", "create_version", "configure_library", "lock_version", "unlock_version"):
         assert expected in commands, (expected, commands)
+    locks = [event for event in events if event.get("phase") == "begin" and event.get("command") == "lock_version"]
+    assert len(locks) == 2
+    assert all(event["parameters"]["description"].splitlines() == ["First line", "Second line"] for event in locks)
     assert not any("scu$live_deck_version" in json.dumps(event.get("parameters", {}))
                    for event in events if event.get("phase") == "begin"), "Live selector leaked to CLI"
     extract = next(event for event in events if event.get("phase") == "begin"

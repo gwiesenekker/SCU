@@ -1,7 +1,7 @@
 program gui_check;
 {$mode objfpc}{$H+}
 uses {$IFDEF UNIX}cthreads,{$ENDIF} {$IFDEF WINDOWS}Windows, ScuPlatformProcessStringsWindows,{$ENDIF} Interfaces, Forms, Classes, SysUtils, Controls, StdCtrls, ExtCtrls,
-  ComCtrls, Graphics, Types, SynEdit, uManualForm, FPImage, Dialogs, Menus, FPJSON, Process, ScuGuiOptions, LCLType, ScuGuiTabs, ScuGuiMain, ScuGuiTab, ScuFiles, ScuGuiReader, ScuGuiLiveDiff, ScuSQLite, ScuSQLiteDB, ScuPlatformPaths, ScuGuiPlatform;
+  ComCtrls, Graphics, Types, SynEdit, uManualForm, FPImage, Dialogs, Menus, FPJSON, ScuGuiOptions, LCLType, ScuGuiTabs, ScuGuiMain, ScuGuiTab, ScuFiles, ScuGuiReader, ScuGuiLiveDiff, ScuSQLite, ScuSQLiteDB, ScuPlatformPaths, ScuGuiPlatform;
 type TErrorHandler = class
   procedure Failed(Sender: TObject; E: Exception);
 end;
@@ -10,6 +10,7 @@ type
   public
     CloseAnswer, ClosePrompts, ErrorDialogs: Integer;
     LastDialogCommand, LastDialogDetails, PrefilledVersion: string;
+    procedure AnswerLockDialog(Answer: PtrInt);
     procedure DisplayCommandError(const CommandName, Details: string); override;
     function PromptNewVersion(var Version: string): Boolean; override;
     function ConfirmDeckClose(Document: TScuEditorTab): Integer; override;
@@ -191,16 +192,24 @@ begin
   Check((Main.FromVersion.ItemIndex >= 0) and (Main.ToVersion.ItemIndex >= 0), 'Comparison selectors exist');
   Main.ToVersion.OnChange(Main.ToVersion);
 end;
-procedure BackendCommand(const Arguments: array of string);
-var Child: TProcess; Argument: string;
+procedure TTestMainForm.AnswerLockDialog(Answer: PtrInt);
+var Dialog: TForm; I: Integer; Memo: TMemo; LabelFound: Boolean;
 begin
-  Child := TProcess.Create(nil);
-  try
-    Child.Executable := IncludeTrailingPathDelimiter(ExtractFileDir(CheckArgument(0))) + ExecutableName('scu'); Child.Parameters.Add(CheckArgument(1));
-    for Argument in Arguments do Child.Parameters.Add(Argument);
-    Child.Options := [poWaitOnExit{$IFDEF WINDOWS}, poNoConsole{$ENDIF}]; Child.Execute;
-    Check(Child.ExitStatus = 0, 'Fixture command succeeded');
-  finally Child.Free; end;
+  Dialog := nil;
+  for I := 0 to Screen.FormCount - 1 do
+    if fsModal in Screen.Forms[I].FormState then Dialog := Screen.Forms[I];
+  Check(Assigned(Dialog), 'Lock description opens a modal dialog');
+  Check(Dialog.Caption = 'Lock version 1.0', 'Lock dialog identifies the current version');
+  Memo := nil; LabelFound := False;
+  for I := 0 to Dialog.ComponentCount - 1 do
+  begin
+    if Dialog.Components[I] is TMemo then Memo := TMemo(Dialog.Components[I]);
+    if Dialog.Components[I] is TLabel then
+      LabelFound := LabelFound or (Pos('version 1.0', TLabel(Dialog.Components[I]).Caption) > 0);
+  end;
+  Check(LabelFound and Assigned(Memo), 'Current version is visible beside the multiline description');
+  Memo.Text := 'First line' + LineEnding + 'Second line';
+  Dialog.ModalResult := Answer;
 end;
 procedure SnapshotWindow(Window: TForm; const Path: string);
 var Bitmap: TBitmap; PNG: TPortableNetworkGraphic;
@@ -211,7 +220,7 @@ begin
   finally PNG.Free; Bitmap.Free; end;
 end;
 var Tab, Other: TScuEditorTab; ListMarker: TObject; Path, OldDisk: string; I: Integer; EditorFont: TFont; BeforeAudit: Int64; OriginalBytes, OriginalDisk: RawByteString; OriginalVersion: string; Configuration: TJSONObject; State: TGuiLibraryState;
-  Options: TScuOptionsDialog; Parameters: array of string; VersionItem: TMenuItem; BeforeDialogs: Integer;
+  Options: TScuOptionsDialog; Parameters: array of string; VersionItem, LockItem, UnlockItem: TMenuItem; BeforeDialogs: Integer;
 begin
   InitializePlatformPaths;
   {$IFDEF WINDOWS}
@@ -429,8 +438,20 @@ begin
     Tab.Editor.Undo; Pump;
     // The document is back at the stored bytes, so close requires no discard.
     Check(not Tab.Dirty, 'Undo to stored bytes clears dirty title');
-    // Lock the stored version externally, then exercise the GUI failure/recovery path.
-    BackendCommand(['lock_version', 'description=GUI lock workflow']);
+    LockItem := Main.Menu.Items[0].Find('&Lock version…');
+    UnlockItem := Main.Menu.Items[0].Find('&Unlock version');
+    Check(Assigned(LockItem) and Assigned(UnlockItem), 'File menu has both lock actions');
+    Check(LockItem.Enabled and not UnlockItem.Enabled, 'Only Lock is available for the open version');
+    Application.QueueAsyncCall(@Main.AnswerLockDialog, mrCancel);
+    LockItem.Click; Pump;
+    Check(not ReadGuiLibraryState(CheckArgument(1)).Locked, 'Cancel leaves the version open');
+    Application.QueueAsyncCall(@Main.AnswerLockDialog, mrOK);
+    LockItem.Click; Pump;
+    Check(UnlockItem.Enabled and not LockItem.Enabled, 'Lock enables Unlock');
+    UnlockItem.Click; Pump;
+    Check(not ReadGuiLibraryState(CheckArgument(1)).Locked and LockItem.Enabled, 'Unlock reopens current version');
+    Application.QueueAsyncCall(@Main.AnswerLockDialog, mrOK);
+    LockItem.Click; Pump;
     OriginalBytes := ReadGuiDeck(CheckArgument(1), 'main.pas').Bytes;
     OriginalVersion := ReadGuiDeck(CheckArgument(1), 'main.pas').DeckVersion;
     Tab.Editor.CaretXY := Point(1,2); Tab.Editor.SelText := '// AFTER LOCK' + #10;

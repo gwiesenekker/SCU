@@ -12,7 +12,7 @@ type
     Deleted: Boolean;
     DeckVersion, SourceName: string;
   end;
-function ReadGuiLibraryState(const LibraryPath: string): TGuiLibraryState;
+function ReadGuiLibraryState(const LibraryPath: string; SuggestNext: Boolean = True): TGuiLibraryState;
 // The caller owns the returned configuration snapshot.
 function ReadGuiConfiguration(const LibraryPath: string): TJSONObject;
 function ReadGuiDecks(const LibraryPath: string): TDeckListEntries;
@@ -21,7 +21,7 @@ function ReadGuiDeck(const LibraryPath, Deck: string): TGuiDeck;
 procedure ReadGuiVersions(const LibraryPath, Deck: string; Versions: TStrings);
 implementation
 uses ScuSQLite, ScuErrors;
-function ReadGuiLibraryState(const LibraryPath: string): TGuiLibraryState;
+function ReadGuiLibraryState(const LibraryPath: string; SuggestNext: Boolean): TGuiLibraryState;
 var Database: TSQLiteLibrary; LibraryFile: TDeckLibrary;
 begin
   Database := TSQLiteLibrary.OpenRead(LibraryPath);
@@ -29,7 +29,7 @@ begin
     LibraryFile := TDeckLibrary.Load(LibraryPath, Database);
     try
       Result.CurrentVersion := LibraryFile.CurrentVersion;
-      Result.NextVersion := LibraryFile.SuggestedNextVersion;
+      if SuggestNext then Result.NextVersion := LibraryFile.SuggestedNextVersion;
       Result.Locked := LibraryFile.VersionHistory[LibraryFile.VersionCount-1].Locked;
       Result.PrefixEditable := not Result.Locked and
         (LibraryFile.Revision = LibraryFile.VersionHistory[LibraryFile.VersionCount-1].BaseRevision);
