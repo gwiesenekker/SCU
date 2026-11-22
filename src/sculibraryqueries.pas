@@ -119,8 +119,10 @@ type
   TDeckIndex = specialize TFPGMap<string, Integer>;
 var
   Decks: TDeckIndex;
-  Base, Last, Index, StoredIndex: Integer;
-  Entry: TLibraryRevision;
+  Base, Last, Index, StoredIndex, Slot, Remaining: Integer;
+  PriorSequences: array of Integer;
+  PreviousVersion: string;
+  Entry, Prior: TLibraryRevision;
 begin
   Result := nil;
   VersionBounds(Version, Base, Last);
@@ -134,16 +136,36 @@ begin
       if Decks.IndexOf(Entry.Name) < 0 then
         Decks.Add(Entry.Name, Index);
     end;
+    if Decks.Count = 0 then Exit;
+    PreviousVersion := Versions.PredecessorName(Version);
+    SetLength(PriorSequences, Decks.Count);
+    Remaining := Decks.Count;
+    // Resolve the visible predecessor of every listed deck in one backward pass.
+    for Index := Base - 1 downto 0 do
+    begin
+      CheckSessionInterrupt;
+      Slot := Decks.IndexOf(FStore[Index].Name);
+      if (Slot < 0) or (PriorSequences[Slot] <> 0) then Continue;
+      PriorSequences[Slot] := Index + 1;
+      Dec(Remaining);
+      if Remaining = 0 then Break;
+    end;
     SetLength(Result, Decks.Count);
     for Index := 0 to Decks.Count - 1 do
     begin
       CheckSessionInterrupt;
       StoredIndex := Decks.Data[Index];
-      Entry := FStore[StoredIndex];
+      Entry := FStore.PayloadAt(StoredIndex, Database);
       Result[Index].Name := Entry.Name;
       Result[Index].DeckVersion := DeckVersionAt(StoredIndex + 1);
-      Result[Index].ModifiedUTC := FStore.PayloadAt(StoredIndex, Database).ModifiedUTC;
+      Result[Index].ModifiedUTC := Entry.ModifiedUTC;
       Result[Index].Deleted := Entry.Deleted;
+      if Entry.Deleted or (PriorSequences[Index] = 0) then Continue;
+      StoredIndex := PriorSequences[Index] - 1;
+      if FStore[StoredIndex].Deleted then Continue;
+      Prior := FStore.PayloadAt(StoredIndex, Database);
+      if (Entry.SHA1 = Prior.SHA1) and (Entry.Decode = Prior.Decode) then
+        Result[Index].MatchingVersion := PreviousVersion;
     end;
   finally
     Decks.Free;

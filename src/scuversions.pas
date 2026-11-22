@@ -39,6 +39,7 @@ type
     procedure Bounds(const Name: string; Latest: Integer; out Base, Last: Integer);
     procedure ListNames(Latest, MinimumRevision: Integer; Dest: TStrings);
     function AtRevision(Revision: Integer): string;
+    function PredecessorName(const Name: string): string;
     function TryPrevious(out Name: string; out Last: Integer): Boolean;
     property Count: Integer read GetCount;
     property Entries[Index: Integer]: TVersionEntry read GetEntry;
@@ -182,6 +183,14 @@ begin
     Result := BaseRevision(Index + 1)
   else
     Result := Latest;
+end;
+
+function TVersionHistory.PredecessorName(const Name: string): string;
+var Index: Integer;
+begin
+  Index := IndexOf(Name);
+  if Index = 0 then Exit('');
+  Result := FEntries[Index - 1].Name;
 end;
 
 function TVersionHistory.TryPrevious(out Name: string; out Last: Integer): Boolean;

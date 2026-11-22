@@ -604,7 +604,7 @@ class PortableCliTests(unittest.TestCase):
                          ["Deck name", "Deck version", "Modified (local TZ)", "Status"])
         rows = [row.split("\t") for row in self.table_data(table).splitlines()]
         self.assertEqual([(r[0], r[1], r[3]) for r in rows], [
-            ("main", "1.1-0.001", "stored"),
+            ("main", "1.1-0.001", "matches 1.0"),
             ("new", "1.1-0.000", "stored"),
             ("recreated", "1.1-0.001", "stored"),
             ("removed", "1.1-0.000", "deleted"),
@@ -625,6 +625,23 @@ class PortableCliTests(unittest.TestCase):
         self.assertNotIn("inherited", self.run_scu("disv"))
         self.run_scu("verify_audit_trail")
 
+
+    def test_display_version_compares_exact_bytes_with_inherited_predecessor(self):
+        self.store("gwd.json", b'{"depth": 4}\r\n')
+        self.store("gone", b"")
+        self.run_scu("locv", "d=Initial")
+        self.run_scu("crev", "1.1")
+        self.run_scu("deld", "gone")
+        self.run_scu("locv", "d=Inherited")
+        self.run_scu("crev", "1.2")
+        self.store("gwd.json", b'{"depth": 0}\r\n')
+        self.store("gwd.json", b'{"depth": 4}\n')
+        self.assertRegex(self.run_scu("disv"), r"gwd\.json +1\.2-0\.001 +[^\n]+ +stored$")
+        self.store("gwd.json", b'{"depth": 4}\r\n')
+        self.run_scu("cred", "gone")
+        output = self.run_scu("disv")
+        self.assertRegex(output, r"gwd\.json +1\.2-0\.002 +[^\n]+ +matches 1\.1")
+        self.assertRegex(output, r"gone +1\.2-0\.000 +[^\n]+ +stored")
 
     def test_create_version_canonical_name_abbreviation_and_retired_names(self):
         for retired in ("start_version", "stav"):

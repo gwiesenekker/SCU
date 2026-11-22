@@ -197,7 +197,9 @@ begin
       CheckSessionInterrupt;
       Status := 'stored';
       if Row.Deleted then
-        Status := 'deleted';
+        Status := 'deleted'
+      else if Row.MatchingVersion <> '' then
+        Status := 'matches ' + Row.MatchingVersion;
       Table.AddRow([DisplayText(Row.Name), Row.DeckVersion, LocalTimestamp(Row.ModifiedUTC), Status]);
     end;
     Table.WriteTo(Sink, Sink.Columns);

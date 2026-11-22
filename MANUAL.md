@@ -66,6 +66,8 @@ A library version groups changes across decks. Each deck has its own revision wi
 | Which revisions exist for this deck? | `disd main.c` |
 | What changed in its last edit? | `disdd main.c` |
 
+`disv` lists each deck revised in the selected version. For example, if you change a setting from 4 to 0 and then back to 4, the final revision shows `matches 8.132` when its source bytes equal those in the preceding locked version 8.132. Both edits remain in deck history. Whitespace and line endings must also match.
+
 Modification and lock times in `disd`, `disv`, and `disvh` use your local time zone. The numeric offset distinguishes the two occurrences of a local time when daylight saving ends. The JSON header, audit records, and release macros use UTC.
 
 Set the library version step with `conl vi=0.001`. After locking version `8.1307`, running `crev` then creates `8.1317`. For `8.1308` as the next version, use `vi=0.0001`. The default step is `0.01`. SCU accepts up to ten fractional digits.

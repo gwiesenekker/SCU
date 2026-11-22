@@ -792,7 +792,7 @@ To undo an accidental `crev 8.1307`, enter `delv 8.1307`. This returns to the pr
 Lock descriptions are required. To write a multiline description in the configured editor, enter `locv` at the SCU prompt or run `scu ln=project.sqlite locv` from a terminal. Save and close to lock, or leave it empty to cancel. Batch input requires an explicit description. Lock
 timestamps are recorded in UTC. Deck and version listings display local time with the UTC offset in effect on the recorded date. `version_increment` defaults to `0.01`; explicit
 version labels may be supplied to `create_version`. `display_version` (`disv`) lists decks
-changed in one version. `display_version_history` (`disvh`) lists the ten most
+that received revisions in the selected version. If an edit restores the exact source bytes visible in the preceding locked version, the row keeps its latest deck version and shows, for example, `matches 8.132`. Whitespace and line endings count. `display_version_history` (`disvh`) lists the ten most
 recent versions with their lock status, lock time, and description.
 The command `display_deck_list` lists the visible snapshot. Use
 `display_version_history limit=0 display_description=full` for complete history with each description printed below its version row.

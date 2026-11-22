@@ -46,7 +46,7 @@ type
   TDeckListEntries = array of TDeckListEntry;
 
   TVersionDeckEntry = record
-    Name, DeckVersion, ModifiedUTC: string;
+    Name, DeckVersion, ModifiedUTC, MatchingVersion: string;
     Deleted: Boolean;
   end;
   TVersionDeckEntries = array of TVersionDeckEntry;

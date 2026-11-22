@@ -455,7 +455,7 @@
           "completion": "library_version"
         }
       ],
-      "help": "Show the selected library version and an alphabetically sorted table of decks stored, edited, deleted, or recreated in that version. Show each deck once, using its latest revision within the selected version, with Deck name, Deck version, Modified (local TZ), and Status columns. Omit inherited decks that were not changed in that version. Interactive edits are saved automatically. Default to scu$current_version without prompting. Long cells wrap to the terminal width without truncation; redirected output remains unwrapped.",
+      "help": "Show the selected library version and an alphabetically sorted table of decks stored, edited, deleted, or recreated in that version. Show each deck once, using its latest revision within the selected version, with Deck name, Deck version, Modified (local TZ), and Status columns. Status is matches <previous locked version> when the final source bytes equal those visible in that predecessor. Omit inherited decks that were not changed in the selected version. Interactive edits are saved automatically. Default to scu$current_version without prompting. Long cells wrap to the terminal width without truncation; redirected output remains unwrapped.",
       "examples": [
         {
           "command": "scu display_version",
