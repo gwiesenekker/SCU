@@ -8,6 +8,7 @@ uses
   ScuCommand, ScuCommandHandler;
 
 procedure RefreshWorkingTracker(const Context: TCommandContext; const FormerVersion: string = '');
+procedure RefreshTemplateTracker(const Context: TCommandContext);
 procedure RefreshVersionTracker(const Context: TCommandContext);
 function SingleDeckDirectory(const Context: TCommandContext): string;
 function VersionOutputDirectory(const Context: TCommandContext): string;
@@ -124,6 +125,9 @@ begin
   Path := IncludeTrailingPathDelimiter(Context.OutputDirectory) + Tracker;
   Manifest := TExportManifest.CreateWorking(Context.OutputDirectory, Context.LibraryFile, Context.Database.Revisions, FormerVersion);
   try
+    if Context.TrackerTemplateChanged and (Context.FormerTracker.FileName <> '') and
+      SameStoragePath(Context.FormerTracker.FileName, Tracker) then
+      Manifest.FormerTracker := Context.FormerTracker;
     Manifest.Recover;
     try
       PlanTracker(Context, Manifest, Path, Context.LibraryFile.CurrentVersion);
@@ -139,6 +143,20 @@ begin
     ReportTracker(Context, Rows);
   finally
     Manifest.Free;
+  end;
+end;
+
+procedure RefreshTemplateTracker(const Context: TCommandContext);
+begin
+  if not Context.TrackerTemplateChanged then Exit;
+  try
+    RefreshWorkingTracker(Context);
+    CheckSessionInterrupt;
+  except
+    on E: ECommandCancelled do
+      raise ECommandCancelled.Create('Template was saved; version tracker refresh was cancelled.');
+    on E: Exception do
+      raise EScuError.Create('Template was saved; could not refresh the version tracker: ' + E.Message);
   end;
 end;
 

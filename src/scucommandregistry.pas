@@ -5,9 +5,10 @@ unit ScuCommandRegistry;
 interface
 
 uses
-  ScuCommandHandler;
+  ScuCommand, ScuCommandHandler;
 
 function CommandHandler(const Name: string): TCommandHandler;
+function ResolveCommandHandler(Command: TScuCommand): TCommandHandler;
 
 implementation
 
@@ -53,7 +54,7 @@ const
     (Name: 'edit_file_patterns'; Handler: (Mode: cmLibrary; Run: @EditFilePatterns;
       ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
     (Name: 'edit_version_tracker'; Handler: (Mode: cmLibrary; Run: @EditVersionTracker;
-      ResolveOutputDirectory: nil; ReportCommitted: nil; OutputLockPolicy: olExclusive)),
+      ResolveOutputDirectory: @WorkingDirectory; ReportCommitted: @RefreshTemplateTracker; OutputLockPolicy: olReuseBuild)),
     (Name: 'extract_deck'; Handler: (Mode: cmLibrary; Run: @ExtractDeck;
       ResolveOutputDirectory: @SingleDeckDirectory; ReportCommitted: nil; OutputLockPolicy: olReuseBuild)),
     (Name: 'extract_version'; Handler: (Mode: cmLibrary; Run: @ExtractVersion;
@@ -88,6 +89,17 @@ begin
   for Index := Low(Registrations) to High(Registrations) do
     if Registrations[Index].Name = Name then Exit(Registrations[Index].Handler);
   raise EScuError.CreateFmt('No implementation for command "%s".', [Name]);
+end;
+
+function ResolveCommandHandler(Command: TScuCommand): TCommandHandler;
+begin
+  Result := CommandHandler(Command.Name);
+  if (Command.Name = 'configure_library') and Command.HasArgument('tracker_template_file') then
+  begin
+    Result.ResolveOutputDirectory := @WorkingDirectory;
+    Result.ReportCommitted := @RefreshTemplateTracker;
+    Result.OutputLockPolicy := olReuseBuild;
+  end;
 end;
 
 end.

@@ -4,7 +4,7 @@ LAZBUILD ?= lazbuild
 FPCRES ?= fpcres
 BINDIR ?= /tmp2/gwies/bin
 
-.PHONY: all install test test-portable gui test-gui format-commands clean
+.PHONY: all install test test-portable test-wine gui test-gui format-commands clean
 all: build/scu build/commands.json
 
 install: build/scu
@@ -89,6 +89,9 @@ test: all build/executor_probe build/platform_probe build/files_probe build/lock
 
 test-portable: all
 	python3 tests/portable_cli.py ./build/scu
+
+test-wine:
+	python3 tools/build_windows.py --fpc "$(FPC)" --test --wine $(WINDOWS_BUILD_ARGS)
 
 format-commands:
 	python3 tools/format_commands.py commands.json

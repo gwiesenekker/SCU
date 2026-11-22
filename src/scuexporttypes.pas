@@ -5,6 +5,9 @@ unit ScuExportTypes;
 interface
 
 type
+  TTrackerTemplateSnapshot = record
+    FileName, Template, ModifiedUTC: string;
+  end;
   TExportMode = (emExtract, emExpand, emTracker);
   TExportStatus = (esCreated, esReplaced, esUnchanged);
   TExportResult = record

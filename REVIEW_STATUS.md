@@ -1,12 +1,22 @@
 # Current review status
 
+## Review of a672d4b
+
+| Issue | Coder disposition |
+| --- | --- |
+| L18 | Template changes from the CLI or GUI refresh the tracker after commit under the output lock. A generated file at the same name can be recognized using the former template, its modification time and a surviving version name. Local edits remain protected. |
+| C6 | The Windows case-alias test uses the recorded filename and verifies the working directory directly. The Windows build driver's test option also runs the platform probes. Linux cross-builds can invoke these through `make test-wine`. |
+| M28 | Recommend retaining the FPC 3.2 Windows launcher workaround. The deprecated properties preserve embedded quotes in command arguments. The former synchronous wait was already removed. Owner decision on closure remains pending. |
+
+Mixed-ending decks open read-only with exact bytes for live comparison. Verification summaries identify working or released files. Legacy working manifests and lock files are left in place because directory contents can be shared with older libraries or live processes. The requested install default remains configurable using `BINDIR`.
+
 ## Review of 3ce2c37
 
 | Issue | Disposition |
 | --- | --- |
 | L14 | Preserve case-sensitive deck lookup. Reject an additional live owner for a working filename at creation, recreation or rebinding, using host filename comparison. No beta-library migration. |
 | L15 | Before replacing different raw output, check its manifest hash and the stored source checksum of its named revision. Missing revisions and reused labels with different content need explicit overwrite. Checking on use also protects alternate output directories. |
-| L16, L17 | Explicit import can adopt a former tracker. Automatic scans keep ignoring it. Relocking can replace archive provenance transactionally. Omitting the manifest retains the original import record. |
+| L16, L17 | Explicit import can adopt a former tracker. Automatic scans also adopt it if it matches file_patterns. Relocking can replace archive provenance transactionally. Omitting the manifest retains the original import record. |
 | X22, C5 | Search PATH explicitly for bare Windows editor names. Let lazbuild use its configured compiler unless the caller specifies a different one. |
 | I26, F10 | Preserve LF, CRLF and CR in the GUI. Mixed-ending decks require an external editor and mixed templates are read-only in Preferences. Mark edited tabs immediately and reconcile exact bytes on idle or demand, sharing the result with live diff. |
 | I24, I25 | Display the child exit code. Create Windows preferences directories through a Unicode state-directory helper. |

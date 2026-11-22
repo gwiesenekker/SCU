@@ -61,13 +61,19 @@ begin
   else if (Extension = '.c') or (Extension = '.h') or (Extension = '.cpp') or (Extension = '.hpp') then FEditor.Highlighter := TSynCppSyn.Create(Self)
 ;
   LoadText(Working);
-  SetDirty(Working <> FStored);
+  SetDirty(not FEditor.ReadOnly and (Working <> FStored));
 end;
 procedure TScuEditorTab.LoadText(const Bytes: RawByteString);
 var SourceText: string; I, Start: Integer;
 begin
-  if not UniformLineEnding(Bytes, FLineBreak) then
-    raise Exception.Create('Mixed line endings in ' + FDeck + '. Use an external editor and import_deck to preserve them.');
+  FEditor.ReadOnly := not UniformLineEnding(Bytes, FLineBreak);
+  if FEditor.ReadOnly then
+  begin
+    FCached := Bytes;
+    FBytesValid := True;
+    FEditor.Hint := 'Mixed line endings. Use an external editor and import_deck to edit this file.';
+    FEditor.ShowHint := True;
+  end;
   SourceText := StringReplace(Bytes, #13#10, #10, [rfReplaceAll]);
   SourceText := StringReplace(SourceText, #13, #10, [rfReplaceAll]);
   FLoading := True;
@@ -110,12 +116,13 @@ end;
 procedure TScuEditorTab.SetDirty(Value: Boolean);
 begin
   FDirty := Value; Caption := FDeck;
-  if FDirty then Caption := Caption + '*';
+  if FEditor.ReadOnly then Caption := Caption + ' (read-only)'
+  else if FDirty then Caption := Caption + '*';
   if Assigned(FOnStateChanged) then FOnStateChanged(Self);
 end;
 procedure TScuEditorTab.Changed(Sender: TObject);
 begin
-  if FLoading then Exit;
+  if FLoading or FEditor.ReadOnly then Exit;
   FBytesValid := False;
   FCheck.Enabled := False;
   FCheck.Enabled := True;
@@ -134,6 +141,7 @@ end;
 procedure TScuEditorTab.PrepareSave;
 var Exists: Boolean; Bytes: RawByteString;
 begin
+  if FEditor.ReadOnly then raise Exception.Create('Mixed line endings. Use an external editor and import_deck to save this deck.');
   Exists := RegularFileExists(FPath);
   if (Exists <> FDiskExists) or (Exists and
     (AuditSHA256(ReadBytes(FPath, MaxDeckSize, [rbNoFollow])) <> FDiskHash)) then

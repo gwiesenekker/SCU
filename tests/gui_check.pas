@@ -256,11 +256,14 @@ begin
     Check(Tab.Dirty and (Tab.Reads = 1), 'An exact dirty check reconciles the pending changes once');
   finally Tab.Free; end;
   Source.Bytes := Source.Bytes + #10;
+  Tab := TCountingTab.CreateDeck(Main, CheckArgument(1), Source.SourceName, Source);
   try
-    Tab := TCountingTab.CreateDeck(Main, CheckArgument(1), Source.SourceName, Source);
-    Tab.Free;
-    Check(False, 'Accepted mixed line endings');
-  except on E: Exception do Check(Pos('Mixed line endings', E.Message) > 0, E.Message); end;
+    Check(Tab.Editor.ReadOnly and not Tab.Dirty, 'Mixed line endings open read-only');
+    Check(Tab.SourceBytes = Source.Bytes, 'Live diff keeps original mixed line endings');
+    Check(Pos('read-only', Tab.Caption) > 0, 'Tab identifies read-only deck');
+    try Tab.PrepareSave; Check(False, 'Saved mixed line endings');
+    except on E: Exception do Check(Pos('Mixed line endings', E.Message) > 0, E.Message); end;
+  finally Tab.Free; end;
   Configuration := TJSONObject.Create;
   try
     Configuration.Add('version_tracker_template', 'one' + #13#10 + 'two');

@@ -94,6 +94,7 @@ var
   HasHeaderSettings: Boolean;
   Index: Integer;
 begin
+  Context.FormerTracker.FileName := Context.LibraryFile.VersionTracker;
   Settings.ChangeTracker := Context.Command.HasArgument('version_tracker');
   Settings.VersionTracker := Context.Command.Argument('version_tracker');
   if Settings.ChangeTracker and (Settings.VersionTracker <> '') then
@@ -147,7 +148,7 @@ begin
       Context.LibraryFile.Configure(Settings);
     if Assigned(PatternList) then Context.LibraryFile.SetFilePatterns(PatternList);
     if Context.Command.HasArgument('tracker_template_file') then
-      Context.LibraryFile.SetTrackerTemplate(ReadBytes(Context.Command['tracker_template_file'], 1024 * 1024));
+      SetCommandTrackerTemplate(Context, ReadBytes(Context.Command['tracker_template_file'], 1024 * 1024));
     Result := 'Updated library header';
   finally
     Editor.Free; Patterns.Free; PatternList.Free;

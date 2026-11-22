@@ -13,6 +13,7 @@ type
     DeckVersion, ExpansionUTC, FileName: string;
     LegacyCopy: Boolean;
   end;
+function RenderTrackerTemplate(const Template, ModifiedUTC, Version: string): RawByteString;
 function RenderTracker(LibraryFile: TDeckLibrary; const Version: string): RawByteString;
 function RenderDeck(LibraryFile: TDeckLibrary; Database: TSQLiteLibrary; const Deck: string;
   const Selection: TDeckSelection; Mode: TExportMode; const ExpansionUTC: string = ''): TRenderedDeck;
@@ -22,11 +23,16 @@ uses
   SysUtils, ScuClock, ScuReleaseMacros, ScuErrors, ScuLibraryNames;
 
 function RenderTracker(LibraryFile: TDeckLibrary; const Version: string): RawByteString;
+begin
+  Result := RenderTrackerTemplate(LibraryFile.TrackerTemplate, LibraryFile.TrackerModified, Version);
+end;
+
+function RenderTrackerTemplate(const Template, ModifiedUTC, Version: string): RawByteString;
 var Expander: TReleaseMacros; Source: TDeckSource;
 begin
   Source := Default(TDeckSource);
-  Source.Bytes := LibraryFile.TrackerTemplate;
-  Source.ModifiedUTC := LibraryFile.TrackerModified;
+  Source.Bytes := Template;
+  Source.ModifiedUTC := ModifiedUTC;
   Expander := TReleaseMacros.Create(Version);
   try Result := Expander.Expand(Source); finally Expander.Free; end;
 end;

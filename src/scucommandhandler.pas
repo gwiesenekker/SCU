@@ -5,7 +5,7 @@ unit ScuCommandHandler;
 interface
 
 uses
-  ScuBuildTypes, ScuCommandSnapshots, ScuCommand, ScuLibrary, ScuOutput, ScuSQLite;
+  ScuExportTypes, ScuBuildTypes, ScuCommandSnapshots, ScuCommand, ScuLibrary, ScuOutput, ScuSQLite;
 
 type
   TBuildRequest = ScuBuildTypes.TBuildRequest;
@@ -20,7 +20,8 @@ type
     Output: TScuOutput;
     Snapshots: TAuditSnapshots;
     Build: TBuildRequest;
-    FilesPublished: Boolean;
+    FilesPublished, TrackerTemplateChanged: Boolean;
+    FormerTracker: TTrackerTemplateSnapshot;
   end;
 
   TCommandOperation = function(var Context: TCommandContext): string;
@@ -38,6 +39,7 @@ type
     OutputLockPolicy: TOutputLockPolicy;
   end;
 
+procedure SetCommandTrackerTemplate(var Context: TCommandContext; const Template: string);
 function BooleanArgument(Command: TScuCommand; const Name: string; const Default: string = 'yes'): Boolean;
 function PrefixArgument(Command: TScuCommand): string;
 function ResolveSnapshot(const Context: TCommandContext): TLibrarySnapshot;
@@ -49,6 +51,14 @@ implementation
 
 uses
   SysUtils, ScuCommands, ScuErrors, ScuVersions;
+
+procedure SetCommandTrackerTemplate(var Context: TCommandContext; const Template: string);
+begin
+  Context.FormerTracker.Template := Context.LibraryFile.TrackerTemplate;
+  Context.FormerTracker.ModifiedUTC := Context.LibraryFile.TrackerModified;
+  Context.LibraryFile.SetTrackerTemplate(Template);
+  Context.TrackerTemplateChanged := Template <> Context.FormerTracker.Template;
+end;
 
 function BooleanArgument(Command: TScuCommand; const Name: string; const Default: string): Boolean;
 begin

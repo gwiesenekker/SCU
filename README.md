@@ -91,6 +91,8 @@ build\windows\scu.exe help
 py -3 tests/portable_cli.py build/windows/scu.exe
 ```
 
+The Windows driver runs both the portable CLI suite and 11 platform suites with `--test`. On Linux with a configured Win64 cross-compiler and Wine, use `make test-wine WINDOWS_BUILD_ARGS="--dll-directory /path/to/windows-dlls"`.
+
 The driver rebuilds the Win64 CLI, uses `build/windows/units` for compiler outputs,
 and places `scu.exe`, the exact repository `commands.json`, and the supplied DLLs
 in `build/windows`. It leaves the Linux build alone. Use `--output PATH` for a
@@ -668,6 +670,8 @@ In **Edit → Preferences**, use **File patterns** to edit the filenames and wil
 To generate a version header, run `conl version_tracker=version.h`. SCU stores the template in the library configuration. Its default C header defines `PROJECT_VERSION` as `"SCU$VERSION"`. Use `edit_version_tracker` (`edivt`) to edit the multiline template in the configured editor.
 
 `extd`, `extv`, and `relv` write the tracker beside their outputs and report `version.h has been expanded` when they create or replace it. If its bytes already match, they report `version.h is unchanged`. Historical exports use the same template with the selected library version. Date and time macros use the template’s modification time. The tracker has no deck revision, so `SCU$DECK_VERSION` stays literal. Overwrite protection applies if you edit the generated file.
+
+Changing the template with `edit_version_tracker` or `configure_library tracker_template_file=...` refreshes the configured working tracker after the template commits. Its previous template and timestamp can identify a generated file under the same name. A hand-edited file is preserved.
 
 After a successful `impd`, SCU refreshes the version tracker in the library directory for the current version. This works for pattern scans and single-file imports, even when no decks changed. SCU reports whether the tracker was expanded or is unchanged. SCU can replace a working tracker that matches the current template rendered for an earlier library version. If it cannot recognize the bytes, it keeps the file and reports the conflict. To replace it explicitly, use `extd version.h o=y b=n`. Importing does not run the build.
 
@@ -1445,8 +1449,7 @@ outside the GUI is preserved and the save stops with an explanation.
 
 Closing a modified tab or library prompts to save, discard the **editor buffer**,
 or cancel. Earlier committed library revisions remain saved. Source files are
-UTF-8 and preserve LF/CRLF and final-newline state; mixed line endings normalize
-when edited. Native checks cover editing, audit commands, streamed builds,
+UTF-8 and preserve uniform LF, CRLF or CR and final-newline state. Mixed-line-ending decks open read-only with their original bytes available for comparison. Native checks cover editing, audit commands, streamed builds,
 publication, font persistence, resizing, larger fonts and DPI changes:
 
 ```sh

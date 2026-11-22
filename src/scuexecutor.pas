@@ -200,7 +200,7 @@ begin
   Context.Command := Command;
   Context.LibraryPath := FLibraryPath;
   Context.Output := FOutput;
-  Handler := CommandHandler(Command.Name);
+  Handler := ResolveCommandHandler(Command);
   if Handler.Mode = cmRecover then
     RestoreLibrary(Context, Handler)
   else if Assigned(Handler.ResolveOutputDirectory) then

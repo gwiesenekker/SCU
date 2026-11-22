@@ -478,8 +478,9 @@ begin
   FUnlockMenu.Enabled := Browsing and Opened and FVersionLocked;
   FCreateMenu.Enabled := (Idle or Comparing) and Opened;
   FPublishMenu.Enabled := Idle and Opened; FQuitMenu.Enabled := Idle;
-  FSaveButton.Enabled := Idle and Assigned(ActiveDocument);
-  FExtractButton.Enabled := FSaveButton.Enabled; FCloseTabButton.Enabled := FSaveButton.Enabled;
+  FExtractButton.Enabled := Idle and Assigned(ActiveDocument);
+  FCloseTabButton.Enabled := FExtractButton.Enabled;
+  FSaveButton.Enabled := FExtractButton.Enabled and not ActiveDocument.Editor.ReadOnly;
   FExtractAllButton.Enabled := Idle and Opened;
   FTabs.Enabled := Browsing; FDeckList.Enabled := Browsing; FTabBar.Enabled := Browsing;
   FTabBar.RefreshTabs;

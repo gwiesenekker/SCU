@@ -193,10 +193,14 @@ class WindowsBuildTests(unittest.TestCase):
     def test_build_can_reuse_app_local_runtime_without_copying_onto_itself(self):
         self.args.output = self.dlls
         self.args.test = True
-        with patch.object(builder.subprocess, 'run', side_effect=[None, None, None, None]) as run:
+        self.args.wine = True
+        with patch.object(builder.subprocess, 'run') as run:
             (self.dlls / 'scu.exe').write_bytes(b'previous compiler output')
             builder.build(self.args)
-        self.assertEqual(run.call_count, 4)
+        suites = [call.args[0] for call in run.call_args_list if call.args[0][-1] == '--wine']
+        self.assertEqual([Path(command[1]).stem for command in suites],
+                         ['portable_cli'] + [suite for _, suite in builder.PLATFORM_SUITES])
+        self.assertEqual(Path(suites[1][2]).name, 'export_names_probe.exe')
         self.assertEqual((self.dlls / 'sqlite3.dll').read_bytes(), b'sqlite3.dll')
 
 

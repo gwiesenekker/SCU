@@ -26,6 +26,7 @@ type
     FPath, FStageDirectory: string;
     FReleaseManifest: Boolean;
     FFormerTrackerVersion: string;
+    FFormerTracker: TTrackerTemplateSnapshot;
     FWorkingLibrary: TDeckLibrary; // Assigned only for manifest-free working batches.
     FRevisions: TSQLiteRevisionStore; // Borrowed while planning publication.
     FStageLock: TFileLock;
@@ -59,6 +60,7 @@ type
       ReplaceExisting: Boolean = False);
     procedure PlanDelete(const LibraryPath, OutputPath, Version: string; ReplaceExisting: Boolean = False);
     function Publish(out Rows: TExportResults): Integer;
+    property FormerTracker: TTrackerTemplateSnapshot write FFormerTracker;
     property ReleaseManifest: Boolean read FReleaseManifest;
     property Count: Integer read GetCount;
     property Entries[Index: Integer]: TExportRecord read GetEntry; default;
@@ -494,6 +496,8 @@ begin
   begin
     CheckSessionInterrupt;
     if RenderTracker(FWorkingLibrary, FWorkingLibrary.VersionHistory[Index].Name) = Bytes then Exit(True);
+    if (FFormerTracker.FileName <> '') and (RenderTrackerTemplate(FFormerTracker.Template,
+      FFormerTracker.ModifiedUTC, FWorkingLibrary.VersionHistory[Index].Name) = Bytes) then Exit(True);
   end;
   Result := False;
 end;

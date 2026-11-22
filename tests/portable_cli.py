@@ -312,12 +312,56 @@ class PortableCliTests(unittest.TestCase):
         editor.write_text("from pathlib import Path\nimport sys\n" +
                           "Path(sys.argv[1]).write_bytes(" + repr(template.encode()) + ")")
         self.run_scu("conl", "vt=version.h", "editor=" + json.dumps([sys.executable, str(editor)]))
-        self.run_scu("edivt")
+        self.run_scu("extd", "version.h", "b=n")
+        self.assertIn("version.h has been expanded", self.run_scu("edivt"))
         header = self.read_library()["header"]
         self.assertEqual(header["version_tracker_template"], template)
         self.run_scu("extd")
         expected = template.replace("SCU$VERSION", "1.0").replace("SCU$DATE", header["version_tracker_modified_utc"][:10])
         self.assertEqual((self.root / "version.h").read_bytes(), expected.encode())
+        self.run_scu("verat")
+
+    def test_template_change_recognizes_historical_tracker_and_preserves_edits(self):
+        template = self.root / "template.txt"
+        template.write_bytes(b'old "SCU$VERSION" SCU$DATE_TIME')
+        self.run_scu("conl", "vt=version.h", "ttf=template.txt")
+        self.run_scu("locv", "original")
+        self.run_scu("crev", "1.1")
+        self.run_scu("extd", "version.h", "v=1.0")
+        tracker = self.root / "version.h"
+        timestamp = self.read_library()["header"]["version_tracker_modified_utc"]
+        self.assertEqual(tracker.read_bytes(), b'old "1.0" ' + timestamp.encode())
+        template.write_bytes(b"release SCU$VERSION")
+        self.assertIn("version.h has been expanded", self.run_scu("conl", "ttf=template.txt"))
+        self.assertEqual(tracker.read_bytes(), b"release 1.1")
+        self.assertIn("version.h is unchanged", self.run_scu("extv"))
+        tracker.write_bytes(b"local edits")
+        template.write_bytes(b"updated SCU$VERSION")
+        self.assertIn("was left untouched", self.run_scu("conl", "ttf=template.txt"))
+        self.assertEqual(tracker.read_bytes(), b"local edits")
+        self.run_scu("verat")
+
+    def test_tracker_template_refresh_waits_for_commit_and_preserves_other_filename(self):
+        template = self.root / "template.txt"
+        template.write_bytes(b"old SCU$VERSION")
+        self.run_scu("conl", "vt=version.h", "ttf=template.txt")
+        tracker = self.root / "version.h"
+        self.assertEqual(tracker.read_bytes(), b"old 1.0")
+        template.write_bytes(b"new SCU$VERSION")
+        with closing(sqlite3.connect(self.library, isolation_level=None)) as db:
+            db.executescript("""
+                CREATE TRIGGER reject_template BEFORE INSERT ON audit_records
+                WHEN json_extract(substr(NEW.line, 66), '$.success') = 1
+                BEGIN SELECT RAISE(ABORT, 'injected template failure'); END;
+            """)
+            self.run_scu("conl", "ttf=template.txt", error="injected template failure")
+            db.execute("DROP TRIGGER reject_template")
+        self.assertEqual(tracker.read_bytes(), b"old 1.0")
+        self.assertEqual(self.read_library()["header"]["version_tracker_template"], "old SCU$VERSION")
+        alias = self.root / "new-name.h"
+        alias.write_bytes(tracker.read_bytes())
+        self.assertIn("was left untouched", self.run_scu("conl", "vt=new-name.h", "ttf=template.txt"))
+        self.assertEqual(alias.read_bytes(), b"old 1.0")
         self.run_scu("verat")
 
     def test_invalid_tracker_template_rolls_back_pattern_change(self):
@@ -1327,14 +1371,14 @@ class PortableCliTests(unittest.TestCase):
         manifest = json.loads((self.root / "release/.scu-exports.json").read_bytes())
         self.assertEqual(manifest["purpose"], "release")
         self.assertEqual(manifest["files"], [])
-        self.assertIn("Verified 0", self.run_scu("verd", "od=scu$release_directory"))
+        self.assertIn("Verified 0 released deck file(s)", self.run_scu("verd", "od=scu$release_directory"))
 
     def test_obsolete_library_directory_manifest_is_ignored(self):
         self.store("main", b"source")
         manifest = self.root / ".scu-exports.json"
         manifest.write_bytes(b"obsolete")
         self.run_scu("extv", "b=n")
-        self.assertIn("Verified 1", self.run_scu("verd"))
+        self.assertIn("Verified 1 working deck file(s)", self.run_scu("verd"))
         self.assertEqual(manifest.read_bytes(), b"obsolete")
 
     def test_verify_decks_handles_untracked_files_and_never_creates_a_manifest(self):

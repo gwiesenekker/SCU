@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refresh generated working trackers after editing their template, preserving local edits. Identify the verification mode in `verd` summaries. Open mixed-line-ending UTF-8 decks read-only in the GUI.
+
 - Refresh the configured working version tracker automatically after creating a version with `crev`.
 
 - Refresh the working version tracker after `renv`, recognizing its generated contents under the former version name and preserving local edits.

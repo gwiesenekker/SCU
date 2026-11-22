@@ -277,9 +277,9 @@ begin
     if FAttention.Count > 0 then
     begin
       FContext.Output.Flush;
-      raise EScuError.CreateFmt('%d of %d deck file(s) need attention.', [FAttention.Count, FCount]);
+      raise EScuError.CreateFmt('%d of %d deck file(s) need attention in the working directory.', [FAttention.Count, FCount]);
     end;
-    Result := Format('Verified %d deck file(s) against version %s. No errors were found.', [FCount, FContext.Snapshots.Selected.Version]);
+    Result := Format('Verified %d working deck file(s) against version %s. No errors were found.', [FCount, FContext.Snapshots.Selected.Version]);
   finally Table.Free; end;
 end;
 
@@ -319,9 +319,9 @@ begin
     if FDifferences > 0 then
     begin
       FContext.Output.Flush;
-      raise EScuError.CreateFmt('%d of %d deck file(s) need attention.', [FDifferences, FCount]);
+      raise EScuError.CreateFmt('%d of %d deck file(s) need attention in the release directory.', [FDifferences, FCount]);
     end;
-    Result := Format('Verified %d deck file(s) against version %s. No errors were found.', [FCount, FContext.Snapshots.Selected.Version]);
+    Result := Format('Verified %d released deck file(s) against version %s. No errors were found.', [FCount, FContext.Snapshots.Selected.Version]);
   finally
     Files.Free; Manifest.Free;
   end;

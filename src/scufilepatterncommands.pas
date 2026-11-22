@@ -22,7 +22,8 @@ begin
     raise EScuError.Create('Configure version_tracker with an output filename first.');
   Updated := EditTextFile(Context.LibraryFile, Context.LibraryFile.VersionTracker,
     Context.LibraryFile.TrackerTemplate, 1024 * 1024);
-  Context.LibraryFile.SetTrackerTemplate(Updated);
+  Context.FormerTracker.FileName := Context.LibraryFile.VersionTracker;
+  SetCommandTrackerTemplate(Context, Updated);
   Result := 'Saved version tracker template.';
 end;
 

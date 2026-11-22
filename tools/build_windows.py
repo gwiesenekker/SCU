@@ -6,6 +6,8 @@ command catalog as Linux. Cross-compilers can supply their unit/search flags
 with repeated --fpc-option arguments.
 """
 import argparse
+import os
+import shlex
 from pathlib import Path
 import shutil
 import subprocess
@@ -16,6 +18,14 @@ ROOT = Path(__file__).resolve().parents[1]
 DLL_NAMES = ('sqlite3.dll', 'libzstd.dll', 'libcrypto-3.dll')
 DLL_GROUPS = (('sqlite3.dll',), ('libzstd.dll', 'zstd.dll'),
               ('libcrypto-3-x64.dll', 'libcrypto-3.dll'))
+
+
+# Probe source and matching Python suite. These suites support both native Win64 and Wine.
+PLATFORM_SUITES = (
+    ('export_names', 'export_names'), ('actor', 'actors'), ('cleanup', 'cleanup'),
+    ('scan', 'scanning'), ('sqlite', 'sqlite'), ('files', 'files'), ('locks', 'locks'),
+    ('process', 'processes'), ('terminal', 'terminal'), ('dll', 'dlls'), ('gui_process', 'gui_process'),
+)
 
 
 def build_gui(args, output):
@@ -112,6 +122,20 @@ def build(args):
         if args.wine:
             command.append('--wine')
         subprocess.run(command, cwd=ROOT, check=True)
+        for probe, suite in PLATFORM_SUITES:
+            basename = probe + '_probe'
+            target = output / (basename + '.exe')
+            subprocess.run([args.fpc, *args.fpc_option, '-Twin64', '-O2', '-Fi' + str(output),
+                            '-Fu' + str(ROOT / 'src'), '-Fu' + str(ROOT / 'gui'),
+                            '-FU' + str(units), '-FE' + str(output), '-o' + str(target),
+                            str(ROOT / 'tests' / (basename + '.pas'))], cwd=ROOT, check=True)
+            command = [sys.executable, str(ROOT / 'tests' / (suite + '.py')), str(target)]
+            if args.wine:
+                command.append('--wine')
+            environment = os.environ.copy()
+            if suite == 'dlls':
+                environment.setdefault('SCU_TEST_WINDOWS_FPC', shlex.join([args.fpc, *args.fpc_option, '-Twin64']))
+            subprocess.run(command, cwd=ROOT, check=True, env=environment)
     if gui_test:
         command = [sys.executable, str(ROOT / 'tests' / 'gui_integration.py'),
                    '--scu', str(executable), '--gui-check', str(output / 'gui-check.exe')]
@@ -135,7 +159,7 @@ def main():
     parser.add_argument('--gui', action='store_true', help='Also build the native Win32-widget GUI (requires Lazarus/SynEdit)')
     parser.add_argument('--gui-test', action='store_true', help='Build and run GUI integration checks; requires --gui')
     parser.add_argument('--lazbuild', default='lazbuild', help='Lazarus build executable (default: lazbuild)')
-    parser.add_argument('--test', action='store_true', help='Run the portable CLI suite after building')
+    parser.add_argument('--test', action='store_true', help='Run the portable CLI and Windows platform suites after building')
     parser.add_argument('--wine', action='store_true', help='Run tests through Wine on Linux')
     args = parser.parse_args()
     # Compiler output is inherited unchanged. Our own reports must also survive

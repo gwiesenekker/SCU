@@ -113,7 +113,7 @@
           "type": "string",
           "aliases": ["ttf"],
           "value": "scu$optional",
-          "description": "Read the version tracker template from a UTF-8 text file (up to 1 MiB)."
+          "description": "Read the version tracker template from a UTF-8 text file (up to 1 MiB) and refresh the generated working tracker when the template changes."
         }
       ],
       "help": "Specify at least one argument. Set the default prefix before the current version receives its first revision. Supply editor arguments as a JSON array and quote the build command as one string. Supply file_patterns as a JSON array to update monitored files without opening an external editor. Library settings and patterns are saved transactionally."
@@ -647,7 +647,7 @@
       "aliases": ["edivt"],
       "summary": "Edit the library-wide version tracker template.",
       "arguments": [],
-      "help": "Open the stored UTF-8 template in the configured editor. Save and close it to update library metadata. The tracker has no deck revisions."
+      "help": "Open the stored UTF-8 template in the configured editor. Save and close it to update library metadata and refresh the configured working tracker. SCU preserves unrecognized local edits. The tracker has no deck revisions."
     },
     {
       "name": "extract_deck",

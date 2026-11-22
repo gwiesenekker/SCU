@@ -152,11 +152,11 @@ class ExportNamesTests(unittest.TestCase):
             self.assertFalse(self.manifest.exists())
             self.assertEqual((self.output / 'main.c').read_bytes(), source)
 
-    @unittest.skipUnless(WINDOWS, 'Windows manifest identities')
+    @unittest.skipUnless(WINDOWS, 'Windows working filename case aliases')
     def test_working_export_case_alias_needs_no_manifest(self):
         self.initialize()
-        self.extract('source.c')
-        self.extract('SOURCE.C')
+        self.extract('main.c')
+        self.assertIn(b'Unchanged', self.extract('MAIN.C'))
         self.assertFalse(self.manifest.exists())
         self.assertIn(b'No errors', self.cli('verd', 'output_directory=' + argument(self.output)))
 

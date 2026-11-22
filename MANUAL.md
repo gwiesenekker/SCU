@@ -96,6 +96,8 @@ The bottom pane logs commands, results and build output. Right-click to copy tex
 
 Open this manual with **Help → Manual** or F1. Select a heading in the contents tree to jump to it. Press Ctrl+F to find text, F3 for the next match, Shift+F3 for the previous one, and Esc to return to the editor.
 
+Mixed-line-ending UTF-8 decks open read-only in the GUI. You can inspect and compare their original bytes. Use an external editor and `impd` to change them.
+
 ### Edit file patterns and the version tracker
 
 Open the library, then choose **Edit → Preferences**. The **File patterns** tab controls which working files `import_deck` (`impd`) scans in the library directory. Enter one wildcard or exact filename per line, for example:
@@ -118,6 +120,8 @@ On the **Version tracker** tab, enter `version.h` as the output filename. The te
 Choose **OK** to save the settings together. **Cancel** discards the edits. In the CLI, `edifp` edits the file patterns, `conl vt=version.h` sets the tracker filename, and `edivt` opens its template in the configured editor. To load an existing template from disk, use `conl vt=version.h tracker_template_file=version.h.in`.
 
 For example, `extv v=8.1307 b=n` writes a header containing `#define PROJECT_VERSION "8.1307"` and reports `version.h has been expanded`. A single-deck extraction such as `extd book.c` also generates the header beside its output. Publishing with `relv` generates it in the release directory. If the header already matches, these commands report `version.h is unchanged` and preserve its modification time.
+
+Changing the tracker template with `edivt` or `conl ttf=...` refreshes the working tracker after the change commits. SCU recognizes the old template and its timestamp for the same filename, and preserves hand edits.
 
 After a successful `impd`, SCU refreshes the version tracker in the library directory for the current version. This works for pattern scans and single-file imports, even when no decks changed. SCU reports whether the tracker was expanded or is unchanged. SCU can replace a working tracker that matches the current template rendered for an earlier library version. If it cannot recognize the bytes, it keeps the file and reports the conflict. To replace it explicitly, use `extd version.h o=y b=n`. Importing does not run the build.
 
