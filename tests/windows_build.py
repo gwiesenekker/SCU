@@ -3,6 +3,7 @@
 import argparse
 import importlib.util
 import io
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -53,6 +54,41 @@ class WindowsBuildTests(unittest.TestCase):
         self.assertEqual((self.args.output / 'commands.json').read_bytes(), (builder.ROOT / 'commands.json').read_bytes())
         for source in [*(self.dlls / n for n in builder.DLL_NAMES), extra]:
             self.assertEqual((self.args.output / source.name).read_bytes(), source.read_bytes())
+
+    def test_gitless_build_id_for_shared_checkout_and_archive(self):
+        script = builder.ROOT / 'tools' / 'build_id.py'
+        copied = self.root / 'tools' / script.name
+        copied.parent.mkdir()
+        copied.write_bytes(script.read_bytes())
+        (self.root / '.git').mkdir()
+        output = self.root / 'scucommit.inc'
+        env = dict(os.environ, PATH='', SCU_BUILD_COMMIT='9FD87C7')
+        def run():
+            return subprocess.run([sys.executable, str(copied), str(output)],
+                                  env=env, capture_output=True, text=True)
+        self.assertEqual(run().returncode, 0)
+        self.assertEqual(output.read_text().strip(), "'9fd87c7'")
+        git = self.root / '.git'
+        digest = 'beef123' + '0' * 33
+        (git / 'HEAD').write_text(digest)
+        self.assertEqual(run().returncode, 0)
+        self.assertEqual(output.read_text().strip(), "'beef123'")
+        (git / 'HEAD').write_text('ref: refs/heads/master')
+        branch = git / 'refs' / 'heads' / 'master'
+        branch.parent.mkdir(parents=True)
+        branch.write_text(digest)
+        self.assertEqual(run().returncode, 0)
+        self.assertEqual(output.read_text().strip(), "'beef123'")
+        branch.unlink()
+        (git / 'packed-refs').write_text(digest + ' refs/heads/master\n')
+        self.assertEqual(run().returncode, 0)
+        self.assertEqual(output.read_text().strip(), "'beef123'")
+        (git / 'HEAD').unlink()
+        env['SCU_BUILD_COMMIT'] = 'not-a-commit'
+        self.assertIn('must be a hexadecimal Git commit ID', run().stderr)
+        copied.write_text(copied.read_text().replace('$Format:%h$', 'a123456'))
+        self.assertEqual(run().returncode, 0)
+        self.assertEqual(output.read_text().strip(), "'a123456'")
 
     def test_missing_runtime_is_rejected_before_compilation_or_output_creation(self):
         (self.dlls / builder.DLL_NAMES[-1]).unlink()

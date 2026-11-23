@@ -58,7 +58,7 @@ remain necessary.
 
 ### Application version
 
-Run `scu --version` or open **Help → About SCU** in the GUI to see `1.0-<abbreviated Git commit ID>`. The release number is maintained manually in `ScuReleaseVersion` in `src/scubuildinfo.pas`. The build records the checked-out commit, including when the working tree contains local edits. A source archive made with `git archive` carries the commit ID. If no commit ID is available, the suffix is `unknown`.
+Run `scu --version` or open **Help → About SCU** in the GUI to see `1.0-<abbreviated Git commit ID>`. The release number is maintained manually in `ScuReleaseVersion` in `src/scubuildinfo.pas`. The build records the checked-out commit, including when the working tree contains local edits. A source archive made with `git archive` carries the commit ID. If neither Git nor archive metadata supplies the ID, the builder accepts `SCU_BUILD_COMMIT`. With no ID from any source, the suffix is `unknown`.
 
 ### Embedded command catalog
 
@@ -108,7 +108,19 @@ loader’s filename preference without renaming vendor DLLs.
 Include any dependencies required by those particular DLL builds, such as the
 matching Visual C++ runtime. SCU does not download compilers or runtime binaries.
 
-From the repository root, in Command Prompt or PowerShell:
+From PowerShell in the repository root, build the Windows CLI and GUI together with `build.bat`. Add `--test` to run the portable CLI suite, platform probes and GUI checks on an interactive desktop:
+
+```powershell
+.\build.bat --dll-directory C:\scu-runtime --test
+.\build\windows\scu.exe --version
+```
+
+The first argument may be a quoted path to `fpc.exe`. Otherwise the batch build looks for `FPC`, then the compiler on PATH, then common Lazarus and standalone Win64 installation folders. Use `--lazbuild` for a custom Lazarus installation, or set `LAZBUILD`. Set `SCU_DLL_DIRECTORY` to avoid repeating `--dll-directory`. Additional driver options such as `--runtime-dll` are accepted. Running `.\build.bat` alone builds both executables in `build/windows`.
+
+On a Windows VM using a shared Linux checkout, run `.\build.bat` in the shared folder. The builder can read the commit ID from the shared checkout without a Windows Git installation. Both executables are written to `build\windows` inside that folder. Place the three runtime DLLs beside them or supply their directory as above. A source archive made with `git archive` also carries its commit ID.
+
+For a CLI-only build, use the Python driver directly:
+
 
 ```text
 py -3 tools/build_windows.py --dll-directory C:\scu-runtime --test

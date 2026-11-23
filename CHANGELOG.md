@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add a Windows batch entry point to build the CLI and GUI together and run their test suites.
+
 ## 1.0 — 2026-11-23
 
 First public release of Source Code Utility, a GPL-3.0-only revision control tool inspired by NOS/VE SCU.
