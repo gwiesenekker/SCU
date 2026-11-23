@@ -5,6 +5,8 @@ Control Data's NOS/VE SCU. A library holds named source decks. You can retrieve
 the original bytes for editing and building, then publish a complete release
 with version and modification-time macros expanded.
 
+SCU is an independent project. It is not affiliated with or endorsed by Control Data Corporation or its successors.
+
 ## Get SCU 1.0
 
 Download the [Linux x86-64 CLI and GUI](https://github.com/gwiesenekker/SCU/releases/tag/v1.0) and `SHA256SUMS` into the same directory. Verify and unpack the archive:
@@ -49,7 +51,7 @@ scu help
 make test
 ```
 
-Install the CLI for your account with `make install BINDIR="$HOME/.local/bin"`. The target checks the current Git commit ID and rebuilds when needed. On the maintainer’s machine, plain `make install` defaults to `/tmp2/gwies/bin/scu`.
+Run `make install` to install the CLI in `$HOME/.local/bin`. To choose another directory, use, for example, `make install BINDIR="$HOME/bin"`. The target checks the current Git commit ID and rebuilds when needed.
 
 The integration tests use Python 3 with SQLite JSON functions. Both executables
 embed the command catalog, including argument definitions, aliases and full help.
@@ -999,12 +1001,12 @@ needed.
 
 `tools/import_versions.py` imports an SCU directory containing numbered
 `MAJOR.MINOR` subdirectories and a shared `HISTORY` file. It requires Python
-3.9 or later and a built SCU executable. Preview the import first:
+3.9 or later and a built SCU executable. Replace `./archive/SCU` with your archive directory and preview the import first:
 
 ```sh
 make
-python3 tools/import_versions.py /tmp2/gwies/gwd8/SCU build/gwd8.sqlite --dry-run
-python3 tools/import_versions.py /tmp2/gwies/gwd8/SCU build/gwd8.sqlite
+python3 tools/import_versions.py ./archive/SCU build/project.sqlite --dry-run
+python3 tools/import_versions.py ./archive/SCU build/project.sqlite
 ```
 
 Version directories are sorted by exact numeric value; their spelling is
@@ -1511,6 +1513,10 @@ display scaling, window management and close behavior still need validation on a
 not establish those results.
 
 ## License
+
+Copyright (C) 2026 Gijsbert Wiesenekker
+
+`SPDX-License-Identifier: GPL-3.0-only`
 
 SCU is licensed under the GNU General Public License, version 3 only
 (`GPL-3.0-only`). See [LICENSE](LICENSE) for the full text.

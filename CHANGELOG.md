@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Default `make install` to `$HOME/.local/bin`. Use `BINDIR` to select another directory.
+
 - Add a Windows batch entry point to build the CLI and GUI together and run their test suites.
 
 ## 1.0 — 2026-11-23
@@ -29,7 +31,7 @@ First public release of Source Code Utility, a GPL-3.0-only revision control too
 
 - Show `Matches` in the `extv` table and summary when working files already match their selected deck revisions.
 
-- Add `make install` to build the CLI with the current commit ID and install it in `/tmp2/gwies/bin`.
+- Add `make install` to build the CLI with the current commit ID and install it in a configurable binary directory.
 
 - Fix a Linux race when two releases first create the same output directory or its missing parents.
 

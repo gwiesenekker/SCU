@@ -2,7 +2,7 @@ FPC ?= fpc
 FPCFLAGS ?= -O2
 LAZBUILD ?= lazbuild
 FPCRES ?= fpcres
-BINDIR ?= /tmp2/gwies/bin
+BINDIR ?= $(HOME)/.local/bin
 
 .PHONY: all install test test-portable test-wine gui test-gui format-commands clean
 all: build/scu build/commands.json
