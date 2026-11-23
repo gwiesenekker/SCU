@@ -5,6 +5,33 @@ Control Data's NOS/VE SCU. A library holds named source decks. You can retrieve
 the original bytes for editing and building, then publish a complete release
 with version and modification-time macros expanded.
 
+## Get SCU 1.0
+
+Download the [Linux x86-64 CLI and GUI](https://github.com/gwiesenekker/SCU/releases/tag/v1.0) and `SHA256SUMS` into the same directory. Verify and unpack the archive:
+
+```sh
+sha256sum --check --ignore-missing SHA256SUMS
+tar -xzf scu-1.0-linux-x86_64.tar.gz
+cd scu-1.0-linux-x86_64
+./scu --version
+```
+
+Keep `scu` and `scu-gui` together when installing them on your PATH. The Linux binaries use SQLite, zstd and OpenSSL 3. The GUI also requires GTK2 and a graphical desktop. Windows build instructions appear below.
+
+## Try it with one file
+
+In a directory containing a working file called `hello.c`, run:
+
+```sh
+scu project.sqlite initialize_library
+scu project.sqlite import_deck hello.c
+scu project.sqlite display_deck_list
+scu project.sqlite lock_version description="First snapshot"
+scu project.sqlite create_version
+```
+
+Edit `hello.c`, run `scu project.sqlite import_deck hello.c` again, then use `scu project.sqlite disvd` to see what changed since the locked snapshot. To browse the same history graphically, run `scu-gui project.sqlite`. See the [user manual](MANUAL.md) for the command reference and GUI walkthrough.
+
 ## Build
 
 Linux is the fully tested native platform. The CLI also has a Win64 build and
@@ -22,9 +49,7 @@ scu help
 make test
 ```
 
-Run `make install` to install the CLI as `/tmp2/gwies/bin/scu`. The target
-checks the current Git commit ID and rebuilds the executable when needed.
-To choose another directory, use `make install BINDIR="$HOME/.local/bin"`.
+Install the CLI for your account with `make install BINDIR="$HOME/.local/bin"`. The target checks the current Git commit ID and rebuilds when needed. On the maintainer’s machine, plain `make install` defaults to `/tmp2/gwies/bin/scu`.
 
 The integration tests use Python 3 with SQLite JSON functions. Both executables
 embed the command catalog, including argument definitions, aliases and full help.

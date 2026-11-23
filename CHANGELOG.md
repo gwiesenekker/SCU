@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 1.0 — 2026-11-23
+
+First public release of Source Code Utility, a GPL-3.0-only revision control tool inspired by NOS/VE SCU.
+
+- Store source decks and their revision history in a transactional SQLite library with a verifiable audit trail.
+- Import working files, compare revisions, lock library versions, and publish releases with version macros.
+- Use the interactive CLI, run command files in batch, or edit and compare decks in the tabbed Lazarus GUI.
+- The Linux x86-64 release archive includes both executables and the user manual.
+
+### Changes during development
 
 - Shorten command help throughout the catalog. The version diff help now separates everyday review from the example for creating an exact textual patch.
 
