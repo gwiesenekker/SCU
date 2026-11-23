@@ -214,34 +214,34 @@ Use the full command or any listed abbreviation. For argument details, enter `di
 
 | Command | Abbreviations | Purpose |
 | --- | --- | --- |
-| `configure_library` | conl | Set library configuration, editor, build command, release directory, or file patterns. |
+| `configure_library` | conl | Change library settings. |
 | `create_deck` | cred | Create an empty deck or initialize it from a file. |
-| `create_version` | crev | Create a higher version after locking the current version. |
-| `delete_deck` | deld | Record the deletion of a deck in the open version. |
-| `delete_version` | delv | Delete the current unlocked successor version. |
-| `display_audit_trail` | disat | Show recent commands from the library audit trail. |
-| `display_command` | disc | Show a command's help and its arguments and options. |
-| `display_command_list` | discl, help | List commands alphabetically with aliases and short descriptions. |
-| `display_deck` | disd | Show deck versions, local modification times, and stored/deleted status. |
-| `display_deck_diff` | disdd | Compare stored deck source at two revisions or versions. |
-| `display_deck_list` | disdl | List decks and their deck versions in the selected snapshot. |
-| `display_library` | disl | Show the library summary and configuration in attribute/value columns. |
-| `display_version` | disv | List decks changed in a library version. |
-| `display_version_diff` | disvd | Compare source for all changed decks in two library versions. |
-| `display_version_history` | disvh | Show versions, lock status, lock times, and descriptions. |
-| `edit_deck` | edid | Edit an existing deck with the configured external editor. |
-| `edit_file_patterns` | edifp | Edit the library file patterns, one wildcard or filename per line. |
-| `edit_version_tracker` | edivt | Edit the library-wide template for the generated version file. |
+| `create_version` | crev | Start a new library version. |
+| `delete_deck` | deld | Remove a deck from the current unlocked version. |
+| `delete_version` | delv | Remove the current unlocked version. |
+| `display_audit_trail` | disat | Show recent commands and their outcomes. |
+| `display_command` | disc | Show how to use a command. |
+| `display_command_list` | discl, help | List commands with their abbreviations and descriptions. |
+| `display_deck` | disd | Show a deck's revision history. |
+| `display_deck_diff` | disdd | Compare two revisions of one deck. |
+| `display_deck_list` | disdl | List the decks available in a library version. |
+| `display_library` | disl | Show the library path, current version, and settings. |
+| `display_version` | disv | List decks revised in a library version. |
+| `display_version_diff` | disvd | Compare all decks across two library versions. |
+| `display_version_history` | disvh | Show library versions and their lock descriptions. |
+| `edit_deck` | edid | Edit a stored deck in the configured editor. |
+| `edit_file_patterns` | edifp | Choose which working files import_deck monitors. |
+| `edit_version_tracker` | edivt | Edit the template for the generated version file. |
 | `extract_deck` | extd | Write the original source bytes to a file. |
-| `extract_version` | extv | Extract the complete selected version and run the build. |
-| `import_deck` | impd | Snapshot selected files or import one deck, creating, updating, or deleting revisions. |
+| `extract_version` | extv | Restore all working files from a library version. |
+| `import_deck` | impd | Record working file changes in the open version. |
 | `initialize_library` | inil | Create an empty source library. |
-| `lock_version` | locv | Lock the current version against further changes. |
+| `lock_version` | locv | Lock the current version and record a description. |
 | `quit_session` | quis, quit | Leave the interactive session. |
-| `recover_library` | recl | Restore an SCU recovery file to a new SQLite library. |
-| `release_version` | relv | Publish a complete version with release macros expanded. |
+| `recover_library` | recl | Restore a recovery file to a new SQLite library. |
+| `release_version` | relv | Publish a library version with release macros expanded. |
 | `rename_version` | renv | Rename the current unlocked library version. |
-| `save_library` | savl | Confirm the library is saved. |
+| `save_library` | savl | Confirm that the library has been saved. |
 | `unlock_version` | unlv | Reopen the current locked version for editing. |
-| `verify_audit_trail` | verat | Verify the audit chain and optionally check for a saved head. |
-| `verify_decks` | verd | Compare working files or a published release with a library version. |
+| `verify_audit_trail` | verat | Check the integrity of the audit trail. |
+| `verify_decks` | verd | Check working or released files against the library. |

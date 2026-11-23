@@ -3230,12 +3230,12 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
         self.assertIn("deck_name (dn) : string = scu$last_modified_deck", help_text)
         self.assertIn("including COPY directives and macro text", help_text)
         self.assertIn("output_file (of) : string = scu$deck_name\n"
-                      "    Destination for original bytes. Defaults to the selected revision's recorded source filename, or the deck name if absent; an explicit output_file is honored.", help_text)
+                      "    Destination for the source. Defaults to the recorded filename beside the library, or the deck name if no filename was recorded.", help_text)
         self.assertIn("revision (r) : string = scu$optional\n"
-                      "    Deck revision within the selected library version, from 0.000 to 0.999. Omit to select the latest visible deck revision, including inherited decks.",
+                      "    Deck revision within the selected version (0.000 to 0.999). Omit to use the latest visible revision, including inherited source.",
                       help_text)
         self.assertIn("version (v) : string = scu$current_version\n"
-                      "    Library version containing the deck; defaults to scu$current_version. Combine with revision=0.001, or supply a complete deck version such as 1.1-0.001.", help_text)
+                      "    Library version to extract from. Select a revision separately or use a complete deck version such as 1.1-0.001.", help_text)
         self.run_scu("display_command", error="Missing required argument command_name")
         self.run_scu("display_command", "command_name=", error='Unknown command ""')
 
@@ -3530,7 +3530,7 @@ int sqlite3_exec(void *db, const char *sql, void *callback, void *arg, char **er
 
     def test_display_command_list_wraps_at_the_terminal_width(self):
         names = "configure_library, conl"
-        description = "Set library configuration, editor, build command, release directory, or file patterns."
+        description = "Change library settings."
         for columns in (72, 36, 12):
             with self.subTest(columns=columns), self.terminal_session(TERM="dumb", columns=columns) as (
                 process, terminal, read_until
@@ -5603,7 +5603,8 @@ char *mkdtemp(char *pattern) {
     def test_review_b_d3_unified_help_requires_exact_whitespace_for_patch(self):
         help_text = self.run_scu("disc", "disvd")
         self.assertIn("output_format=unified ignore_space_changes=no", help_text)
-        self.assertIn("does not guarantee reconstruction of the target bytes", help_text)
+        self.assertIn("ignore_legacy_scu_header=no", help_text)
+        self.assertIn("textual patch for patch -p1", help_text)
         self.store("main", b"first  line\n")
         self.run_scu("locv", "Before"); self.run_scu("crev", "1.1")
         self.store("main", b"first    line\n")

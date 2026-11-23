@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Shorten command help throughout the catalog. The version diff help now separates everyday review from the example for creating an exact textual patch.
+
 - Show `matches <previous locked version>` in `disv` when a revised deck ends with the same source bytes as its predecessor snapshot.
 
 - Refresh generated working trackers after editing their template, preserving local edits. Identify the verification mode in `verd` summaries. Open mixed-line-ending UTF-8 decks read-only in the GUI.

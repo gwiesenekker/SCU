@@ -28,7 +28,7 @@
     {
       "name": "configure_library",
       "aliases": ["conl"],
-      "summary": "Set library configuration, editor, build command, release directory, or file patterns.",
+      "summary": "Change library settings.",
       "arguments": [
         {
           "name": "build_command",
@@ -42,7 +42,7 @@
           "type": "string",
           "aliases": ["cp"],
           "value": "scu$optional",
-          "description": "Default comment prefix for new decks in the current version."
+          "description": "Default comment prefix for new decks. Set it before the current version receives its first revision."
         },
         {
           "name": "editor",
@@ -116,7 +116,7 @@
           "description": "Read the version tracker template from a UTF-8 text file (up to 1 MiB) and refresh the generated working tracker when the template changes."
         }
       ],
-      "help": "Specify at least one argument. Set the default prefix before the current version receives its first revision. Supply editor arguments as a JSON array and quote the build command as one string. Supply file_patterns as a JSON array to update monitored files without opening an external editor. Library settings and patterns are saved transactionally."
+      "help": "Supply one or more settings. To inspect their current values, run display_library."
     },
     {
       "name": "create_deck",
@@ -146,7 +146,7 @@
           "description": "Comment prefix for this deck. Omit to use the current version's default."
         }
       ],
-      "help": "Create the first revision of a new deck in the open version. Set its comment prefix with --comment_prefix. An existing deck name, including one inherited from a previous version, is an error.",
+      "help": "Choose a name that is available in the current unlocked version. To update an existing deck from a working file, use import_deck.",
       "examples": [
         {
           "command": "scu create_deck main.pas",
@@ -161,7 +161,7 @@
     {
       "name": "create_version",
       "aliases": ["crev"],
-      "summary": "Create a higher version after locking the current version.",
+      "summary": "Start a new library version.",
       "arguments": [
         {
           "name": "version",
@@ -171,12 +171,12 @@
           "description": "New library version. Omit to advance by version_increment."
         }
       ],
-      "help": "Lock the current version first. Supply a higher version or let SCU apply version_increment. After saving the new version, refresh the configured working version tracker without running a build. Preserve hand edits and report the conflict."
+      "help": "Lock the current version first. SCU inherits its decks and refreshes the configured version tracker."
     },
     {
       "name": "delete_deck",
       "aliases": ["deld"],
-      "summary": "Record the deletion of a deck in the open version.",
+      "summary": "Remove a deck from the current unlocked version.",
       "arguments": [
         {
           "name": "deck_name",
@@ -188,7 +188,7 @@
           "completion": "deck"
         }
       ],
-      "help": "Append a deletion revision without removing earlier source. The deck disappears from the current snapshot and later versions until create_deck or import_deck recreates it. Locked versions cannot be changed. Existing extracted or expanded files are left in place. A kept working file is named in the output: remove it to prevent a later pattern import recreating the deck. last_modified_deck includes deletions; bare edit/extract requires an explicit deck choice if it is deleted.",
+      "help": "SCU records a deletion and keeps earlier revisions. Remove the working file yourself if a later pattern import should not recreate the deck.",
       "examples": [
         {
           "command": "delete_deck main.pas",
@@ -199,7 +199,7 @@
     {
       "name": "delete_version",
       "aliases": ["delv"],
-      "summary": "Delete the current unlocked successor version.",
+      "summary": "Remove the current unlocked version.",
       "arguments": [
         {
           "name": "version",
@@ -227,12 +227,12 @@
           ]
         }
       ],
-      "help": "Return to the preceding locked version. Use delete_revisions=yes to remove all revisions belonging to this version. The default permits deletion only of an empty version. Working files stay on disk. Inherited decks are preserved. The only version in a library cannot be deleted."
+      "help": "The preceding locked version becomes current. To delete a version containing revisions, explicitly set delete_revisions=yes. Working files stay on disk."
     },
     {
       "name": "display_audit_trail",
       "aliases": ["disat"],
-      "summary": "Show recent commands from the library audit trail.",
+      "summary": "Show recent commands and their outcomes.",
       "arguments": [
         {
           "name": "number_of_lines",
@@ -243,12 +243,12 @@
           "description": "Maximum number of recent command attempts to display."
         }
       ],
-      "help": "Show recent audited commands in chronological order, with their canonical names and named arguments, in aligned Command and Status columns separated by at least two spaces."
+      "help": "Entries appear in chronological order with command names and arguments expanded."
     },
     {
       "name": "display_command",
       "aliases": ["disc"],
-      "summary": "Show a command's help and its arguments and options.",
+      "summary": "Show how to use a command.",
       "arguments": [
         {
           "name": "command_name",
@@ -259,19 +259,19 @@
           "completion": "command"
         }
       ],
-      "help": "Use a full command name or alias. Example: display_command command_name=extd."
+      "help": "Look up a full name or abbreviation, such as disc extd for extract_deck."
     },
     {
       "name": "display_command_list",
       "aliases": ["discl", "help"],
-      "summary": "List commands alphabetically with aliases and short descriptions.",
+      "summary": "List commands with their abbreviations and descriptions.",
       "arguments": [],
-      "help": "Run display_command command_name=NAME for details about a command."
+      "help": "For arguments and examples, enter disc followed by a command name."
     },
     {
       "name": "display_deck",
       "aliases": ["disd"],
-      "summary": "Show deck versions, local modification times, and stored/deleted status.",
+      "summary": "Show a deck's revision history.",
       "arguments": [
         {
           "name": "deck_name",
@@ -291,7 +291,7 @@
           "description": "Number of most recent deck history entries to show. Default 10; use 0 for the complete history."
         }
       ],
-      "help": "Show the resolved deck name above its history, newest first, in aligned Deck version, Modified (local TZ), and Status columns. A deck version identifies its library version and per-deck revision; internal library-wide snapshot numbers are omitted. Default limit is 10 most recent entries; use limit=0 for the complete history. Long cells wrap to the terminal width without truncation; redirected output remains unwrapped.",
+      "help": "The newest revisions appear first, with their local modification times and stored or deleted status. Use limit=0 for the full history.",
       "examples": [
         {
           "command": "scu display_deck",
@@ -306,7 +306,7 @@
     {
       "name": "display_deck_diff",
       "aliases": ["disdd"],
-      "summary": "Compare stored deck source at two revisions or versions.",
+      "summary": "Compare two revisions of one deck.",
       "arguments": [
         {
           "name": "deck_name",
@@ -341,7 +341,7 @@
           "aliases": ["isc"],
           "value": "yes",
           "prompt_for_default": false,
-          "description": "Ignore trailing whitespace and changes in the amount of existing whitespace, like diff -b. Set no for exact comparison.",
+          "description": "Ignore trailing whitespace and changes in the amount of existing whitespace. Set no to compare whitespace exactly.",
           "values": [
             {
               "name": "yes",
@@ -363,7 +363,7 @@
           "values": ["normal", "unified"]
         }
       ],
-      "help": "Compare the original deck bytes at two deck versions such as 1.04-0.007. scu$current_deck_version and scu$previous_deck_version select the latest and preceding versions of the named deck. By default ignore whitespace amount changes and trailing whitespace, like diff -b. Set ignore_space_changes=no for exact comparison. Default to normal diff output; use output_format=unified for unified output with three context lines.",
+      "help": "With no arguments, compare the last modified deck's latest revision with its preceding revision. To compare all decks across two library versions, use disvd.",
       "examples": [
         {
           "command": "scu display_deck_diff",
@@ -390,7 +390,7 @@
     {
       "name": "display_deck_list",
       "aliases": ["disdl"],
-      "summary": "List decks and their deck versions in the selected snapshot.",
+      "summary": "List the decks available in a library version.",
       "arguments": [
         {
           "name": "version",
@@ -402,7 +402,7 @@
           "prompt_for_default": false
         }
       ],
-      "help": "Show aligned Deck name and Deck version columns in the selected library version, defaulting to scu$current_version. Include inherited decks with their stored deck versions. Deck revisions apply to individual decks, so this command has no revision argument. Long cells wrap to terminal width; redirected output remains unwrapped.",
+      "help": "Inherited decks appear with the deck version in which their source was last stored. To list only decks revised in this library version, use disv.",
       "examples": [
         {
           "command": "scu display_deck_list version=1.1",
@@ -417,7 +417,7 @@
     {
       "name": "display_library",
       "aliases": ["disl"],
-      "summary": "Show the library summary and configuration in attribute/value columns.",
+      "summary": "Show the library path, current version, and settings.",
       "arguments": [
         {
           "name": "json",
@@ -438,12 +438,12 @@
           ]
         }
       ],
-      "help": "Show the library path, followed by aligned configuration attributes and values, including current_version with its lock status in parentheses, previous_locked_version, editor, and build_command. Omit the versions array; use display_version_history for history. Show the creation platform and warn about potentially incompatible filenames in the current snapshot when opening on another OS. SCU also runs this command when opening an existing library at a terminal. Use json=yes for the complete JSON header."
+      "help": "The summary includes the current lock status and the preceding locked version. SCU shows it when you open a library at the interactive prompt."
     },
     {
       "name": "display_version",
       "aliases": ["disv"],
-      "summary": "List decks changed in a library version.",
+      "summary": "List decks revised in a library version.",
       "arguments": [
         {
           "name": "version",
@@ -455,7 +455,7 @@
           "completion": "library_version"
         }
       ],
-      "help": "Show the selected library version and an alphabetically sorted table of decks stored, edited, deleted, or recreated in that version. Show each deck once, using its latest revision within the selected version, with Deck name, Deck version, Modified (local TZ), and Status columns. Status is matches <previous locked version> when the final source bytes equal those visible in that predecessor. Omit inherited decks that were not changed in the selected version. Interactive edits are saved automatically. Default to scu$current_version without prompting. Long cells wrap to the terminal width without truncation; redirected output remains unwrapped.",
+      "help": "Each deck appears once, at its final revision in that version. A status such as 'matches 8.132' means its source bytes match the preceding locked version.",
       "examples": [
         {
           "command": "scu display_version",
@@ -470,7 +470,7 @@
     {
       "name": "display_version_diff",
       "aliases": ["disvd"],
-      "summary": "Compare source for all changed decks in two library versions.",
+      "summary": "Compare all decks across two library versions.",
       "arguments": [
         {
           "name": "from_version",
@@ -478,7 +478,7 @@
           "aliases": ["fv"],
           "value": "scu$previous_version",
           "prompt_for_default": false,
-          "description": "Library version to compare from. Defaults to the locked version before the current version.",
+          "description": "Starting library version for the comparison.",
           "completion": "library_version"
         },
         {
@@ -487,7 +487,7 @@
           "aliases": ["tv"],
           "value": "scu$current_version",
           "prompt_for_default": false,
-          "description": "Library version to compare to. Defaults to the current library version, including automatically saved interactive edits.",
+          "description": "Ending library version for the comparison.",
           "completion": "library_version"
         },
         {
@@ -496,7 +496,7 @@
           "aliases": ["isc"],
           "value": "yes",
           "prompt_for_default": false,
-          "description": "Ignore trailing whitespace and changes in the amount of existing whitespace, like diff -b. Set no for exact comparison.",
+          "description": "Ignore trailing whitespace and changes in the amount of existing whitespace. Set no to compare whitespace exactly.",
           "values": [
             {
               "name": "yes",
@@ -514,7 +514,7 @@
           "aliases": ["of"],
           "value": "normal",
           "prompt_for_default": false,
-          "description": "Diff output format: normal shows changed lines only; unified shows three lines of unchanged context. Default normal.",
+          "description": "Normal shows changed lines and a summary. Unified shows three lines of context and omits the summary.",
           "values": ["normal", "unified"]
         },
         {
@@ -523,7 +523,7 @@
           "aliases": ["ilsh"],
           "value": "yes",
           "prompt_for_default": false,
-          "description": "Skip any line starting with the deck comment prefix followed by ' SCU REVISION '. Set no to include them.",
+          "description": "Ignore lines beginning with the deck's comment prefix followed by ' SCU REVISION '. Set no to compare those lines.",
           "values": [
             {
               "name": "yes",
@@ -536,7 +536,7 @@
           ]
         }
       ],
-      "help": "Show source diffs for all decks whose contents differ between the selected versions. Include inherited decks and represent added or removed source with /dev/null. Added or removed empty decks have an explicit notice. By default ignore whitespace amount changes and trailing whitespace, like diff -b. Legacy SCU header lines are skipped by default. Default to normal diff output; use output_format=unified for unified output with three context lines. Unified textual output uses quoted a/ and b/ recorded filenames and tab-separated versions, suitable for patch -p1. Search limits fall back to complete replacements rather than minimal hunks. Summarize added, changed and deleted lines per deck and in total. Unified output omits the summary and version announcements. For an exact textual patch suitable for patch -p1, set output_format=unified ignore_space_changes=no ignore_legacy_scu_header=no. The default ignore_space_changes=yes is for review and can omit whitespace-only changes; it does not guarantee reconstruction of the target bytes.",
+      "help": "With no arguments, compare the previous locked version with the current version. The default output shows changed lines and a per-deck summary. Use unified output for a patch.",
       "examples": [
         {
           "command": "scu display_version_diff",
@@ -547,19 +547,15 @@
           "description": "Compare two named library versions."
         },
         {
-          "command": "scu display_version_diff 1.0 'scu$current_version'",
-          "description": "Compare a named version with the current library version."
-        },
-        {
-          "command": "scu display_version_diff output_format=unified",
-          "description": "Show unified output with three context lines."
+          "command": "scu disvd output_format=unified ignore_space_changes=no ignore_legacy_scu_header=no",
+          "description": "Produce a textual patch for patch -p1, including whitespace and legacy header changes."
         }
       ]
     },
     {
       "name": "display_version_history",
       "aliases": ["disvh"],
-      "summary": "Show versions, lock status, lock times, and descriptions.",
+      "summary": "Show library versions and their lock descriptions.",
       "arguments": [
         {
           "name": "display_description",
@@ -588,7 +584,7 @@
           "description": "Number of most recent versions to show, including the current version. Default 10; use 0 for all versions."
         }
       ],
-      "help": "Display the most recent library versions in chronological order, including the current version. The default limit is 10; use limit=0 for every version. Show each version with its lock status, local lock timestamp, and description. Older versions without a recorded timestamp show None. By default show only the first line of each description. Use display_description=full to print the complete description below each version row, preserving paragraphs and using the full available width. Positional arguments are display_description followed by limit; named arguments and aliases may be mixed with positional values. Wrap descriptions first, preserving full local timestamps when space permits; use labelled fields on very narrow terminals.",
+      "help": "The default view shows the ten most recent versions, oldest first. Use display_description=full to read multiline descriptions below each version.",
       "examples": [
         {
           "command": "scu display_version_history display_description=full",
@@ -615,7 +611,7 @@
     {
       "name": "edit_deck",
       "aliases": ["edid"],
-      "summary": "Edit an existing deck with the configured external editor.",
+      "summary": "Edit a stored deck in the configured editor.",
       "arguments": [
         {
           "name": "deck_name",
@@ -627,14 +623,14 @@
           "completion": "deck"
         }
       ],
-      "help": "Open the stored deck in the configured editor. Save a new revision when the bytes change."
+      "help": "Save and close the editor to record a revision if the source bytes changed."
     },
     {
       "name": "edit_file_patterns",
       "aliases": ["edifp"],
-      "summary": "Edit the library file patterns, one wildcard or filename per line.",
+      "summary": "Choose which working files import_deck monitors.",
       "arguments": [],
-      "help": "Open the file_patterns list in the configured editor. Enter one wildcard or exact filename per line, for files directly in the library directory; blank lines are ignored and surrounding whitespace is trimmed. Preserve spaces within filenames. Save and close the editor to store the list automatically. An empty list clears the selection. Directory components, including subdirectory patterns, are rejected; subdirectory support is planned as a future library option. Configure GUI editors with a wait option, such as editor=[\"code\", \"--wait\"]. The list is library-wide and can be edited while the current version is locked. Run import_deck without arguments to snapshot the configured files; this editor command itself does not import files. Invalid edits are preserved in a private recovery file, whose path is included in the error.",
+      "help": "In the configured editor, enter one filename or wildcard per line. Patterns apply directly to the library directory. Save an empty list to clear the selection.",
       "examples": [
         {
           "command": "scu edit_file_patterns",
@@ -645,9 +641,9 @@
     {
       "name": "edit_version_tracker",
       "aliases": ["edivt"],
-      "summary": "Edit the library-wide version tracker template.",
+      "summary": "Edit the template for the generated version file.",
       "arguments": [],
-      "help": "Open the stored UTF-8 template in the configured editor. Save and close it to update library metadata and refresh the configured working tracker. SCU preserves unrecognized local edits. The tracker has no deck revisions."
+      "help": "Save and close the configured editor to refresh the working tracker. SCU preserves local edits to the generated file."
     },
     {
       "name": "extract_deck",
@@ -669,7 +665,7 @@
           "aliases": ["of"],
           "value": "scu$deck_name",
           "prompt_for_default": false,
-          "description": "Destination for original bytes. Defaults to the selected revision's recorded source filename, or the deck name if absent; an explicit output_file is honored.",
+          "description": "Destination for the source. Defaults to the recorded filename beside the library, or the deck name if no filename was recorded.",
           "completion": "file"
         },
         {
@@ -677,7 +673,7 @@
           "type": "string",
           "aliases": ["r"],
           "value": "scu$optional",
-          "description": "Deck revision within the selected library version, from 0.000 to 0.999. Omit to select the latest visible deck revision, including inherited decks.",
+          "description": "Deck revision within the selected version (0.000 to 0.999). Omit to use the latest visible revision, including inherited source.",
           "completion": "revision"
         },
         {
@@ -685,7 +681,7 @@
           "type": "string",
           "aliases": ["v"],
           "value": "scu$current_version",
-          "description": "Library version containing the deck; defaults to scu$current_version. Combine with revision=0.001, or supply a complete deck version such as 1.1-0.001.",
+          "description": "Library version to extract from. Select a revision separately or use a complete deck version such as 1.1-0.001.",
           "completion": "version",
           "prompt_for_default": false
         },
@@ -726,7 +722,7 @@
           "prompt_for_default": false
         }
       ],
-      "help": "Select a library version (default scu$current_version) and optionally a deck revision within that version. With no revision, select the latest visible deck, including inherited decks. Version and revision may be combined, for example version=1.1 revision=0.001. A complete deck version such as version=1.1-0.001 is equivalent; do not combine it with a separate revision. Write original source bytes including COPY directives and macro text. Always macro-expand the configured version_tracker beside the requested output. Internal library revision numbers are not command selectors. Default to the recorded source filename beside the library; honor an explicit output_file unchanged. A working file matching any surviving revision of this deck can be replaced. Other differing working files require overwrite=yes; SQLite libraries cannot be overwritten. Run the configured build command from the library directory after successful extraction; build=no skips it. Preserve the recorded filename's case; fall back to the deck name only when no source filename was recorded. Restoring old source files does not change the current library version; import records them as new revisions.",
+      "help": "Restore a deck under its recorded filename, including COPY directives and macro text. SCU also refreshes the configured version tracker and runs the configured build.",
       "examples": [
         {
           "command": "scu extract_deck main.pas release-1.1.pas version=1.1",
@@ -745,7 +741,7 @@
     {
       "name": "extract_version",
       "aliases": ["extv"],
-      "summary": "Extract the complete selected version and run the build.",
+      "summary": "Restore all working files from a library version.",
       "arguments": [
         {
           "name": "version",
@@ -802,7 +798,7 @@
           "prompt_for_default": false
         }
       ],
-      "help": "Extract every live deck in the selected library version, including inherited decks, under its recorded source filename. Default to scu$current_version and the library directory. Report Matches when the working file already matches the selected deck revision, and count these files separately from writes. Preserve macro text except in the configured version_tracker, which is always expanded and reported. Run the configured build once from the library directory unless build=no. A working file matching any surviving revision of its deck can be replaced. Other differing working files require overwrite=yes. If replacement needs permission, list every conflicting deck and output filename before extracting any decks or running the build. SQLite libraries cannot be overwritten. Preserve the recorded filename's case; fall back to the deck name only when no source filename was recorded. Restoring old source files does not change the current library version; import records them as new revisions.",
+      "help": "Extract every live deck, including inherited decks, and refresh the configured version tracker. SCU lists overwrite conflicts before writing and runs the configured build once after extraction.",
       "examples": [
         {
           "command": "scu extract_version output_directory=build",
@@ -817,7 +813,7 @@
     {
       "name": "import_deck",
       "aliases": ["impd"],
-      "summary": "Snapshot selected files or import one deck, creating, updating, or deleting revisions.",
+      "summary": "Record working file changes in the open version.",
       "arguments": [
         {
           "name": "deck_name",
@@ -845,7 +841,7 @@
           "description": "Comment prefix for new or changed revisions. Omit to retain each deck prefix or use the version default for new decks."
         }
       ],
-      "help": "With deck_name, import a source file into a new, existing, or deleted deck. source_file must be a bare filename in the library directory; directory components and absolute paths are rejected. Omit it to use the deck's recorded filename. Without deck_name or source_file, scan file_patterns relative to the library directory: store new files, revise changed files, and create deletion revisions for missing decks covered by those patterns. Compare exact source bytes; unchanged decks keep their deck versions, including inherited decks. Show changed decks, resolved deck versions, and new/changed/deleted status in aligned columns, followed by counts. Commit the whole snapshot and its audit records together. A failed scan leaves the library unchanged. Scan only the directory containing the library, without descending into subdirectories. Directory components in file_patterns are rejected; subdirectory support is planned as a future library option. Deck names preserve case. On Linux, files differing only in case are separate sources. Ignore directories, operational SQLite files, and the export manifest; reject selected symlinks. Wildcards use *, ?, and bracket expressions in filenames. Narrowing file_patterns does not delete decks outside the new selection. Requires an unlocked version. Non-deck filenames (spaces, Unicode or long names) receive stable hashed deck IDs in scans while preserving their exact filename. After commit, refresh the configured version tracker for the current library version without running a build. A differing working tracker is preserved unless its bytes match the current template rendered for a surviving version.",
+      "help": "Name a deck to import one file. With no arguments, scan file_patterns in the library directory and record new, changed, and missing files together. After saving, SCU refreshes the configured version tracker.",
       "examples": [
         {
           "command": "scu import_deck",
@@ -854,10 +850,6 @@
         {
           "command": "scu import_deck main.pas",
           "description": "Import main.pas from its source path in the library directory."
-        },
-        {
-          "command": "scu import_deck main.pas",
-          "description": "Create or revise main.pas from an edited extraction; keep its existing source-path association."
         }
       ]
     },
@@ -875,12 +867,12 @@
           "description": "Initial library version in MAJOR.MINOR form. Defaults to 1.0."
         }
       ],
-      "help": "Initialize the selected library with an open version. The default initial version is 1.0."
+      "help": "The initial version is unlocked and ready for your first deck."
     },
     {
       "name": "lock_version",
       "aliases": ["locv"],
-      "summary": "Lock the current version against further changes.",
+      "summary": "Lock the current version and record a description.",
       "arguments": [
         {
           "name": "description",
@@ -897,7 +889,7 @@
           "description": "Read archive import metadata for this version from a JSON file when locking it."
         }
       ],
-      "help": "Lock the current version with a required description and record the lock date and time in UTC. This locks stored revisions only; import external edits first if they should belong to the release.",
+      "help": "Import any working file edits you want to include before locking. At a terminal, omit the description to write it in the configured editor.",
       "examples": [
         {
           "command": "lock_version description=\"Initial release\"",
@@ -910,12 +902,12 @@
       "aliases": ["quis", "quit"],
       "summary": "Leave the interactive session.",
       "arguments": [],
-      "help": "Exit the interactive session. Every successful modifying command is already saved automatically."
+      "help": "Successful changes have already been saved."
     },
     {
       "name": "recover_library",
       "aliases": ["recl"],
-      "summary": "Restore an SCU recovery file to a new SQLite library.",
+      "summary": "Restore a recovery file to a new SQLite library.",
       "arguments": [
         {
           "name": "recovery_file",
@@ -934,12 +926,12 @@
           "completion": "file"
         }
       ],
-      "help": "Restore to a new library at the selected path. If a pending-only file references saved revisions, supply the matching saved snapshot as base_library."
+      "help": "Choose a new library path. If the recovery file contains only pending changes, supply the saved library it was based on."
     },
     {
       "name": "release_version",
       "aliases": ["relv"],
-      "summary": "Publish a complete version with release macros expanded.",
+      "summary": "Publish a library version with release macros expanded.",
       "arguments": [
         {
           "name": "version",
@@ -978,7 +970,7 @@
           ]
         }
       ],
-      "help": "Write every live deck in the selected version, including inherited decks, to release_directory (default release beside the library). Every run publishes the full snapshot. Expand only uppercase SCU$DATE, SCU$TIME, SCU$DATE_TIME, SCU$DECK_VERSION, and SCU$VERSION. Date/time values are the deck modification timestamp in UTC; VERSION is the selected library version. COPY directives and other text remain literal. Remove obsolete regular files previously recorded by this library matching file_patterns only when absent from the selected snapshot; untracked matching files are named and kept unless overwrite=yes; keep unrelated files, subdirectories, symbolic links, and SQLite storage. Update the export manifest with recoverable writes and deletions. Edited tracked outputs require overwrite=yes. No build command runs during publication. Use each selected revision's recorded source filename, preserving case and exact bytes. Warn once if former COPY directives are found; they remain literal.",
+      "help": "Publish every live deck, including inherited decks, to the release directory. SCU expands SCU$VERSION, SCU$DECK_VERSION, SCU$DATE, SCU$TIME, and SCU$DATE_TIME. It removes obsolete tracked files matching file_patterns and skips the build.",
       "examples": [
         {
           "command": "scu release_version",
@@ -1011,7 +1003,7 @@
           "description": "New MAJOR.MINOR name, greater than the previous locked version."
         }
       ],
-      "help": "Rename the current unlocked version, including revisions already stored in it. Deck revision numbers, source bytes, and original archive provenance are preserved. After the rename is saved, refresh the configured version tracker beside the library without running a build. Preserve hand-edited tracker contents and report the conflict.",
+      "help": "Stored revisions take the new version name and keep their revision numbers. SCU also refreshes the configured version tracker.",
       "examples": [
         {
           "command": "scu rename_version version=8.132 new_version=8.1308",
@@ -1022,21 +1014,21 @@
     {
       "name": "save_library",
       "aliases": ["savl"],
-      "summary": "Confirm the library is saved.",
+      "summary": "Confirm that the library has been saved.",
       "arguments": [],
-      "help": "The library is saved automatically after every successful modifying command. This command confirms the saved state without leaving the session."
+      "help": "SCU saves each successful change automatically. You can use this command to confirm the saved state during a session."
     },
     {
       "name": "unlock_version",
       "aliases": ["unlv"],
       "summary": "Reopen the current locked version for editing.",
       "arguments": [],
-      "help": "Reopen the latest library version. Its deck revisions and archive import metadata are preserved. The next lock records a new description and timestamp. Earlier lock commands remain in the audit trail."
+      "help": "Existing deck revisions are preserved. Lock the version again to record a new description and lock time."
     },
     {
       "name": "verify_audit_trail",
       "aliases": ["verat"],
-      "summary": "Verify the audit chain and optionally check for a saved head.",
+      "summary": "Check the integrity of the audit trail.",
       "arguments": [
         {
           "name": "head",
@@ -1046,12 +1038,12 @@
           "description": "Previously saved SHA-256 digest to look for in the audit chain."
         }
       ],
-      "help": "Verify the audit chain. Supply a previously saved SHA-256 head to check that it is still present."
+      "help": "SCU checks the full hash chain. Supply a previously saved head to confirm the trail still includes that record."
     },
     {
       "name": "verify_decks",
       "aliases": ["verd"],
-      "summary": "Compare working files or a published release with a library version.",
+      "summary": "Check working or released files against the library.",
       "arguments": [
         {
           "name": "output_directory",
@@ -1072,15 +1064,15 @@
           "completion": "library_version"
         }
       ],
-      "help": "Compare the recorded source filename of each live deck, including inherited decks, directly with its bytes in the selected version. Show the resolved revision in the Deck version column and report matches, differs, missing or unavailable. Extra files and the version tracker are outside this comparison. In a release directory, verify published files and expanded macros using .scu-exports.json and reconcile interrupted publication. List files needing attention and return a failing status if any are found.",
+      "help": "In a working directory, SCU compares each live deck with its file and ignores extra files. In a release directory, it checks the expanded files against the release manifest. Files needing attention are listed at the end.",
       "examples": [
         {
           "command": "scu verify_decks",
           "description": "Verify working files in the library directory against the current version."
         },
         {
-          "command": "scu verify_decks output_directory=build version=1.1",
-          "description": "Verify files in build against version 1.1 without changing them."
+          "command": "scu verify_decks 'output_directory=scu$release_directory'",
+          "description": "Check the published release using its manifest."
         }
       ]
     }
